@@ -31,5 +31,5 @@ app.get("/{*splat}", (_req, res) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`Diszort server running on http://localhost:${PORT}`);
+  console.log(`Huddle server running on http://localhost:${PORT}`);
 });
