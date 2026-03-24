@@ -105,7 +105,7 @@ export default function RoomPage() {
     setIsScreenSharing(false);
   }, []);
 
-  const { remoteStreams, remoteAnalysers, screenStreams, startScreenShare, stopScreenShare, setRemoteVolume } =
+  const { remoteAnalysers, screenStreams, startScreenShare, stopScreenShare, setRemoteVolume } =
     useWebRTC({ socket, localStream, onScreenShareStopped: handleScreenShareStopped });
 
   const speaking = useVoiceActivity(remoteAnalysers, localAnalyser, socket?.id);
