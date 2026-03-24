@@ -253,6 +253,16 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
       }
     }
     screenSendersRef.current.clear();
+
+    const localId = socketRef.current?.id;
+    if (localId) {
+      setScreenStreams((prev) => {
+        const next = new Map(prev);
+        next.delete(localId);
+        return next;
+      });
+    }
+
     socketRef.current?.emit("screen-share-stopped");
     onScreenShareStoppedRef.current?.();
   }, []);
@@ -266,6 +276,11 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
       for (const [peerId, pc] of peersRef.current) {
         const sender = pc.addTrack(track, stream);
         screenSendersRef.current.set(peerId, sender);
+      }
+
+      const localId = socketRef.current?.id;
+      if (localId) {
+        setScreenStreams((prev) => new Map(prev).set(localId, stream));
       }
 
       track.onended = () => {

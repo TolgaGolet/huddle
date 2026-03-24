@@ -158,7 +158,7 @@ export default function RoomPage() {
 
   const firstScreenStream = screenStreams.entries().next().value;
   const screenSharerName =
-    firstScreenStream && participants.find((p) => p.id === firstScreenStream[0])?.name;
+    firstScreenStream && allParticipants.find((p) => p.id === firstScreenStream[0])?.name;
 
   if (!roomId || !state?.name) {
     return null;

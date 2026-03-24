@@ -3,7 +3,7 @@ import {
   RnnoiseWorkletNode,
 } from "@sapphi-red/web-noise-suppressor";
 
-const GAIN_BOOST = 10;
+const GAIN_BOOST = 5;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -43,19 +43,20 @@ export class AudioEngine {
   }
 
   private rebuildGraph() {
-    if (!this.source || !this.gainNode || !this.analyser) return;
+    if (!this.source || !this.gainNode || !this.analyser || !this.destination) return;
     this.source.disconnect();
     this.rnnoiseNode?.disconnect();
     this.analyser.disconnect();
-
-    this.source.connect(this.analyser);
+    this.gainNode.disconnect();
 
     if (this.rnnoiseReady && this.rnnoiseNode) {
-      this.analyser.connect(this.rnnoiseNode);
-      this.rnnoiseNode.connect(this.gainNode);
+      this.source.connect(this.rnnoiseNode);
+      this.rnnoiseNode.connect(this.analyser);
     } else {
-      this.analyser.connect(this.gainNode);
+      this.source.connect(this.analyser);
     }
+    this.analyser.connect(this.gainNode);
+    this.gainNode.connect(this.destination);
   }
 
   async setInputStream(stream: MediaStream) {
