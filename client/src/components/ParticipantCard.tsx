@@ -43,7 +43,7 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, onCo
     >
       <div
         className={`relative flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ${avatarColor(participant.name)} ${
-          isSpeaking ? "ring-2 ring-green-400 ring-offset-2 ring-offset-gray-900" : ""
+          isSpeaking && !participant.isMuted ? "ring-2 ring-green-400 ring-offset-2 ring-offset-gray-900" : ""
         } transition-shadow`}
       >
         {getInitials(participant.name)}
