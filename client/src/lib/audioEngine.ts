@@ -3,7 +3,7 @@ import {
   RnnoiseWorkletNode,
 } from "@sapphi-red/web-noise-suppressor";
 
-const GAIN_BOOST = 2;
+const GAIN_BOOST = 4;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
