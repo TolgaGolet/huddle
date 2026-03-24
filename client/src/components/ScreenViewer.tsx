@@ -38,7 +38,7 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
   return (
     <div
       ref={containerRef}
-      className={`flex flex-col bg-gray-950 ${isFullscreen ? "" : "border-b border-gray-800"}`}
+      className={`flex flex-col bg-gray-950 ${isFullscreen ? "h-full" : "border-b border-gray-800"}`}
     >
       <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900/60 shrink-0">
         <span className="text-xs text-gray-400">
@@ -63,7 +63,7 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
         </div>
       </div>
       <div
-        className="relative w-full"
+        className="relative w-full min-h-0"
         style={isFullscreen ? { flex: 1 } : { maxHeight: "45vh" }}
       >
         <video
