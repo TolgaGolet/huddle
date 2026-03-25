@@ -55,7 +55,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
   }, []);
 
   const createPeer = useCallback(
-    (peerId: string, initiator: boolean) => {
+    (peerId: string, _initiator: boolean) => {
       const sock = socketRef.current;
       if (!sock) return null;
 
@@ -106,17 +106,15 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
       };
 
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-          removePeer(peerId);
+        if (pc.connectionState === "failed") {
+          pc.restartIce();
         }
       };
 
       pc.onnegotiationneeded = async () => {
         try {
           makingOfferRef.current.set(peerId, true);
-          const offer = await pc.createOffer();
-          if (pc.signalingState !== "stable") return;
-          await pc.setLocalDescription(offer);
+          await pc.setLocalDescription();
           sock.emit("offer", { to: peerId, offer: pc.localDescription });
         } catch (err) {
           console.error("Negotiation failed:", err);
@@ -124,10 +122,6 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
           makingOfferRef.current.set(peerId, false);
         }
       };
-
-      if (initiator) {
-        // onnegotiationneeded fires automatically after addTrack
-      }
 
       return pc;
     },
@@ -139,36 +133,35 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
     const myId = socket.id;
 
     const handleOffer = async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
-      let pc = peersRef.current.get(from);
-      if (!pc) {
-        pc = createPeer(from, false) ?? undefined;
+      try {
+        let pc = peersRef.current.get(from);
+        if (!pc) {
+          pc = createPeer(from, false) ?? undefined;
+        }
+        if (!pc) return;
+
+        const isPolite = myId! > from;
+        const offerCollision = makingOfferRef.current.get(from) || pc.signalingState !== "stable";
+
+        if (offerCollision && !isPolite) return;
+
+        await pc.setRemoteDescription(offer);
+        await pc.setLocalDescription();
+        socket.emit("answer", { to: from, answer: pc.localDescription });
+      } catch (err) {
+        console.error("Error handling offer from", from, ":", err);
       }
-      if (!pc) return;
-
-      const isPolite = myId! > from;
-      const offerCollision = makingOfferRef.current.get(from) || pc.signalingState !== "stable";
-
-      if (offerCollision && !isPolite) return;
-
-      if (offerCollision) {
-        await Promise.all([
-          pc.setLocalDescription({ type: "rollback" }),
-          pc.setRemoteDescription(new RTCSessionDescription(offer)),
-        ]);
-      } else {
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      }
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit("answer", { to: from, answer: pc.localDescription });
     };
 
     const handleAnswer = async ({ from, answer }: { from: string; answer: RTCSessionDescriptionInit }) => {
-      const pc = peersRef.current.get(from);
-      if (!pc) return;
-      if (pc.signalingState === "stable") return;
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      try {
+        const pc = peersRef.current.get(from);
+        if (!pc) return;
+        if (pc.signalingState === "stable") return;
+        await pc.setRemoteDescription(answer);
+      } catch (err) {
+        console.error("Error handling answer from", from, ":", err);
+      }
     };
 
     const handleIceCandidate = async ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {

@@ -107,12 +107,19 @@ export class RemoteAudioManager {
   private gains = new Map<string, GainNode>();
   private analysers = new Map<string, AnalyserNode>();
   private sources = new Map<string, MediaStreamAudioSourceNode>();
+  private audioElements = new Map<string, HTMLAudioElement>();
 
   constructor() {
     this.ctx = new AudioContext();
   }
 
   addStream(peerId: string, stream: MediaStream): HTMLAudioElement {
+    this.removeStream(peerId);
+
+    if (this.ctx.state === "suspended") {
+      this.ctx.resume();
+    }
+
     const audio = new Audio();
     audio.srcObject = stream;
     audio.volume = 0;
@@ -131,6 +138,7 @@ export class RemoteAudioManager {
     this.sources.set(peerId, source);
     this.analysers.set(peerId, analyser);
     this.gains.set(peerId, gain);
+    this.audioElements.set(peerId, audio);
 
     return audio;
   }
@@ -150,9 +158,15 @@ export class RemoteAudioManager {
     this.sources.get(peerId)?.disconnect();
     this.analysers.get(peerId)?.disconnect();
     this.gains.get(peerId)?.disconnect();
+    const audio = this.audioElements.get(peerId);
+    if (audio) {
+      audio.pause();
+      audio.srcObject = null;
+    }
     this.sources.delete(peerId);
     this.analysers.delete(peerId);
     this.gains.delete(peerId);
+    this.audioElements.delete(peerId);
   }
 
   destroy() {
