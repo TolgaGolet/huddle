@@ -15,7 +15,7 @@ export default function LandingPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const rs = (location.state as RedirectState | null) ?? {};
-  const [mode, setMode] = useState<Mode>(rs.error ? "join" : "idle");
+  const [mode, setMode] = useState<Mode>(rs.error || rs.roomId ? "join" : "idle");
   const [name, setName] = useState(rs.name || "");
   const [roomId, setRoomId] = useState(rs.roomId || "");
   const [password, setPassword] = useState(rs.password || "");

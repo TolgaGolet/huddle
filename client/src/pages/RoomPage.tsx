@@ -29,9 +29,9 @@ export default function RoomPage() {
 
   useEffect(() => {
     if (!state?.name) {
-      navigate("/", { replace: true });
+      navigate("/", { replace: true, state: { roomId } });
     }
-  }, [state, navigate]);
+  }, [state, navigate, roomId]);
 
   useEffect(() => {
     if (joinError) {
