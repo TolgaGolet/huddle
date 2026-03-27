@@ -3,7 +3,7 @@ import {
   RnnoiseWorkletNode,
 } from "@sapphi-red/web-noise-suppressor";
 
-const GAIN_BOOST = 3.5;
+const GAIN_BOOST = 4;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -124,20 +124,27 @@ export class RemoteAudioManager {
       ctx.resume();
     }
 
-    // A silent HTMLAudioElement is needed to activate a WebRTC MediaStream
-    // on Firefox and Safari; without it createMediaStreamSource produces
-    // silence on those engines.  The element is muted (volume 0) so only
-    // the Web Audio graph drives speaker output.
+    // A muted HTMLAudioElement activates the MediaStream in Firefox/Safari
+    // so createMediaStreamSource can produce audio.  Using `muted` (not
+    // volume=0) tells the browser it can skip full audio rendering, which
+    // avoids the decode-buffer memory overhead that volume=0 incurs.
     const audio = new Audio();
     audio.srcObject = stream;
-    audio.volume = 0;
+    audio.muted = true;
     audio.play().catch(() => {});
 
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
+
+    // WebRTC audio is mono. Firefox does not auto-upmix mono→stereo before
+    // reaching ctx.destination, so audio only comes out of the left ear.
+    // Forcing stereo here makes all browsers output to both L and R.
     const gain = ctx.createGain();
     gain.gain.value = GAIN_BOOST;
+    gain.channelCount = 2;
+    gain.channelCountMode = "explicit";
+    gain.channelInterpretation = "speakers";
 
     source.connect(analyser);
     analyser.connect(gain);
@@ -168,6 +175,7 @@ export class RemoteAudioManager {
     if (audio) {
       audio.pause();
       audio.srcObject = null;
+      audio.load();
     }
     this.sources.delete(peerId);
     this.analysers.delete(peerId);
