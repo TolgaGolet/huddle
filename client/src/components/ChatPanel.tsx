@@ -58,6 +58,20 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
     }
   }, [chatHistory.length]);
 
+  // Re-pin to bottom when content grows after initial scroll (e.g. GIF images
+  // finish loading and expand the scroll height after we already scrolled).
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      if (isAtBottomRef.current) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   function scrollToBottom() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     setNewMessageCount(0);

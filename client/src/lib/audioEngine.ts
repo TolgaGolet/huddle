@@ -13,39 +13,29 @@ export class AudioEngine {
   private source: MediaStreamAudioSourceNode | null = null;
   private rnnoiseNode: RnnoiseWorkletNode | null = null;
   private rnnoiseReady = false;
-  private lockReleaser: (() => void) | null = null;
-  private keepAliveHandler: (() => void) | null = null;
+  private keepAliveOsc: OscillatorNode | null = null;
 
-  private acquireKeepAlive() {
-    if (navigator.locks) {
-      navigator.locks.request("huddle-local-audio", () =>
-        new Promise<void>((resolve) => { this.lockReleaser = resolve; }),
-      );
-    }
-    this.keepAliveHandler = () => {
-      if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
-    };
-    document.addEventListener("visibilitychange", this.keepAliveHandler);
-    window.addEventListener("focus", this.keepAliveHandler);
-  }
-
-  private releaseKeepAlive() {
-    this.lockReleaser?.();
-    this.lockReleaser = null;
-    if (this.keepAliveHandler) {
-      document.removeEventListener("visibilitychange", this.keepAliveHandler);
-      window.removeEventListener("focus", this.keepAliveHandler);
-      this.keepAliveHandler = null;
-    }
+  /**
+   * A permanently running silent oscillator keeps Chromium's audio render
+   * thread ticking at full rate even when the browser window is in the
+   * background. Without it, Chromium starves the AudioWorklet render thread
+   * when the tab loses focus, causing robotic/glitchy audio output.
+   */
+  private startKeepAliveNode(ctx: AudioContext) {
+    if (this.keepAliveOsc) return;
+    const osc = ctx.createOscillator();
+    const silentGain = ctx.createGain();
+    silentGain.gain.value = 0;
+    osc.connect(silentGain);
+    silentGain.connect(ctx.destination);
+    osc.start();
+    this.keepAliveOsc = osc;
   }
 
   private getContext(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: 48000 });
-      this.ctx.onstatechange = () => {
-        if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
-      };
-      this.acquireKeepAlive();
+      this.startKeepAliveNode(this.ctx);
       this.gainNode = this.ctx.createGain();
       this.gainNode.gain.value = GAIN_BOOST;
       this.analyser = this.ctx.createAnalyser();
@@ -122,7 +112,9 @@ export class AudioEngine {
   }
 
   destroy() {
-    this.releaseKeepAlive();
+    this.keepAliveOsc?.stop();
+    this.keepAliveOsc?.disconnect();
+    this.keepAliveOsc = null;
     this.source?.disconnect();
     this.rnnoiseNode?.destroy();
     this.analyser?.disconnect();
@@ -138,39 +130,23 @@ export class RemoteAudioManager {
   private analysers = new Map<string, AnalyserNode>();
   private sources = new Map<string, MediaStreamAudioSourceNode>();
   private audioElements = new Map<string, HTMLAudioElement>();
-  private lockReleaser: (() => void) | null = null;
-  private keepAliveHandler: (() => void) | null = null;
+  private keepAliveOsc: OscillatorNode | null = null;
 
-  private acquireKeepAlive() {
-    if (navigator.locks) {
-      navigator.locks.request("huddle-remote-audio", () =>
-        new Promise<void>((resolve) => { this.lockReleaser = resolve; }),
-      );
-    }
-    this.keepAliveHandler = () => {
-      if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
-    };
-    document.addEventListener("visibilitychange", this.keepAliveHandler);
-    window.addEventListener("focus", this.keepAliveHandler);
-  }
-
-  private releaseKeepAlive() {
-    this.lockReleaser?.();
-    this.lockReleaser = null;
-    if (this.keepAliveHandler) {
-      document.removeEventListener("visibilitychange", this.keepAliveHandler);
-      window.removeEventListener("focus", this.keepAliveHandler);
-      this.keepAliveHandler = null;
-    }
+  private startKeepAliveNode(ctx: AudioContext) {
+    if (this.keepAliveOsc) return;
+    const osc = ctx.createOscillator();
+    const silentGain = ctx.createGain();
+    silentGain.gain.value = 0;
+    osc.connect(silentGain);
+    silentGain.connect(ctx.destination);
+    osc.start();
+    this.keepAliveOsc = osc;
   }
 
   private getContext(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext();
-      this.ctx.onstatechange = () => {
-        if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
-      };
-      this.acquireKeepAlive();
+      this.startKeepAliveNode(this.ctx);
     }
     return this.ctx;
   }
@@ -248,7 +224,9 @@ export class RemoteAudioManager {
   }
 
   destroy() {
-    this.releaseKeepAlive();
+    this.keepAliveOsc?.stop();
+    this.keepAliveOsc?.disconnect();
+    this.keepAliveOsc = null;
     const ids = [...this.sources.keys()];
     for (const id of ids) {
       this.removeStream(id);
