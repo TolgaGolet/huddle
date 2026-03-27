@@ -9,7 +9,7 @@ import {
   isNameTaken,
 } from "./roomManager.js";
 
-const socketRoomMap = new Map<string, string>();
+export const socketRoomMap = new Map<string, string>();
 const roomScreenSharer = new Map<string, string>();
 
 export function setupSignaling(io: Server): void {

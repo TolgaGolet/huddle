@@ -1,15 +1,10 @@
 import type { Server, Socket } from "socket.io";
 import { nanoid } from "nanoid";
 import { addChatMessage, getRoom } from "./roomManager.js";
-
-const socketRoomMap = new Map<string, string>();
+import { socketRoomMap } from "./signaling.js";
 
 export function setupChat(io: Server): void {
   io.on("connection", (socket: Socket) => {
-    socket.on("join-room", ({ roomId }: { roomId: string }) => {
-      socketRoomMap.set(socket.id, roomId);
-    });
-
     socket.on("chat-message", ({ text }: { text: string }) => {
       const roomId = socketRoomMap.get(socket.id);
       if (!roomId) return;
@@ -32,10 +27,6 @@ export function setupChat(io: Server): void {
 
       addChatMessage(roomId, msg);
       io.to(roomId).emit("chat-message", msg);
-    });
-
-    socket.on("disconnect", () => {
-      socketRoomMap.delete(socket.id);
     });
   });
 }

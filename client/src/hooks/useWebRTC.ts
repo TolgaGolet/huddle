@@ -17,11 +17,10 @@ interface UseWebRTCOptions {
 
 export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebRTCOptions) {
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const remoteAudioRef = useRef<RemoteAudioManager>(new RemoteAudioManager());
+  const remoteAudioRef = useRef(new RemoteAudioManager());
   const localStreamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const onScreenShareStoppedRef = useRef(onScreenShareStopped);
-  const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [remoteAnalysers, setRemoteAnalysers] = useState<Map<string, AnalyserNode>>(new Map());
   const [screenStreams, setScreenStreams] = useState<Map<string, MediaStream>>(new Map());
   const screenTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -41,11 +40,6 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
     makingOfferRef.current.delete(peerId);
     remoteAudioRef.current.removeStream(peerId);
     screenSendersRef.current.delete(peerId);
-    setRemoteStreams((prev) => {
-      const next = new Map(prev);
-      next.delete(peerId);
-      return next;
-    });
     setRemoteAnalysers(new Map(remoteAudioRef.current.getAnalysers()));
     setScreenStreams((prev) => {
       const next = new Map(prev);
@@ -91,7 +85,6 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
 
         if (e.track.kind === "audio") {
           remoteAudioRef.current.addStream(peerId, s);
-          setRemoteStreams((prev) => new Map(prev).set(peerId, s));
           setRemoteAnalysers(new Map(remoteAudioRef.current.getAnalysers()));
         } else if (e.track.kind === "video") {
           setScreenStreams((prev) => new Map(prev).set(peerId, s));
@@ -219,6 +212,11 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
   }, [socket, createPeer, removePeer]);
 
   useEffect(() => {
+    const mgr = remoteAudioRef.current;
+    return () => mgr.destroy();
+  }, []);
+
+  useEffect(() => {
     if (!localStream) return;
     for (const [, pc] of peersRef.current) {
       const audioSenders = pc.getSenders().filter((s) => s.track?.kind === "audio");
@@ -292,7 +290,6 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
   }, []);
 
   return {
-    remoteStreams,
     remoteAnalysers,
     screenStreams,
     startScreenShare,

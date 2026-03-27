@@ -223,15 +223,23 @@ export default function RoomPage() {
           />
         </aside>
 
-        {/* Right panel: screen share + chat */}
-        <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Right panel: screen share (theater) + chat */}
+        <main className="flex-1 flex overflow-hidden min-w-0">
           {firstScreenStream && (
             <ScreenViewer
               stream={firstScreenStream[1]}
               sharerName={screenSharerName || "Someone"}
             />
           )}
-          <ChatPanel socket={socket} chatHistory={chatHistory} localId={socket?.id || "local"} />
+          <div
+            className={
+              firstScreenStream
+                ? "w-80 shrink-0 flex flex-col border-l border-gray-800"
+                : "flex-1 flex flex-col"
+            }
+          >
+            <ChatPanel socket={socket} chatHistory={chatHistory} localId={socket?.id || "local"} />
+          </div>
         </main>
       </div>
 

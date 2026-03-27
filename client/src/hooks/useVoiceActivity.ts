@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const THRESHOLD = 3;
-const POLL_INTERVAL = 100;
+const POLL_INTERVAL = 200;
 
 export function useVoiceActivity(
   remoteAnalysers: Map<string, AnalyserNode>,
@@ -21,15 +21,21 @@ export function useVoiceActivity(
   const analysersRef = useRef(allAnalysers);
   analysersRef.current = allAnalysers;
 
+  const bufferRef = useRef<Uint8Array | null>(null);
+
   useEffect(() => {
     const interval = setInterval(() => {
       const current = analysersRef.current;
       const nowSpeaking = new Set<string>();
       for (const [id, analyser] of current) {
-        const data = new Uint8Array(analyser.frequencyBinCount);
-        analyser.getByteFrequencyData(data);
-        const avg = data.reduce((a, b) => a + b, 0) / data.length;
-        if (avg > THRESHOLD) nowSpeaking.add(id);
+        const binCount = analyser.frequencyBinCount;
+        if (!bufferRef.current || bufferRef.current.length < binCount) {
+          bufferRef.current = new Uint8Array(binCount);
+        }
+        analyser.getByteFrequencyData(bufferRef.current);
+        let sum = 0;
+        for (let i = 0; i < binCount; i++) sum += bufferRef.current[i];
+        if (sum / binCount > THRESHOLD) nowSpeaking.add(id);
       }
       setSpeaking((prev) => {
         if (prev.size !== nowSpeaking.size) return nowSpeaking;

@@ -18,6 +18,8 @@ interface UseSocketReturn {
   currentScreenSharer: string | null;
 }
 
+const MAX_CLIENT_CHAT = 200;
+
 export function useSocket({ roomId, name, password }: UseSocketOptions): UseSocketReturn {
   const socketRef = useRef<Socket | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -29,59 +31,89 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
   useEffect(() => {
     if (!roomId || !name) return;
 
-    const socket = io();
-    socketRef.current = socket;
+    let socket: Socket | null = null;
 
-    socket.on("connect", () => {
-      setConnected(true);
-      socket.emit("join-room", { roomId, name, password });
-    });
+    // Defer socket creation by one macrotask. React StrictMode (development)
+    // runs effect cleanup immediately after the first run before re-mounting.
+    // Creating a WebSocket and calling close() while it is still in the
+    // CONNECTING state produces a browser-level error that cannot be caught in
+    // JS. Deferring with setTimeout means the cleanup can clearTimeout before
+    // the socket is ever opened, so no WebSocket is created on the discarded
+    // StrictMode run. In production StrictMode is inactive, so the 0ms delay
+    // has no observable effect.
+    const timer = setTimeout(() => {
+      socket = io({ transports: ["websocket"] });
+      socketRef.current = socket;
 
-    socket.on("disconnect", () => setConnected(false));
+      const onConnect = () => {
+        setConnected(true);
+        socket!.emit("join-room", { roomId, name, password });
+      };
 
-    socket.on("error", (data: { message: string }) => {
-      setJoinError(data.message);
-      socket.disconnect();
-    });
+      const onDisconnect = () => setConnected(false);
 
-    socket.on("room-joined", (data: { participants: Participant[]; chatHistory: ChatMessage[]; screenSharer: string | null }) => {
-      setParticipants(data.participants);
-      setChatHistory(data.chatHistory);
-      setCurrentScreenSharer(data.screenSharer);
-    });
+      const onError = (data: { message: string }) => {
+        setJoinError(data.message);
+        socket!.disconnect();
+      };
 
-    socket.on("participant-joined", (p: Participant) => {
-      setParticipants((prev) => [...prev.filter((x) => x.id !== p.id), p]);
-      playJoinSound();
-    });
+      const onRoomJoined = (data: { participants: Participant[]; chatHistory: ChatMessage[]; screenSharer: string | null }) => {
+        setParticipants(data.participants);
+        setChatHistory(data.chatHistory.slice(-MAX_CLIENT_CHAT));
+        setCurrentScreenSharer(data.screenSharer);
+      };
 
-    socket.on("participant-left", ({ id }: { id: string }) => {
-      setParticipants((prev) => prev.filter((p) => p.id !== id));
-      setCurrentScreenSharer((prev) => (prev === id ? null : prev));
-      playLeaveSound();
-    });
+      const onParticipantJoined = (p: Participant) => {
+        setParticipants((prev) => [...prev.filter((x) => x.id !== p.id), p]);
+        playJoinSound();
+      };
 
-    socket.on("participant-muted", ({ id, isMuted }: { id: string; isMuted: boolean }) => {
-      setParticipants((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, isMuted } : p)),
-      );
-    });
+      const onParticipantLeft = ({ id }: { id: string }) => {
+        setParticipants((prev) => prev.filter((p) => p.id !== id));
+        setCurrentScreenSharer((prev) => (prev === id ? null : prev));
+        playLeaveSound();
+      };
 
-    socket.on("screen-share-started", ({ id }: { id: string }) => {
-      setCurrentScreenSharer(id);
-    });
+      const onParticipantMuted = ({ id, isMuted }: { id: string; isMuted: boolean }) => {
+        setParticipants((prev) =>
+          prev.map((p) => (p.id === id ? { ...p, isMuted } : p)),
+        );
+      };
 
-    socket.on("screen-share-stopped", ({ id }: { id: string }) => {
-      setCurrentScreenSharer((prev) => (prev === id ? null : prev));
-    });
+      const onScreenShareStarted = ({ id }: { id: string }) => {
+        setCurrentScreenSharer(id);
+      };
 
-    socket.on("chat-message", (msg: ChatMessage) => {
-      setChatHistory((prev) => [...prev, msg]);
-    });
+      const onScreenShareStopped = ({ id }: { id: string }) => {
+        setCurrentScreenSharer((prev) => (prev === id ? null : prev));
+      };
+
+      const onChatMessage = (msg: ChatMessage) => {
+        setChatHistory((prev) => {
+          const next = [...prev, msg];
+          return next.length > MAX_CLIENT_CHAT ? next.slice(-MAX_CLIENT_CHAT) : next;
+        });
+      };
+
+      socket.on("connect", onConnect);
+      socket.on("disconnect", onDisconnect);
+      socket.on("error", onError);
+      socket.on("room-joined", onRoomJoined);
+      socket.on("participant-joined", onParticipantJoined);
+      socket.on("participant-left", onParticipantLeft);
+      socket.on("participant-muted", onParticipantMuted);
+      socket.on("screen-share-started", onScreenShareStarted);
+      socket.on("screen-share-stopped", onScreenShareStopped);
+      socket.on("chat-message", onChatMessage);
+    }, 0);
 
     return () => {
-      socket.disconnect();
-      socketRef.current = null;
+      clearTimeout(timer);
+      if (socket) {
+        socket.removeAllListeners();
+        socket.disconnect();
+        socketRef.current = null;
+      }
     };
   }, [roomId, name, password]);
 

@@ -20,7 +20,7 @@ export class AudioEngine {
       this.gainNode = this.ctx.createGain();
       this.gainNode.gain.value = GAIN_BOOST;
       this.analyser = this.ctx.createAnalyser();
-      this.analyser.fftSize = 512;
+      this.analyser.fftSize = 256;
       this.destination = this.ctx.createMediaStreamDestination();
       this.gainNode.connect(this.destination);
     }
@@ -103,44 +103,39 @@ export class AudioEngine {
 }
 
 export class RemoteAudioManager {
-  private ctx: AudioContext;
+  private ctx: AudioContext | null = null;
   private gains = new Map<string, GainNode>();
   private analysers = new Map<string, AnalyserNode>();
   private sources = new Map<string, MediaStreamAudioSourceNode>();
-  private audioElements = new Map<string, HTMLAudioElement>();
 
-  constructor() {
-    this.ctx = new AudioContext();
+  private getContext(): AudioContext {
+    if (!this.ctx) {
+      this.ctx = new AudioContext();
+    }
+    return this.ctx;
   }
 
-  addStream(peerId: string, stream: MediaStream): HTMLAudioElement {
+  addStream(peerId: string, stream: MediaStream): void {
     this.removeStream(peerId);
 
-    if (this.ctx.state === "suspended") {
-      this.ctx.resume();
+    const ctx = this.getContext();
+    if (ctx.state === "suspended") {
+      ctx.resume();
     }
 
-    const audio = new Audio();
-    audio.srcObject = stream;
-    audio.volume = 0;
-    audio.autoplay = true;
-
-    const source = this.ctx.createMediaStreamSource(stream);
-    const analyser = this.ctx.createAnalyser();
-    analyser.fftSize = 512;
-    const gain = this.ctx.createGain();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    const gain = ctx.createGain();
     gain.gain.value = GAIN_BOOST;
 
     source.connect(analyser);
     analyser.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(ctx.destination);
 
     this.sources.set(peerId, source);
     this.analysers.set(peerId, analyser);
     this.gains.set(peerId, gain);
-    this.audioElements.set(peerId, audio);
-
-    return audio;
   }
 
   getAnalysers(): Map<string, AnalyserNode> {
@@ -149,7 +144,7 @@ export class RemoteAudioManager {
 
   setVolume(peerId: string, value: number) {
     const gain = this.gains.get(peerId);
-    if (gain) {
+    if (gain && this.ctx) {
       gain.gain.setTargetAtTime(value * GAIN_BOOST, this.ctx.currentTime, 0.01);
     }
   }
@@ -158,21 +153,17 @@ export class RemoteAudioManager {
     this.sources.get(peerId)?.disconnect();
     this.analysers.get(peerId)?.disconnect();
     this.gains.get(peerId)?.disconnect();
-    const audio = this.audioElements.get(peerId);
-    if (audio) {
-      audio.pause();
-      audio.srcObject = null;
-    }
     this.sources.delete(peerId);
     this.analysers.delete(peerId);
     this.gains.delete(peerId);
-    this.audioElements.delete(peerId);
   }
 
   destroy() {
-    for (const [id] of this.sources) {
+    const ids = [...this.sources.keys()];
+    for (const id of ids) {
       this.removeStream(id);
     }
-    this.ctx.close();
+    this.ctx?.close();
+    this.ctx = null;
   }
 }
