@@ -106,7 +106,7 @@ export class RemoteAudioManager {
   private ctx: AudioContext | null = null;
   private gains = new Map<string, GainNode>();
   private analysers = new Map<string, AnalyserNode>();
-  private sources = new Map<string, MediaElementAudioSourceNode>();
+  private sources = new Map<string, MediaStreamAudioSourceNode>();
   private audioElements = new Map<string, HTMLAudioElement>();
 
   private getContext(): AudioContext {
@@ -124,15 +124,16 @@ export class RemoteAudioManager {
       ctx.resume();
     }
 
-    // An HTMLAudioElement is required to drive a WebRTC MediaStream on
-    // Firefox and Safari.  createMediaElementSource() redirects the
-    // element's decoded output into the Web Audio graph so the element
-    // itself produces no direct speaker output — giving us a single
-    // decode pipeline on all engines.
+    // A silent HTMLAudioElement is needed to activate a WebRTC MediaStream
+    // on Firefox and Safari; without it createMediaStreamSource produces
+    // silence on those engines.  The element is muted (volume 0) so only
+    // the Web Audio graph drives speaker output.
     const audio = new Audio();
     audio.srcObject = stream;
+    audio.volume = 0;
+    audio.play().catch(() => {});
 
-    const source = ctx.createMediaElementSource(audio);
+    const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
     const gain = ctx.createGain();
@@ -141,8 +142,6 @@ export class RemoteAudioManager {
     source.connect(analyser);
     analyser.connect(gain);
     gain.connect(ctx.destination);
-
-    audio.play().catch(() => {});
 
     this.sources.set(peerId, source);
     this.analysers.set(peerId, analyser);
