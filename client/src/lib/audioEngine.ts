@@ -124,13 +124,14 @@ export class RemoteAudioManager {
       ctx.resume();
     }
 
-    // A muted HTMLAudioElement activates the MediaStream in Firefox/Safari
-    // so createMediaStreamSource can produce audio.  Using `muted` (not
-    // volume=0) tells the browser it can skip full audio rendering, which
-    // avoids the decode-buffer memory overhead that volume=0 incurs.
+    // A silent HTMLAudioElement activates the MediaStream in Firefox/Safari
+    // so createMediaStreamSource can produce audio.  volume=0 keeps the
+    // element's own output inaudible while still forcing the browser to
+    // actively decode the stream (muted=true skips decoding entirely and
+    // breaks the pipeline).
     const audio = new Audio();
     audio.srcObject = stream;
-    audio.muted = true;
+    audio.volume = 0;
     audio.play().catch(() => {});
 
     const source = ctx.createMediaStreamSource(stream);
