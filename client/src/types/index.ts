@@ -16,6 +16,7 @@ export interface ChatMessage {
     senderName: string;
     text: string;
   };
+  gifUrl?: string;
 }
 
 export interface PollOption {

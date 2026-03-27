@@ -7,6 +7,7 @@ import { formatMessage } from "../lib/messageFormatter";
 import { avatarTextColor } from "../lib/avatarColor";
 import FormattingToolbar, { applyFormat } from "./FormattingToolbar";
 import EmojiPicker from "./EmojiPicker";
+import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
 import PollDisplay from "./PollDisplay";
 
@@ -25,6 +26,7 @@ function formatTime(ts: number): string {
 export default function ChatPanel({ socket, chatHistory, localId }: Props) {
   const [text, setText] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showGifPicker, setShowGifPicker] = useState(false);
   const [showPollCreator, setShowPollCreator] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -110,6 +112,23 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
     socket.emit("poll-create", data);
   }
 
+  function handleGifSelect(gifUrl: string, gifTitle: string) {
+    if (!socket) return;
+    const payload: { text: string; gifUrl: string; replyTo?: { id: string; senderName: string; text: string } } = {
+      text: gifTitle,
+      gifUrl,
+    };
+    if (replyingTo) {
+      payload.replyTo = {
+        id: replyingTo.id,
+        senderName: replyingTo.senderName,
+        text: replyingTo.text,
+      };
+      setReplyingTo(null);
+    }
+    socket.emit("chat-message", payload);
+  }
+
   function handleEmojiSelect(emoji: string) {
     const textarea = textareaRef.current;
     if (textarea) {
@@ -179,7 +198,27 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
           <span className="text-[10px] text-gray-600">{formatTime(msg.timestamp)}</span>
         </div>
 
-        <div className="text-sm text-gray-300 leading-relaxed">{formatMessage(msg.text)}</div>
+        {msg.gifUrl ? (
+          <div className="mt-1">
+            <a href="https://giphy.com" target="_blank" rel="noopener noreferrer" className="group/gif inline-block">
+              <img
+                src={msg.gifUrl}
+                alt={msg.text || "GIF"}
+                className="rounded-lg max-w-full object-cover group-hover/gif:brightness-90 transition-all"
+                style={{ maxHeight: 200, maxWidth: 260 }}
+                loading="lazy"
+              />
+            </a>
+            <p className="text-[10px] text-gray-600 mt-0.5">
+              via{" "}
+              <a href="https://giphy.com" target="_blank" rel="noopener noreferrer" className="hover:text-gray-400 transition-colors">
+                GIPHY
+              </a>
+            </p>
+          </div>
+        ) : (
+          <div className="text-sm text-gray-300 leading-relaxed">{formatMessage(msg.text)}</div>
+        )}
 
         {/* Reaction badges */}
         {reactionEntries.length > 0 && (
@@ -278,6 +317,12 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
             onClose={() => setShowEmojiPicker(false)}
           />
         )}
+        {showGifPicker && (
+          <GifPicker
+            onSelect={handleGifSelect}
+            onClose={() => setShowGifPicker(false)}
+          />
+        )}
         {showPollCreator && (
           <PollCreator
             onSubmit={handleCreatePoll}
@@ -292,7 +337,7 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
             <div className="flex items-center gap-0.5">
               <button
                 type="button"
-                onClick={() => { setShowPollCreator((v) => !v); setShowEmojiPicker(false); }}
+                onClick={() => { setShowPollCreator((v) => !v); setShowEmojiPicker(false); setShowGifPicker(false); }}
                 className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
                 title="Create poll"
               >
@@ -300,7 +345,19 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
               </button>
               <button
                 type="button"
-                onClick={() => { setShowEmojiPicker((v) => !v); setShowPollCreator(false); }}
+                onClick={() => { setShowGifPicker((v) => !v); setShowEmojiPicker(false); setShowPollCreator(false); }}
+                className={`px-1.5 py-1 rounded text-xs font-bold tracking-tight transition-colors cursor-pointer ${
+                  showGifPicker
+                    ? "bg-indigo-600 text-white"
+                    : "text-gray-400 hover:text-gray-200 hover:bg-gray-700"
+                }`}
+                title="Send a GIF"
+              >
+                GIF
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowEmojiPicker((v) => !v); setShowPollCreator(false); setShowGifPicker(false); }}
                 className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
                 title="Emoji"
               >

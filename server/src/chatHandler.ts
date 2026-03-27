@@ -3,14 +3,17 @@ import { nanoid } from "nanoid";
 import { addChatMessage, getRoom, type ChatMessage } from "./roomManager.js";
 import { socketRoomMap } from "./signaling.js";
 
+const GIPHY_CDN = "https://media";
+
 interface IncomingChatMessage {
   text: string;
   replyTo?: { id: string; senderName: string; text: string };
+  gifUrl?: string;
 }
 
 export function setupChat(io: Server): void {
   io.on("connection", (socket: Socket) => {
-    socket.on("chat-message", ({ text, replyTo }: IncomingChatMessage) => {
+    socket.on("chat-message", ({ text, replyTo, gifUrl }: IncomingChatMessage) => {
       const roomId = socketRoomMap.get(socket.id);
       if (!roomId) return;
 
@@ -20,8 +23,16 @@ export function setupChat(io: Server): void {
       const participant = room.participants.get(socket.id);
       if (!participant) return;
 
-      const trimmed = text.trim();
-      if (!trimmed) return;
+      const trimmed = text?.trim() ?? "";
+
+      // Validate gifUrl is a GIPHY CDN URL to prevent abuse
+      const safeGifUrl =
+        typeof gifUrl === "string" && gifUrl.startsWith(GIPHY_CDN)
+          ? gifUrl
+          : undefined;
+
+      // A message must have text or a GIF
+      if (!trimmed && !safeGifUrl) return;
 
       const msg: ChatMessage = {
         id: nanoid(10),
@@ -31,6 +42,10 @@ export function setupChat(io: Server): void {
         timestamp: Date.now(),
         reactions: {},
       };
+
+      if (safeGifUrl) {
+        msg.gifUrl = safeGifUrl;
+      }
 
       if (replyTo?.id && replyTo.senderName && replyTo.text) {
         msg.replyTo = {

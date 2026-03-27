@@ -1,9 +1,11 @@
+import "./loadEnv.js";
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
 import { router as roomRouter } from "./roomManager.js";
+import { giphyRouter } from "./giphyRouter.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
@@ -24,6 +26,7 @@ const io = new Server(httpServer, {
 
 app.use(express.json());
 app.use("/api", roomRouter);
+app.use("/api/giphy", giphyRouter);
 
 setupSignaling(io);
 setupChat(io);
