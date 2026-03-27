@@ -13,13 +13,39 @@ export interface ChatMessage {
   senderName: string;
   text: string;
   timestamp: number;
+  reactions: Record<string, string[]>;
+  replyTo?: {
+    id: string;
+    senderName: string;
+    text: string;
+  };
 }
+
+export interface PollOption {
+  id: string;
+  text: string;
+  voterIds: string[];
+  voterNames: string[];
+}
+
+export interface PollMessage {
+  id: string;
+  type: "poll";
+  senderId: string;
+  senderName: string;
+  question: string;
+  options: PollOption[];
+  allowMultiple: boolean;
+  timestamp: number;
+}
+
+export type ChatEntry = ChatMessage | PollMessage;
 
 export interface Room {
   id: string;
   password: string | null;
   participants: Map<string, Participant>;
-  chatHistory: ChatMessage[];
+  chatHistory: ChatEntry[];
 }
 
 const MAX_CHAT_HISTORY = 200;
@@ -77,7 +103,7 @@ export function setMuted(roomId: string, socketId: string, isMuted: boolean): vo
   if (p) p.isMuted = isMuted;
 }
 
-export function addChatMessage(roomId: string, msg: ChatMessage): void {
+export function addChatMessage(roomId: string, msg: ChatEntry): void {
   const room = rooms.get(roomId);
   if (!room) return;
   room.chatHistory.push(msg);

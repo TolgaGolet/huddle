@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { router as roomRouter } from "./roomManager.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
+import { setupPolls } from "./pollHandler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -26,6 +27,7 @@ app.use("/api", roomRouter);
 
 setupSignaling(io);
 setupChat(io);
+setupPolls(io);
 
 const clientDist = path.join(__dirname, "../../client/dist");
 app.use(express.static(clientDist));

@@ -1,13 +1,22 @@
-import { useState, useRef, useEffect } from "react";
-import { Send } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Send, Smile, BarChart3, Reply, X } from "lucide-react";
 import type { Socket } from "socket.io-client";
-import type { ChatMessage } from "../types";
+import type { ChatMessage, ChatEntry } from "../types";
+import { isPollMessage } from "../types";
+import { formatMessage } from "../lib/messageFormatter";
+import { avatarTextColor } from "../lib/avatarColor";
+import FormattingToolbar, { applyFormat } from "./FormattingToolbar";
+import EmojiPicker from "./EmojiPicker";
+import PollCreator from "./PollCreator";
+import PollDisplay from "./PollDisplay";
 
 interface Props {
   socket: Socket | null;
-  chatHistory: ChatMessage[];
+  chatHistory: ChatEntry[];
   localId: string;
 }
+
+const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "👌"];
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -15,61 +24,318 @@ function formatTime(ts: number): string {
 
 export default function ChatPanel({ socket, chatHistory, localId }: Props) {
   const [text, setText] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showPollCreator, setShowPollCreator] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory.length]);
 
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        doSend();
+        return;
+      }
+
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+
+      let format: { prefix: string; suffix: string } | null = null;
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === "b") format = { prefix: "**", suffix: "**" };
+        else if (e.key === "i") format = { prefix: "*", suffix: "*" };
+        else if (e.key === "e") format = { prefix: "`", suffix: "`" };
+        else if (e.key === "X" && e.shiftKey) format = { prefix: "~~", suffix: "~~" };
+      }
+
+      if (format) {
+        e.preventDefault();
+        const { newText, cursorStart, cursorEnd } = applyFormat(
+          textarea,
+          text,
+          format.prefix,
+          format.suffix,
+        );
+        setText(newText);
+        requestAnimationFrame(() => {
+          textarea.focus();
+          textarea.setSelectionRange(cursorStart, cursorEnd);
+        });
+      }
+    },
+    [text],
+  );
+
+  function doSend() {
+    if (!text.trim() || !socket) return;
+    const payload: { text: string; replyTo?: { id: string; senderName: string; text: string } } = {
+      text: text.trim(),
+    };
+    if (replyingTo) {
+      payload.replyTo = {
+        id: replyingTo.id,
+        senderName: replyingTo.senderName,
+        text: replyingTo.text,
+      };
+    }
+    socket.emit("chat-message", payload);
+    setText("");
+    setReplyingTo(null);
+    textareaRef.current?.focus();
+  }
+
   function send(e: React.FormEvent) {
     e.preventDefault();
-    if (!text.trim() || !socket) return;
-    socket.emit("chat-message", { text: text.trim() });
-    setText("");
+    doSend();
+  }
+
+  function handleReaction(messageId: string, emoji: string) {
+    if (!socket) return;
+    socket.emit("chat-reaction", { messageId, emoji });
+  }
+
+  function handlePollVote(pollId: string, optionId: string) {
+    if (!socket) return;
+    socket.emit("poll-vote", { pollId, optionId });
+  }
+
+  function handleCreatePoll(data: { question: string; options: string[]; allowMultiple: boolean }) {
+    if (!socket) return;
+    socket.emit("poll-create", data);
+  }
+
+  function handleEmojiSelect(emoji: string) {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const newText = text.slice(0, start) + emoji + text.slice(end);
+      setText(newText);
+      const newPos = start + emoji.length;
+      requestAnimationFrame(() => {
+        textarea.focus();
+        textarea.setSelectionRange(newPos, newPos);
+      });
+    } else {
+      setText(text + emoji);
+    }
+  }
+
+  function scrollToMessage(messageId: string) {
+    const el = messageRefs.current.get(messageId);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("bg-indigo-500/10");
+      setTimeout(() => el.classList.remove("bg-indigo-500/10"), 1500);
+    }
+  }
+
+  function setMessageRef(id: string, el: HTMLDivElement | null) {
+    if (el) {
+      messageRefs.current.set(id, el);
+    } else {
+      messageRefs.current.delete(id);
+    }
+  }
+
+  function startReply(msg: ChatMessage) {
+    setReplyingTo(msg);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
+  function renderChatMessage(msg: ChatMessage) {
+    const reactions = msg.reactions || {};
+    const reactionEntries = Object.entries(reactions).filter(([, names]) => names.length > 0);
+
+    return (
+      <div
+        key={msg.id}
+        ref={(el) => setMessageRef(msg.id, el)}
+        className="group relative rounded-lg px-2 py-1 -mx-2 transition-colors hover:bg-gray-800/40"
+      >
+        {/* Reply quote */}
+        {msg.replyTo && (
+          <button
+            type="button"
+            onClick={() => scrollToMessage(msg.replyTo!.id)}
+            className="flex items-center gap-1.5 mb-1 pl-2 border-l-2 border-indigo-500/50 cursor-pointer hover:bg-gray-800/60 rounded-r py-0.5 pr-2 transition-colors"
+          >
+            <Reply size={10} className="text-gray-500 shrink-0" />
+            <span className="text-[11px] text-indigo-400 font-medium shrink-0">{msg.replyTo.senderName}</span>
+            <span className="text-[11px] text-gray-500 truncate max-w-48">{msg.replyTo.text}</span>
+          </button>
+        )}
+
+        <div className="flex items-baseline gap-2">
+          <span className={`text-sm font-semibold ${avatarTextColor(msg.senderName)}`}>
+            {msg.senderName}
+          </span>
+          <span className="text-[10px] text-gray-600">{formatTime(msg.timestamp)}</span>
+        </div>
+
+        <div className="text-sm text-gray-300 leading-relaxed">{formatMessage(msg.text)}</div>
+
+        {/* Reaction badges */}
+        {reactionEntries.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {reactionEntries.map(([emoji, names]) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => handleReaction(msg.id, emoji)}
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs border transition-colors cursor-pointer ${
+                  names.includes(msg.senderName === localId ? msg.senderName : "")
+                    ? "border-indigo-500/50 bg-indigo-500/10"
+                    : "border-gray-700 bg-gray-800/60 hover:border-gray-600"
+                }`}
+                title={names.join(", ")}
+              >
+                <span>{emoji}</span>
+                <span className="text-gray-400">{names.length}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Action bar on hover */}
+        <div className="absolute -top-3 right-0 hidden group-hover:flex items-center bg-gray-800 border border-gray-700 rounded-lg shadow-lg overflow-hidden">
+          {REACTION_EMOJIS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              onClick={() => handleReaction(msg.id, emoji)}
+              className="px-1.5 py-1 hover:bg-gray-700 transition-colors cursor-pointer text-sm"
+              title={emoji}
+            >
+              {emoji}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => startReply(msg)}
+            className="px-2 py-1 hover:bg-gray-700 transition-colors cursor-pointer text-gray-400 hover:text-gray-200 border-l border-gray-700"
+            title="Reply"
+          >
+            <Reply size={13} />
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="flex flex-col h-full">
+      {/* Messages list */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {chatHistory.length === 0 && (
           <p className="text-gray-600 text-sm text-center mt-8">No messages yet. Say something!</p>
         )}
-        {chatHistory.map((msg) => (
-          <div key={msg.id} className="group">
-            <div className="flex items-baseline gap-2">
-              <span
-                className={`text-sm font-semibold ${
-                  msg.senderId === localId ? "text-indigo-400" : "text-gray-300"
-                }`}
-              >
-                {msg.senderName}
-              </span>
-              <span className="text-[10px] text-gray-600">{formatTime(msg.timestamp)}</span>
-            </div>
-            <p className="text-sm text-gray-300 leading-relaxed">{msg.text}</p>
-          </div>
-        ))}
+        {chatHistory.map((entry) =>
+          isPollMessage(entry) ? (
+            <PollDisplay
+              key={entry.id}
+              poll={entry}
+              localId={localId}
+              onVote={handlePollVote}
+            />
+          ) : (
+            renderChatMessage(entry)
+          ),
+        )}
         <div ref={bottomRef} />
       </div>
 
-      <form onSubmit={send} className="px-4 pb-4">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Type a message..."
-            className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+      {/* Input area */}
+      <div className="px-4 pb-4 relative">
+        {/* Reply preview */}
+        {replyingTo && (
+          <div className="flex items-center gap-2 mb-2 px-3 py-2 bg-gray-800/60 border border-gray-700 rounded-lg">
+            <Reply size={12} className="text-indigo-400 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <span className="text-xs text-indigo-400 font-medium">{replyingTo.senderName}</span>
+              <p className="text-xs text-gray-500 truncate">{replyingTo.text}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyingTo(null)}
+              className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
+        {/* Popovers — outside the form to avoid nested-form issues */}
+        {showEmojiPicker && (
+          <EmojiPicker
+            onSelect={handleEmojiSelect}
+            onClose={() => setShowEmojiPicker(false)}
           />
-          <button
-            type="submit"
-            disabled={!text.trim()}
-            className="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-          >
-            <Send size={16} />
-          </button>
-        </div>
-      </form>
+        )}
+        {showPollCreator && (
+          <PollCreator
+            onSubmit={handleCreatePoll}
+            onClose={() => setShowPollCreator(false)}
+          />
+        )}
+
+        <form onSubmit={send} className="space-y-1">
+          {/* Formatting toolbar row */}
+          <div className="flex items-center justify-between">
+            <FormattingToolbar textareaRef={textareaRef} text={text} setText={setText} />
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => { setShowPollCreator((v) => !v); setShowEmojiPicker(false); }}
+                className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
+                title="Create poll"
+              >
+                <BarChart3 size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowEmojiPicker((v) => !v); setShowPollCreator(false); }}
+                className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
+                title="Emoji"
+              >
+                <Smile size={14} />
+              </button>
+            </div>
+          </div>
+
+          {/* Textarea + send */}
+          <div className="flex gap-2">
+            <textarea
+              ref={textareaRef}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Type a message..."
+              rows={1}
+              className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors resize-none min-h-[36px] max-h-28 overflow-y-auto"
+              style={{ height: "auto" }}
+              onInput={(e) => {
+                const target = e.target as HTMLTextAreaElement;
+                target.style.height = "auto";
+                target.style.height = Math.min(target.scrollHeight, 112) + "px";
+              }}
+            />
+            <button
+              type="submit"
+              disabled={!text.trim()}
+              className="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer self-end"
+            >
+              <Send size={16} />
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

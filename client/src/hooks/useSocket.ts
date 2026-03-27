@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import type { Participant, ChatMessage } from "../types";
+import type { Participant, ChatMessage, ChatEntry, PollMessage } from "../types";
 import { playJoinSound, playLeaveSound } from "../lib/notificationSounds";
 
 interface UseSocketOptions {
@@ -12,7 +12,7 @@ interface UseSocketOptions {
 interface UseSocketReturn {
   socket: Socket | null;
   participants: Participant[];
-  chatHistory: ChatMessage[];
+  chatHistory: ChatEntry[];
   connected: boolean;
   joinError: string | null;
   currentScreenSharer: string | null;
@@ -23,7 +23,7 @@ const MAX_CLIENT_CHAT = 200;
 export function useSocket({ roomId, name, password }: UseSocketOptions): UseSocketReturn {
   const socketRef = useRef<Socket | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [chatHistory, setChatHistory] = useState<ChatEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [currentScreenSharer, setCurrentScreenSharer] = useState<string | null>(null);
@@ -33,14 +33,8 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
 
     let socket: Socket | null = null;
 
-    // Defer socket creation by one macrotask. React StrictMode (development)
-    // runs effect cleanup immediately after the first run before re-mounting.
-    // Creating a WebSocket and calling close() while it is still in the
-    // CONNECTING state produces a browser-level error that cannot be caught in
-    // JS. Deferring with setTimeout means the cleanup can clearTimeout before
-    // the socket is ever opened, so no WebSocket is created on the discarded
-    // StrictMode run. In production StrictMode is inactive, so the 0ms delay
-    // has no observable effect.
+    // Defer socket creation by one macrotask so React StrictMode cleanup
+    // can cancel before a WebSocket is actually opened.
     const timer = setTimeout(() => {
       socket = io({ transports: ["websocket"] });
       socketRef.current = socket;
@@ -57,7 +51,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         socket!.disconnect();
       };
 
-      const onRoomJoined = (data: { participants: Participant[]; chatHistory: ChatMessage[]; screenSharer: string | null }) => {
+      const onRoomJoined = (data: { participants: Participant[]; chatHistory: ChatEntry[]; screenSharer: string | null }) => {
         setParticipants(data.participants);
         setChatHistory(data.chatHistory.slice(-MAX_CLIENT_CHAT));
         setCurrentScreenSharer(data.screenSharer);
@@ -95,6 +89,29 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         });
       };
 
+      const onChatReactionUpdate = ({ messageId, reactions }: { messageId: string; reactions: Record<string, string[]> }) => {
+        setChatHistory((prev) =>
+          prev.map((entry) =>
+            entry.id === messageId && !("type" in entry)
+              ? { ...entry, reactions }
+              : entry,
+          ),
+        );
+      };
+
+      const onPollCreate = (poll: PollMessage) => {
+        setChatHistory((prev) => {
+          const next = [...prev, poll];
+          return next.length > MAX_CLIENT_CHAT ? next.slice(-MAX_CLIENT_CHAT) : next;
+        });
+      };
+
+      const onPollUpdate = (poll: PollMessage) => {
+        setChatHistory((prev) =>
+          prev.map((entry) => (entry.id === poll.id ? poll : entry)),
+        );
+      };
+
       socket.on("connect", onConnect);
       socket.on("disconnect", onDisconnect);
       socket.on("error", onError);
@@ -105,6 +122,9 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       socket.on("screen-share-started", onScreenShareStarted);
       socket.on("screen-share-stopped", onScreenShareStopped);
       socket.on("chat-message", onChatMessage);
+      socket.on("chat-reaction-update", onChatReactionUpdate);
+      socket.on("poll-create", onPollCreate);
+      socket.on("poll-update", onPollUpdate);
     }, 0);
 
     return () => {

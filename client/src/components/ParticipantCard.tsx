@@ -1,5 +1,6 @@
 import { Mic, MicOff, EllipsisVertical } from "lucide-react";
 import type { Participant } from "../types";
+import { avatarBgColor } from "../lib/avatarColor";
 
 interface Props {
   participant: Participant;
@@ -18,23 +19,6 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-const COLORS = [
-  "bg-indigo-600",
-  "bg-emerald-600",
-  "bg-rose-600",
-  "bg-amber-600",
-  "bg-cyan-600",
-  "bg-violet-600",
-  "bg-pink-600",
-  "bg-teal-600",
-];
-
-function avatarColor(name: string): string {
-  let hash = 0;
-  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
-  return COLORS[Math.abs(hash) % COLORS.length];
-}
-
 export default function ParticipantCard({ participant, isSpeaking, isLocal, onContextMenu, onMenuClick }: Props) {
   return (
     <div
@@ -42,7 +26,7 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, onCo
       className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800/60 transition-colors select-none group"
     >
       <div
-        className={`relative flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ${avatarColor(participant.name)} ${
+        className={`relative flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold ${avatarBgColor(participant.name)} ${
           isSpeaking && !participant.isMuted ? "ring-2 ring-green-400 ring-offset-2 ring-offset-gray-900" : ""
         } transition-shadow`}
       >
