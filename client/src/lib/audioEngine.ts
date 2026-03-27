@@ -3,7 +3,7 @@ import {
   RnnoiseWorkletNode,
 } from "@sapphi-red/web-noise-suppressor";
 
-const GAIN_BOOST = 4;
+const GAIN_BOOST = 3.5;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -138,9 +138,13 @@ export class RemoteAudioManager {
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
 
-    // WebRTC audio is mono. Firefox does not auto-upmix mono→stereo before
-    // reaching ctx.destination, so audio only comes out of the left ear.
-    // Forcing stereo here makes all browsers output to both L and R.
+    // Firefox may output WebRTC audio as a 2-channel stream with data only
+    // in the left channel (instead of true mono).  Force the analyser to
+    // collapse everything to 1 channel first so the downstream upmix works.
+    analyser.channelCount = 1;
+    analyser.channelCountMode = "explicit";
+    analyser.channelInterpretation = "speakers";
+
     const gain = ctx.createGain();
     gain.gain.value = GAIN_BOOST;
     gain.channelCount = 2;

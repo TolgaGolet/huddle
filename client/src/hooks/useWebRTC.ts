@@ -26,6 +26,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
   const screenTrackRef = useRef<MediaStreamTrack | null>(null);
   const screenSendersRef = useRef<Map<string, RTCRtpSender>>(new Map());
   const makingOfferRef = useRef<Map<string, boolean>>(new Map());
+  const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
 
   localStreamRef.current = localStream;
   socketRef.current = socket;
@@ -38,6 +39,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
       peersRef.current.delete(peerId);
     }
     makingOfferRef.current.delete(peerId);
+    pendingCandidatesRef.current.delete(peerId);
     remoteAudioRef.current.removeStream(peerId);
     screenSendersRef.current.delete(peerId);
     setRemoteAnalysers(new Map(remoteAudioRef.current.getAnalysers()));
@@ -125,6 +127,18 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
     if (!socket) return;
     const myId = socket.id;
 
+    const flushCandidates = async (peerId: string) => {
+      const pc = peersRef.current.get(peerId);
+      const candidates = pendingCandidatesRef.current.get(peerId);
+      if (!pc || !candidates) return;
+      pendingCandidatesRef.current.delete(peerId);
+      for (const c of candidates) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        } catch { /* stale candidate */ }
+      }
+    };
+
     const handleOffer = async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
       try {
         let pc = peersRef.current.get(from);
@@ -139,6 +153,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
         if (offerCollision && !isPolite) return;
 
         await pc.setRemoteDescription(offer);
+        await flushCandidates(from);
         await pc.setLocalDescription();
         socket.emit("answer", { to: from, answer: pc.localDescription });
       } catch (err) {
@@ -152,6 +167,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
         if (!pc) return;
         if (pc.signalingState === "stable") return;
         await pc.setRemoteDescription(answer);
+        await flushCandidates(from);
       } catch (err) {
         console.error("Error handling answer from", from, ":", err);
       }
@@ -159,7 +175,13 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped }: UseWebR
 
     const handleIceCandidate = async ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
       const pc = peersRef.current.get(from);
-      if (!pc) return;
+      if (!pc || !pc.remoteDescription) {
+        if (!pendingCandidatesRef.current.has(from)) {
+          pendingCandidatesRef.current.set(from, []);
+        }
+        pendingCandidatesRef.current.get(from)!.push(candidate);
+        return;
+      }
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch {
