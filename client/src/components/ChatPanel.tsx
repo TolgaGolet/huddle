@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Smile, BarChart3, Reply, X } from "lucide-react";
+import { Send, Smile, BarChart3, Reply, X, ChevronDown } from "lucide-react";
 import type { Socket } from "socket.io-client";
 import type { ChatMessage, ChatEntry } from "../types";
 import { isPollMessage } from "../types";
@@ -30,12 +30,38 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
   const [showPollCreator, setShowPollCreator] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const isAtBottomRef = useRef(true);
+  const prevHistoryLenRef = useRef(chatHistory.length);
+  const [newMessageCount, setNewMessageCount] = useState(0);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 50;
+    isAtBottomRef.current = atBottom;
+    if (atBottom) setNewMessageCount(0);
+  }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const prevLen = prevHistoryLenRef.current;
+    const newLen = chatHistory.length;
+    prevHistoryLenRef.current = newLen;
+    if (newLen <= prevLen) return;
+
+    if (isAtBottomRef.current) {
+      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }));
+    } else {
+      setNewMessageCount((c) => c + (newLen - prevLen));
+    }
   }, [chatHistory.length]);
+
+  function scrollToBottom() {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    setNewMessageCount(0);
+  }
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -86,6 +112,7 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
         text: replyingTo.text,
       };
     }
+    isAtBottomRef.current = true;
     socket.emit("chat-message", payload);
     setText("");
     setReplyingTo(null);
@@ -109,6 +136,7 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
 
   function handleCreatePoll(data: { question: string; options: string[]; allowMultiple: boolean }) {
     if (!socket) return;
+    isAtBottomRef.current = true;
     socket.emit("poll-create", data);
   }
 
@@ -126,6 +154,7 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
       };
       setReplyingTo(null);
     }
+    isAtBottomRef.current = true;
     socket.emit("chat-message", payload);
   }
 
@@ -271,23 +300,40 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
   return (
     <div className="flex flex-col h-full">
       {/* Messages list */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {chatHistory.length === 0 && (
-          <p className="text-gray-600 text-sm text-center mt-8">No messages yet. Say something!</p>
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="h-full overflow-y-auto px-4 py-3 space-y-3"
+        >
+          {chatHistory.length === 0 && (
+            <p className="text-gray-600 text-sm text-center mt-8">No messages yet. Say something!</p>
+          )}
+          {chatHistory.map((entry) =>
+            isPollMessage(entry) ? (
+              <PollDisplay
+                key={entry.id}
+                poll={entry}
+                localId={localId}
+                onVote={handlePollVote}
+              />
+            ) : (
+              renderChatMessage(entry)
+            ),
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {newMessageCount > 0 && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="absolute bottom-3 right-4 flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium shadow-lg transition-colors cursor-pointer z-10"
+          >
+            {newMessageCount} new {newMessageCount === 1 ? "message" : "messages"}
+            <ChevronDown size={14} />
+          </button>
         )}
-        {chatHistory.map((entry) =>
-          isPollMessage(entry) ? (
-            <PollDisplay
-              key={entry.id}
-              poll={entry}
-              localId={localId}
-              onVote={handlePollVote}
-            />
-          ) : (
-            renderChatMessage(entry)
-          ),
-        )}
-        <div ref={bottomRef} />
       </div>
 
       {/* Input area */}

@@ -13,10 +13,39 @@ export class AudioEngine {
   private source: MediaStreamAudioSourceNode | null = null;
   private rnnoiseNode: RnnoiseWorkletNode | null = null;
   private rnnoiseReady = false;
+  private lockReleaser: (() => void) | null = null;
+  private keepAliveHandler: (() => void) | null = null;
+
+  private acquireKeepAlive() {
+    if (navigator.locks) {
+      navigator.locks.request("huddle-local-audio", () =>
+        new Promise<void>((resolve) => { this.lockReleaser = resolve; }),
+      );
+    }
+    this.keepAliveHandler = () => {
+      if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+    };
+    document.addEventListener("visibilitychange", this.keepAliveHandler);
+    window.addEventListener("focus", this.keepAliveHandler);
+  }
+
+  private releaseKeepAlive() {
+    this.lockReleaser?.();
+    this.lockReleaser = null;
+    if (this.keepAliveHandler) {
+      document.removeEventListener("visibilitychange", this.keepAliveHandler);
+      window.removeEventListener("focus", this.keepAliveHandler);
+      this.keepAliveHandler = null;
+    }
+  }
 
   private getContext(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: 48000 });
+      this.ctx.onstatechange = () => {
+        if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+      };
+      this.acquireKeepAlive();
       this.gainNode = this.ctx.createGain();
       this.gainNode.gain.value = GAIN_BOOST;
       this.analyser = this.ctx.createAnalyser();
@@ -93,6 +122,7 @@ export class AudioEngine {
   }
 
   destroy() {
+    this.releaseKeepAlive();
     this.source?.disconnect();
     this.rnnoiseNode?.destroy();
     this.analyser?.disconnect();
@@ -108,10 +138,39 @@ export class RemoteAudioManager {
   private analysers = new Map<string, AnalyserNode>();
   private sources = new Map<string, MediaStreamAudioSourceNode>();
   private audioElements = new Map<string, HTMLAudioElement>();
+  private lockReleaser: (() => void) | null = null;
+  private keepAliveHandler: (() => void) | null = null;
+
+  private acquireKeepAlive() {
+    if (navigator.locks) {
+      navigator.locks.request("huddle-remote-audio", () =>
+        new Promise<void>((resolve) => { this.lockReleaser = resolve; }),
+      );
+    }
+    this.keepAliveHandler = () => {
+      if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+    };
+    document.addEventListener("visibilitychange", this.keepAliveHandler);
+    window.addEventListener("focus", this.keepAliveHandler);
+  }
+
+  private releaseKeepAlive() {
+    this.lockReleaser?.();
+    this.lockReleaser = null;
+    if (this.keepAliveHandler) {
+      document.removeEventListener("visibilitychange", this.keepAliveHandler);
+      window.removeEventListener("focus", this.keepAliveHandler);
+      this.keepAliveHandler = null;
+    }
+  }
 
   private getContext(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext();
+      this.ctx.onstatechange = () => {
+        if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+      };
+      this.acquireKeepAlive();
     }
     return this.ctx;
   }
@@ -189,6 +248,7 @@ export class RemoteAudioManager {
   }
 
   destroy() {
+    this.releaseKeepAlive();
     const ids = [...this.sources.keys()];
     for (const id of ids) {
       this.removeStream(id);
