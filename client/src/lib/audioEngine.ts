@@ -3,7 +3,7 @@ import {
   RnnoiseWorkletNode,
 } from "@sapphi-red/web-noise-suppressor";
 
-const GAIN_BOOST = 4;
+const GAIN_BOOST = 3.5;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -106,7 +106,8 @@ export class RemoteAudioManager {
   private ctx: AudioContext | null = null;
   private gains = new Map<string, GainNode>();
   private analysers = new Map<string, AnalyserNode>();
-  private sources = new Map<string, MediaStreamAudioSourceNode>();
+  private sources = new Map<string, MediaElementAudioSourceNode>();
+  private audioElements = new Map<string, HTMLAudioElement>();
 
   private getContext(): AudioContext {
     if (!this.ctx) {
@@ -123,7 +124,15 @@ export class RemoteAudioManager {
       ctx.resume();
     }
 
-    const source = ctx.createMediaStreamSource(stream);
+    // An HTMLAudioElement is required to drive a WebRTC MediaStream on
+    // Firefox and Safari.  createMediaElementSource() redirects the
+    // element's decoded output into the Web Audio graph so the element
+    // itself produces no direct speaker output — giving us a single
+    // decode pipeline on all engines.
+    const audio = new Audio();
+    audio.srcObject = stream;
+
+    const source = ctx.createMediaElementSource(audio);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
     const gain = ctx.createGain();
@@ -133,9 +142,12 @@ export class RemoteAudioManager {
     analyser.connect(gain);
     gain.connect(ctx.destination);
 
+    audio.play().catch(() => {});
+
     this.sources.set(peerId, source);
     this.analysers.set(peerId, analyser);
     this.gains.set(peerId, gain);
+    this.audioElements.set(peerId, audio);
   }
 
   getAnalysers(): Map<string, AnalyserNode> {
@@ -153,9 +165,15 @@ export class RemoteAudioManager {
     this.sources.get(peerId)?.disconnect();
     this.analysers.get(peerId)?.disconnect();
     this.gains.get(peerId)?.disconnect();
+    const audio = this.audioElements.get(peerId);
+    if (audio) {
+      audio.pause();
+      audio.srcObject = null;
+    }
     this.sources.delete(peerId);
     this.analysers.delete(peerId);
     this.gains.delete(peerId);
+    this.audioElements.delete(peerId);
   }
 
   destroy() {
