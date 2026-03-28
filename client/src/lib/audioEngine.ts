@@ -5,6 +5,75 @@ import {
 
 const GAIN_BOOST = 3.5;
 
+/**
+ * Prevents browsers from throttling or suspending audio processing when the
+ * tab loses focus.  Critical for voice-chat apps used alongside full-screen
+ * games where the browser window is never the active foreground window.
+ *
+ * Four complementary strategies cover Chrome, Edge, Brave, Firefox and Safari:
+ *
+ *   1. AudioContext `statechange` – auto-resume on suspend / interrupt
+ *   2. `visibilitychange` + Page Lifecycle `resume` – resume on tab refocus
+ *   3. Web Lock – prevents Chrome Energy Saver from freezing the tab
+ *   4. Inline Worker heartbeat (1 Hz) – Worker timers are never throttled,
+ *      so the postMessage wakes the main thread to resume the context even
+ *      under aggressive background-tab timer throttling
+ */
+class BackgroundGuard {
+  private lockRelease: (() => void) | null = null;
+  private worker: Worker | null = null;
+
+  private resumeCtx = () => {
+    const s = this.ctx.state as string;
+    if (s === "suspended" || s === "interrupted") {
+      this.ctx.resume().catch(() => {});
+    }
+  };
+
+  constructor(private ctx: AudioContext) {
+    ctx.addEventListener("statechange", this.resumeCtx);
+    document.addEventListener("visibilitychange", this.resumeCtx);
+    document.addEventListener("resume", this.resumeCtx);
+    this.acquireLock();
+    this.startHeartbeat();
+  }
+
+  private acquireLock() {
+    if (!navigator?.locks) return;
+    navigator.locks
+      .request(`huddle-audio-${performance.now()}`, () =>
+        new Promise<void>((r) => {
+          this.lockRelease = r;
+        }),
+      )
+      .catch(() => {});
+  }
+
+  private startHeartbeat() {
+    try {
+      const blob = new Blob(["setInterval(()=>postMessage(0),1000)"], {
+        type: "application/javascript",
+      });
+      const url = URL.createObjectURL(blob);
+      this.worker = new Worker(url);
+      URL.revokeObjectURL(url);
+      this.worker.onmessage = this.resumeCtx;
+    } catch {
+      /* inline workers may be blocked by CSP */
+    }
+  }
+
+  destroy() {
+    this.ctx.removeEventListener("statechange", this.resumeCtx);
+    document.removeEventListener("visibilitychange", this.resumeCtx);
+    document.removeEventListener("resume", this.resumeCtx);
+    this.worker?.terminate();
+    this.worker = null;
+    this.lockRelease?.();
+    this.lockRelease = null;
+  }
+}
+
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private gainNode: GainNode | null = null;
@@ -14,6 +83,7 @@ export class AudioEngine {
   private rnnoiseNode: RnnoiseWorkletNode | null = null;
   private rnnoiseReady = false;
   private keepAliveOsc: OscillatorNode | null = null;
+  private guard: BackgroundGuard | null = null;
 
   /**
    * A permanently running silent oscillator keeps Chromium's audio render
@@ -35,6 +105,7 @@ export class AudioEngine {
   private getContext(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: 48000 });
+      this.guard = new BackgroundGuard(this.ctx);
       this.startKeepAliveNode(this.ctx);
       this.gainNode = this.ctx.createGain();
       this.gainNode.gain.value = GAIN_BOOST;
@@ -112,6 +183,8 @@ export class AudioEngine {
   }
 
   destroy() {
+    this.guard?.destroy();
+    this.guard = null;
     this.keepAliveOsc?.stop();
     this.keepAliveOsc?.disconnect();
     this.keepAliveOsc = null;
@@ -131,6 +204,7 @@ export class RemoteAudioManager {
   private sources = new Map<string, MediaStreamAudioSourceNode>();
   private audioElements = new Map<string, HTMLAudioElement>();
   private keepAliveOsc: OscillatorNode | null = null;
+  private guard: BackgroundGuard | null = null;
 
   private startKeepAliveNode(ctx: AudioContext) {
     if (this.keepAliveOsc) return;
@@ -146,6 +220,7 @@ export class RemoteAudioManager {
   private getContext(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext();
+      this.guard = new BackgroundGuard(this.ctx);
       this.startKeepAliveNode(this.ctx);
     }
     return this.ctx;
@@ -224,6 +299,8 @@ export class RemoteAudioManager {
   }
 
   destroy() {
+    this.guard?.destroy();
+    this.guard = null;
     this.keepAliveOsc?.stop();
     this.keepAliveOsc?.disconnect();
     this.keepAliveOsc = null;

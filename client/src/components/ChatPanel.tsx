@@ -31,6 +31,7 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const isAtBottomRef = useRef(true);
@@ -43,6 +44,12 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 50;
     isAtBottomRef.current = atBottom;
     if (atBottom) setNewMessageCount(0);
+  }, []);
+
+  const scrollPinnedToBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el || !isAtBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
   }, []);
 
   useEffect(() => {
@@ -58,17 +65,19 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
     }
   }, [chatHistory.length]);
 
-  // Re-pin to bottom when content grows after initial scroll (e.g. GIF images
-  // finish loading and expand the scroll height after we already scrolled).
+  // Observe the inner content column (not the overflow viewport): the scroll
+  // container's box stays fixed height, so RO on it never fires when GIFs load
+  // and grow scrollHeight. The inner wrapper's block size does change.
   useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
+    const scrollEl = scrollContainerRef.current;
+    const contentEl = messagesContentRef.current;
+    if (!scrollEl || !contentEl) return;
     const ro = new ResizeObserver(() => {
       if (isAtBottomRef.current) {
-        el.scrollTop = el.scrollHeight;
+        scrollEl.scrollTop = scrollEl.scrollHeight;
       }
     });
-    ro.observe(el);
+    ro.observe(contentEl);
     return () => ro.disconnect();
   }, []);
 
@@ -249,7 +258,8 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
                 alt={msg.text || "GIF"}
                 className="rounded-lg max-w-full object-cover group-hover/gif:brightness-90 transition-all"
                 style={{ maxHeight: 200, maxWidth: 260 }}
-                loading="lazy"
+                loading="eager"
+                onLoad={scrollPinnedToBottom}
               />
             </a>
             <p className="text-[10px] text-gray-600 mt-0.5">
@@ -318,24 +328,26 @@ export default function ChatPanel({ socket, chatHistory, localId }: Props) {
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className="h-full overflow-y-auto px-4 py-3 space-y-3"
+          className="h-full overflow-y-auto px-4 py-3"
         >
-          {chatHistory.length === 0 && (
-            <p className="text-gray-600 text-sm text-center mt-8">No messages yet. Say something!</p>
-          )}
-          {chatHistory.map((entry) =>
-            isPollMessage(entry) ? (
-              <PollDisplay
-                key={entry.id}
-                poll={entry}
-                localId={localId}
-                onVote={handlePollVote}
-              />
-            ) : (
-              renderChatMessage(entry)
-            ),
-          )}
-          <div ref={bottomRef} />
+          <div ref={messagesContentRef} className="space-y-3">
+            {chatHistory.length === 0 && (
+              <p className="text-gray-600 text-sm text-center mt-8">No messages yet. Say something!</p>
+            )}
+            {chatHistory.map((entry) =>
+              isPollMessage(entry) ? (
+                <PollDisplay
+                  key={entry.id}
+                  poll={entry}
+                  localId={localId}
+                  onVote={handlePollVote}
+                />
+              ) : (
+                renderChatMessage(entry)
+              ),
+            )}
+            <div ref={bottomRef} />
+          </div>
         </div>
 
         {newMessageCount > 0 && (
