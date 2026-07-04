@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
-import { Settings, LogOut, Copy, Check } from "lucide-react";
+import { Settings, LogOut, Copy, Check, AlertTriangle } from "lucide-react";
 import { useSocket } from "../hooks/useSocket";
 import { useWebRTC } from "../hooks/useWebRTC";
 import { useMediaDevices } from "../hooks/useMediaDevices";
@@ -49,6 +49,17 @@ export default function RoomPage() {
   const [inputGain, setInputGain] = useState(1);
   const [peerVolumes, setPeerVolumes] = useState<Map<string, number>>(new Map());
   const [copied, setCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+
+  // Warn when trying to close the tab
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   const { audioInputs, selectedDeviceId, setSelectedDeviceId } = useMediaDevices();
   const { processStream, setInputGain: setEngineGain, localAnalyser, cleanup } = useNoiseSuppression();
@@ -148,6 +159,12 @@ export default function RoomPage() {
     setTimeout(() => setCopied(false), 2000);
   }, [roomId]);
 
+  const handleCopyLink = useCallback(() => {
+    navigator.clipboard.writeText(globalThis.location.href);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  }, []);
+
   const localParticipant: Participant = {
     id: socket?.id || "local",
     name,
@@ -179,6 +196,14 @@ export default function RoomPage() {
             <span className="font-mono">{roomId}</span>
             {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
           </button>
+          <button
+            onClick={handleCopyLink}
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
+            title="Copy room link"
+          >
+            <span>Copy Link</span>
+            {linkCopied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+          </button>
           {!connected && (
             <span className="text-xs text-amber-400 animate-pulse">Connecting...</span>
           )}
@@ -192,7 +217,7 @@ export default function RoomPage() {
             <Settings size={18} />
           </button>
           <button
-            onClick={() => navigate("/")}
+            onClick={() => setShowLeaveConfirm(true)}
             className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-800 transition-colors cursor-pointer"
             title="Leave room"
           >
@@ -253,6 +278,39 @@ export default function RoomPage() {
           inputGain={inputGain}
           onInputGainChange={handleInputGainChange}
         />
+      )}
+
+      {/* Leave room confirmation */}
+      {showLeaveConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm mx-4 rounded-xl bg-gray-900 border border-gray-700 shadow-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 rounded-full bg-red-500/10 text-red-400">
+                <AlertTriangle size={22} />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-100">Leave room?</h3>
+                <p className="text-sm text-gray-400 mt-0.5">
+                  You will be disconnected from the call.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowLeaveConfirm(false)}
+                className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => navigate("/")}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-500 text-white transition-colors cursor-pointer"
+              >
+                Leave
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
