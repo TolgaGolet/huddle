@@ -4,16 +4,12 @@ interface Props {
   audioInputs: MediaDeviceInfo[];
   selectedDeviceId: string;
   onDeviceChange: (deviceId: string) => void;
-  inputGain: number;
-  onInputGainChange: (value: number) => void;
 }
 
 export default function AudioSettings({
   audioInputs,
   selectedDeviceId,
   onDeviceChange,
-  inputGain,
-  onInputGainChange,
 }: Props) {
   return (
     <div className="space-y-6">
@@ -36,24 +32,18 @@ export default function AudioSettings({
         </select>
       </div>
 
-      <div>
-        <label className="flex items-center gap-2 text-sm font-medium text-gray-300 mb-2">
+      <div className="rounded-lg bg-gray-800/60 border border-gray-700 p-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-gray-300 mb-1">
           <Volume2 size={16} />
-          Input Volume
-        </label>
-        <div className="flex items-center gap-3">
-          <input
-            type="range"
-            min={0}
-            max={300}
-            value={Math.round(inputGain * 100)}
-            onChange={(e) => onInputGainChange(Number(e.target.value) / 100)}
-            className="flex-1 accent-indigo-500 h-1"
-          />
-          <span className="text-sm text-gray-400 w-12 text-right">
-            {Math.round(inputGain * 100)}%
-          </span>
+          Noise & Echo Suppression
         </div>
+        <p className="text-xs text-gray-400 leading-relaxed">
+          Huddle uses your browser's built-in echo cancellation, noise
+          suppression, and automatic gain control. For the clearest voice, use a headset with a
+          boom microphone. On Safari, app-controlled noise suppression is
+          limited by the browser; a USB/headset mic with hardware processing
+          gives the best results.
+        </p>
       </div>
     </div>
   );

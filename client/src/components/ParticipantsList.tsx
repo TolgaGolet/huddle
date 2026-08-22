@@ -9,8 +9,7 @@ interface Props {
   speaking: Set<string>;
   peerVolumes: Map<string, number>;
   onSetPeerVolume: (peerId: string, volume: number) => void;
-  localInputGain: number;
-  onLocalInputGainChange: (value: number) => void;
+  maxParticipants?: number;
 }
 
 interface ContextMenuState {
@@ -27,8 +26,7 @@ export default function ParticipantsList({
   speaking,
   peerVolumes,
   onSetPeerVolume,
-  localInputGain,
-  onLocalInputGainChange,
+  maxParticipants,
 }: Props) {
   const [ctx, setCtx] = useState<ContextMenuState | null>(null);
 
@@ -40,22 +38,24 @@ export default function ParticipantsList({
     [localId],
   );
 
-  const ctxVolume = ctx
-    ? ctx.isLocal
-      ? localInputGain
-      : (peerVolumes.get(ctx.peerId) ?? 1)
-    : 1;
+  // The local participant has no software volume control anymore (native
+  // unity-gain capture is transmitted directly). Only remote participants
+  // expose a playback-volume slider.
+  const ctxVolume = ctx && !ctx.isLocal ? (peerVolumes.get(ctx.peerId) ?? 1) : 1;
 
-  const ctxOnChange = ctx
-    ? ctx.isLocal
-      ? onLocalInputGainChange
-      : (v: number) => onSetPeerVolume(ctx.peerId, v)
+  const ctxOnChange = ctx && !ctx.isLocal
+    ? (v: number) => onSetPeerVolume(ctx.peerId, v)
     : undefined;
+
+  const isFull = typeof maxParticipants === "number" && participants.length >= maxParticipants;
+  const countLabel = typeof maxParticipants === "number"
+    ? `${participants.length}/${maxParticipants}`
+    : `${participants.length}`;
 
   return (
     <div className="flex-1 overflow-y-auto py-2 px-1">
-      <h3 className="text-[11px] uppercase tracking-wider text-gray-500 font-semibold px-3 mb-1">
-        Participants — {participants.length}
+      <h3 className={`text-[11px] uppercase tracking-wider font-semibold px-3 mb-1 ${isFull ? "text-amber-400" : "text-gray-500"}`}>
+        Participants — {countLabel}{isFull ? " (full)" : ""}
       </h3>
       {participants.map((p) => (
         <ParticipantCard

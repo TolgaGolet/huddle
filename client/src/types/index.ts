@@ -4,6 +4,13 @@ export interface Participant {
   isMuted: boolean;
 }
 
+/**
+ * Maximum participants per room. Must match the server's MAX_PARTICIPANTS
+ * (server/src/roomManager.ts). Huddle uses a peer-to-peer mesh topology, so
+ * this cap keeps calls reliable on typical consumer hardware/connections.
+ */
+export const MAX_PARTICIPANTS = 6;
+
 export interface ChatMessage {
   id: string;
   senderId: string;

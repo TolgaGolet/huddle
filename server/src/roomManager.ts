@@ -50,6 +50,15 @@ export interface Room {
 }
 
 const MAX_CHAT_HISTORY = 200;
+
+/**
+ * Maximum participants per room. Huddle uses a peer-to-peer mesh topology
+ * where each client maintains a direct WebRTC connection with every other
+ * participant, so quality degrades sharply beyond a small group. This cap
+ * keeps calls reliable on typical consumer hardware/connections.
+ */
+export const MAX_PARTICIPANTS = 6;
+
 const rooms = new Map<string, Room>();
 
 export function createRoom(password?: string): Room {
@@ -78,6 +87,17 @@ export function isNameTaken(roomId: string, name: string): boolean {
     if (p.name.toLowerCase() === lower) return true;
   }
   return false;
+}
+
+export function isRoomFull(roomId: string): boolean {
+  const room = rooms.get(roomId);
+  if (!room) return false;
+  return room.participants.size >= MAX_PARTICIPANTS;
+}
+
+export function getParticipantCount(roomId: string): number {
+  const room = rooms.get(roomId);
+  return room ? room.participants.size : 0;
 }
 
 export function addParticipant(roomId: string, socketId: string, name: string): Participant | null {
@@ -130,8 +150,13 @@ router.post("/rooms", (req, res) => {
 router.get("/rooms/:id", (req, res) => {
   const room = rooms.get(req.params.id);
   if (!room) {
-    res.json({ exists: false, hasPassword: false });
+    res.json({ exists: false, hasPassword: false, participantCount: 0, maxParticipants: MAX_PARTICIPANTS });
     return;
   }
-  res.json({ exists: true, hasPassword: !!room.password });
+  res.json({
+    exists: true,
+    hasPassword: !!room.password,
+    participantCount: room.participants.size,
+    maxParticipants: MAX_PARTICIPANTS,
+  });
 });

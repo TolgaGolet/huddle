@@ -13,8 +13,6 @@ interface Props {
   audioInputs: MediaDeviceInfo[];
   selectedDeviceId: string;
   onDeviceChange: (deviceId: string) => void;
-  inputGain: number;
-  onInputGainChange: (value: number) => void;
 }
 
 export default function SettingsPopup({
@@ -22,8 +20,6 @@ export default function SettingsPopup({
   audioInputs,
   selectedDeviceId,
   onDeviceChange,
-  inputGain,
-  onInputGainChange,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<CategoryId>("audio");
 
@@ -72,8 +68,6 @@ export default function SettingsPopup({
                 audioInputs={audioInputs}
                 selectedDeviceId={selectedDeviceId}
                 onDeviceChange={onDeviceChange}
-                inputGain={inputGain}
-                onInputGainChange={onInputGainChange}
               />
             </div>
           )}

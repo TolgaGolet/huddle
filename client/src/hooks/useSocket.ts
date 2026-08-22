@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { Participant, ChatMessage, ChatEntry, PollMessage } from "../types";
 import { playJoinSound, playLeaveSound } from "../lib/notificationSounds";
@@ -9,24 +9,45 @@ interface UseSocketOptions {
   password?: string;
 }
 
-interface UseSocketReturn {
+export interface UseSocketReturn {
   socket: Socket | null;
   participants: Participant[];
   chatHistory: ChatEntry[];
   connected: boolean;
   joinError: string | null;
   currentScreenSharer: string | null;
+  joinRoom: () => void;
 }
 
 const MAX_CLIENT_CHAT = 200;
 
 export function useSocket({ roomId, name, password }: UseSocketOptions): UseSocketReturn {
   const socketRef = useRef<Socket | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [currentScreenSharer, setCurrentScreenSharer] = useState<string | null>(null);
+
+  // Room-join coordination: `joinRoom()` is invoked by the caller only after
+  // the WebRTC signaling listeners have been installed, so the server cannot
+  // emit `room-joined`/`offer`/`ice-candidate` before this client is ready to
+  // handle them. We also re-join automatically after a transport reconnect so
+  // a dropped socket does not leave the user stranded in the room.
+  const joinArgsRef = useRef({ roomId, name, password });
+  joinArgsRef.current = { roomId, name, password };
+  const joinedRef = useRef(false);
+  const wantsJoinRef = useRef(false);
+
+  const joinRoom = useCallback(() => {
+    wantsJoinRef.current = true;
+    const sock = socketRef.current;
+    if (!sock || !sock.connected || joinedRef.current) return;
+    joinedRef.current = true;
+    const { roomId: rid, name: nm, password: pw } = joinArgsRef.current;
+    sock.emit("join-room", { roomId: rid, name: nm, password: pw });
+  }, []);
 
   useEffect(() => {
     if (!roomId || !name) return;
@@ -38,13 +59,24 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     const timer = setTimeout(() => {
       socket = io({ transports: ["websocket"] });
       socketRef.current = socket;
+      setSocket(socket);
 
       const onConnect = () => {
         setConnected(true);
-        socket!.emit("join-room", { roomId, name, password });
+        // Mark as not-joined so a reconnect re-issues the join using the
+        // latest readiness signal from the caller (see `joinRoom`).
+        joinedRef.current = false;
+        if (wantsJoinRef.current) {
+          joinRoom();
+        }
       };
 
-      const onDisconnect = () => setConnected(false);
+      const onDisconnect = () => {
+        setConnected(false);
+        // Allow `joinRoom` to rejoin on the next connect once the caller
+        // reinstalls signaling listeners.
+        joinedRef.current = false;
+      };
 
       const onError = (data: { message: string }) => {
         setJoinError(data.message);
@@ -129,13 +161,16 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
 
     return () => {
       clearTimeout(timer);
+      wantsJoinRef.current = false;
+      joinedRef.current = false;
       if (socket) {
         socket.removeAllListeners();
         socket.disconnect();
         socketRef.current = null;
+        setSocket(null);
       }
     };
-  }, [roomId, name, password]);
+  }, [roomId, name, password, joinRoom]);
 
-  return { socket: socketRef.current, participants, chatHistory, connected, joinError, currentScreenSharer };
+  return { socket, participants, chatHistory, connected, joinError, currentScreenSharer, joinRoom };
 }

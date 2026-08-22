@@ -7,6 +7,8 @@ import {
   setMuted,
   verifyPassword,
   isNameTaken,
+  isRoomFull,
+  MAX_PARTICIPANTS,
 } from "./roomManager.js";
 
 export const socketRoomMap = new Map<string, string>();
@@ -31,6 +33,13 @@ export function setupSignaling(io: Server): void {
         return;
       }
 
+      if (isRoomFull(roomId)) {
+        socket.emit("error", {
+          message: `This room is full (max ${MAX_PARTICIPANTS} participants).`,
+        });
+        return;
+      }
+
       const participant = addParticipant(roomId, socket.id, name);
       if (!participant) return;
 
@@ -49,15 +58,32 @@ export function setupSignaling(io: Server): void {
       socket.to(roomId).emit("participant-joined", participant);
     });
 
+    // Authorization helper for relayed signaling. Every SDP/ICE message must
+    // originate from a socket that has joined a room, and its `to` target must
+    // be a different socket currently in the SAME room. This prevents a stale
+    // or unauthenticated client from injecting offers/candidates into unrelated
+    // peers, which could otherwise desynchronize a victim's negotiation.
+    const requireRoomPeer = (to: string): string | null => {
+      const roomId = socketRoomMap.get(socket.id);
+      if (!roomId) return null;
+      if (to === socket.id) return null;
+      const targetRoomId = socketRoomMap.get(to);
+      if (targetRoomId !== roomId) return null;
+      return roomId;
+    };
+
     socket.on("offer", ({ to, offer }: { to: string; offer: RTCSessionDescriptionInit }) => {
+      if (!requireRoomPeer(to)) return;
       socket.to(to).emit("offer", { from: socket.id, offer });
     });
 
     socket.on("answer", ({ to, answer }: { to: string; answer: RTCSessionDescriptionInit }) => {
+      if (!requireRoomPeer(to)) return;
       socket.to(to).emit("answer", { from: socket.id, answer });
     });
 
     socket.on("ice-candidate", ({ to, candidate }: { to: string; candidate: RTCIceCandidateInit }) => {
+      if (!requireRoomPeer(to)) return;
       socket.to(to).emit("ice-candidate", { from: socket.id, candidate });
     });
 

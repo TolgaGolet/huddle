@@ -48,6 +48,11 @@ export default function LandingPage() {
         setError("This room requires a password.");
         return;
       }
+      if (typeof data.participantCount === "number" && typeof data.maxParticipants === "number" && data.participantCount >= data.maxParticipants) {
+        setError(`This room is full (${data.participantCount}/${data.maxParticipants} participants). Try again later or create a new room.`);
+        setRoomNeedsPassword(false);
+        return;
+      }
       goToRoom(roomId.trim(), data.hasPassword ? password : undefined);
     } catch {
       setError("Failed to connect. Please try again.");

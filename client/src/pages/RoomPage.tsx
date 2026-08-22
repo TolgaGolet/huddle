@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
-import { Settings, LogOut, Copy, Check, AlertTriangle } from "lucide-react";
+import { Settings, LogOut, Copy, Check, AlertTriangle, Volume2 } from "lucide-react";
 import { useSocket } from "../hooks/useSocket";
 import { useWebRTC } from "../hooks/useWebRTC";
 import { useMediaDevices } from "../hooks/useMediaDevices";
-import { useNoiseSuppression } from "../hooks/useNoiseSuppression";
+import { useCaptureAudio } from "../hooks/useCaptureAudio";
 import { useVoiceActivity } from "../hooks/useVoiceActivity";
 import ParticipantsList from "../components/ParticipantsList";
 import ChatPanel from "../components/ChatPanel";
@@ -12,6 +12,7 @@ import VoiceControls from "../components/VoiceControls";
 import SettingsPopup from "../components/SettingsPopup";
 import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
+import { MAX_PARTICIPANTS } from "../types";
 
 export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -21,7 +22,7 @@ export default function RoomPage() {
   const name = state?.name || "Anonymous";
   const password = state?.password;
 
-  const { socket, participants, chatHistory, connected, joinError, currentScreenSharer } = useSocket({
+  const { socket, participants, chatHistory, connected, joinError, currentScreenSharer, joinRoom } = useSocket({
     roomId: roomId || "",
     name,
     password,
@@ -46,7 +47,6 @@ export default function RoomPage() {
   const [isMuted, setIsMuted] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [inputGain, setInputGain] = useState(1);
   const [peerVolumes, setPeerVolumes] = useState<Map<string, number>>(new Map());
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
@@ -62,29 +62,85 @@ export default function RoomPage() {
   }, []);
 
   const { audioInputs, selectedDeviceId, setSelectedDeviceId } = useMediaDevices();
-  const { processStream, setInputGain: setEngineGain, localAnalyser, cleanup } = useNoiseSuppression();
+  const { processStream, localAnalyser, needsAudioGesture, resumeAudio, cleanup } = useCaptureAudio();
   const rawStreamRef = useRef<MediaStream | null>(null);
+  // Generation guard: only the newest acquisition may install its stream.
+  // Stale getUserMedia completions (e.g. from a superseded device switch)
+  // are stopped instead of overwriting the active capture.
+  const acquireGenRef = useRef(0);
+
+  /**
+   * Build browser-compatible audio constraints that request native WebRTC
+   * processing (echo cancellation, noise suppression, automatic gain control).
+   *
+   * These constraints are treated as hints: each browser may honor or ignore
+   * them depending on platform/hardware. They are the same class of processing
+   * used by Google Meet / Zoom and, unlike a page-owned AudioWorklet, continue
+   * to run on the browser's real-time audio thread when the tab is backgrounded.
+   *
+   * `advanced`/`exact` are avoided for processing flags so a browser that does
+   * not support a constraint still returns a usable track. Device selection
+   * uses `exact` so switching devices is honored.
+   */
+  const buildAudioConstraints = useCallback((deviceId?: string): MediaTrackConstraints => {
+    const constraints: MediaTrackConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+    if (deviceId) {
+      constraints.deviceId = { exact: deviceId };
+    }
+    return constraints;
+  }, []);
 
   const acquireMic = useCallback(
     async (deviceId?: string) => {
+      const gen = ++acquireGenRef.current;
       try {
-        const audioConstraints: MediaTrackConstraints = {
-          echoCancellation: true,
-          noiseSuppression: false,
-          autoGainControl: false,
-        };
-        if (deviceId) {
-          audioConstraints.deviceId = { exact: deviceId };
+        const raw = await navigator.mediaDevices.getUserMedia({
+          audio: buildAudioConstraints(deviceId),
+        });
+        // A newer acquisition superseded this one; discard the stale stream.
+        if (gen !== acquireGenRef.current) {
+          raw.getTracks().forEach((t) => t.stop());
+          return;
         }
-        const raw = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+        // Stop the previously active raw tracks before replacing, now that
+        // the new stream is confirmed good.
+        if (rawStreamRef.current && rawStreamRef.current !== raw) {
+          rawStreamRef.current.getTracks().forEach((t) => t.stop());
+        }
         rawStreamRef.current = raw;
+
+        // Surface the browser-reported capture settings in development so
+        // noise-suppression capability can be distinguished from request.
+        const env = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env;
+        if (env?.DEV) {
+          const track = raw.getAudioTracks()[0];
+          const settings = track?.getSettings();
+          const supported = navigator.mediaDevices.getSupportedConstraints?.() ?? {};
+          console.debug("[huddle:capture]", {
+            deviceId: settings?.deviceId,
+            echoCancellation: settings?.echoCancellation,
+            noiseSuppression: settings?.noiseSuppression,
+            autoGainControl: settings?.autoGainControl,
+            sampleRate: settings?.sampleRate,
+            channelCount: settings?.channelCount,
+            supportedEchoCancellation: supported.echoCancellation,
+            supportedNoiseSuppression: supported.noiseSuppression,
+            supportedAutoGainControl: supported.autoGainControl,
+          });
+        }
+
         const processed = await processStream(raw);
+        if (gen !== acquireGenRef.current) return;
         setLocalStream(processed);
       } catch (err) {
         console.error("Failed to acquire microphone:", err);
       }
     },
-    [processStream],
+    [processStream, buildAudioConstraints],
   );
 
   useEffect(() => {
@@ -98,26 +154,28 @@ export default function RoomPage() {
   const handleDeviceChange = useCallback(
     (deviceId: string) => {
       setSelectedDeviceId(deviceId);
-      rawStreamRef.current?.getTracks().forEach((t) => t.stop());
+      // acquireMic stops the old raw tracks only after the new stream is
+      // confirmed, avoiding a window with no active capture.
       acquireMic(deviceId);
     },
     [acquireMic, setSelectedDeviceId],
-  );
-
-  const handleInputGainChange = useCallback(
-    (value: number) => {
-      setInputGain(value);
-      setEngineGain(value);
-    },
-    [setEngineGain],
   );
 
   const handleScreenShareStopped = useCallback(() => {
     setIsScreenSharing(false);
   }, []);
 
+  // Coordinate the ready-then-join boundary: emit `join-room` only after the
+  // WebRTC signaling listeners are installed, so the server's `room-joined`,
+  // `offer`, and `ice-candidate` events cannot arrive before we handle them.
+  // This also fires after a Socket.IO reconnect (WebRTC resets its listeners
+  // on the new socket), re-issuing `join-room` to rejoin the room cleanly.
+  const handleSignalingReady = useCallback(() => {
+    joinRoom();
+  }, [joinRoom]);
+
   const { remoteAnalysers, screenStreams, startScreenShare, stopScreenShare, setRemoteVolume } =
-    useWebRTC({ socket, localStream, onScreenShareStopped: handleScreenShareStopped });
+    useWebRTC({ socket, localStream, onScreenShareStopped: handleScreenShareStopped, onSignalingReady: handleSignalingReady });
 
   const speaking = useVoiceActivity(remoteAnalysers, localAnalyser, socket?.id);
 
@@ -183,6 +241,23 @@ export default function RoomPage() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-950 text-gray-100">
+      {/* Audio enable banner: shown when the browser blocked AudioContext
+          resume / autoplay (notably Safari/iOS after backgrounding). The
+          action must be triggered by a user gesture. */}
+      {needsAudioGesture && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs">
+          <span className="flex items-center gap-2">
+            <Volume2 size={14} />
+            Audio was paused by your browser. Click to re-enable voice.
+          </span>
+          <button
+            onClick={resumeAudio}
+            className="px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
+          >
+            Enable audio
+          </button>
+        </div>
+      )}
       {/* Top bar */}
       <header className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-900/50 shrink-0">
         <div className="flex items-center gap-3">
@@ -236,8 +311,7 @@ export default function RoomPage() {
             speaking={speaking}
             peerVolumes={peerVolumes}
             onSetPeerVolume={handleSetPeerVolume}
-            localInputGain={inputGain}
-            onLocalInputGainChange={handleInputGainChange}
+            maxParticipants={MAX_PARTICIPANTS}
           />
           <VoiceControls
             isMuted={isMuted}
@@ -275,8 +349,6 @@ export default function RoomPage() {
           audioInputs={audioInputs}
           selectedDeviceId={selectedDeviceId}
           onDeviceChange={handleDeviceChange}
-          inputGain={inputGain}
-          onInputGainChange={handleInputGainChange}
         />
       )}
 
