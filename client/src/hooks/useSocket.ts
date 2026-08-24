@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { Participant, ChatMessage, ChatEntry, PollMessage } from "../types";
 import { playJoinSound, playLeaveSound } from "../lib/notificationSounds";
+import { huddleLog } from "../lib/huddleLog";
 
 interface UseSocketOptions {
   roomId: string;
@@ -46,6 +47,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     if (!sock || !sock.connected || joinedRef.current) return;
     joinedRef.current = true;
     const { roomId: rid, name: nm, password: pw } = joinArgsRef.current;
+    huddleLog("socket", { event: "join-room-emit", roomId: rid });
     sock.emit("join-room", { roomId: rid, name: nm, password: pw });
   }, []);
 
@@ -79,11 +81,13 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       };
 
       const onError = (data: { message: string }) => {
+        huddleLog("socket", { event: "join-error", message: data.message });
         setJoinError(data.message);
         socket!.disconnect();
       };
 
       const onRoomJoined = (data: { participants: Participant[]; chatHistory: ChatEntry[]; screenSharer: string | null }) => {
+        huddleLog("socket", { event: "room-joined-received", participantCount: data.participants.length });
         setParticipants(data.participants);
         setChatHistory(data.chatHistory.slice(-MAX_CLIENT_CHAT));
         setCurrentScreenSharer(data.screenSharer);

@@ -13,6 +13,7 @@ import SettingsPopup from "../components/SettingsPopup";
 import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS } from "../types";
+import { huddleLog } from "../lib/huddleLog";
 
 export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -97,9 +98,16 @@ export default function RoomPage() {
   const acquireMic = useCallback(
     async (deviceId?: string) => {
       const gen = ++acquireGenRef.current;
+      const startedAt = performance.now();
       try {
         const raw = await navigator.mediaDevices.getUserMedia({
           audio: buildAudioConstraints(deviceId),
+        });
+        huddleLog("capture", {
+          event: "getUserMedia-resolved",
+          gen,
+          elapsedMs: Math.round(performance.now() - startedAt),
+          deviceId: deviceId ?? "default",
         });
         // A newer acquisition superseded this one; discard the stale stream.
         if (gen !== acquireGenRef.current) {
@@ -136,8 +144,13 @@ export default function RoomPage() {
         const processed = await processStream(raw);
         if (gen !== acquireGenRef.current) return;
         setLocalStream(processed);
+        huddleLog("capture", {
+          event: "localStream-committed",
+          gen,
+          elapsedMs: Math.round(performance.now() - startedAt),
+        });
       } catch (err) {
-        console.error("Failed to acquire microphone:", err);
+        huddleLog("capture", { event: "getUserMedia-failed", error: String(err) });
       }
     },
     [processStream, buildAudioConstraints],
