@@ -16,5 +16,15 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    chunkSizeWarningLimit: 1500, // heic2any (~1.35 MB) is lazy-loaded and only fetched on HEIC uploads
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom", "react-router-dom"],
+          socket: ["socket.io-client"],
+          lucide: ["lucide-react"],
+        },
+      },
+    },
   },
 });

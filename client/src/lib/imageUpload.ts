@@ -1,5 +1,3 @@
-import heic2any from "heic2any";
-
 export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
 export const MAX_IMAGES_PER_SEND = 10;
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif", "heic", "heif"]);
@@ -16,6 +14,8 @@ async function compressImage(file: File): Promise<Blob> {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "heic" || extension === "heif") {
     try {
+      // Lazy-load heic2any (~1.3 MB) only when a HEIC file is actually encountered.
+      const { default: heic2any } = await import("heic2any");
       const converted = await heic2any({ blob: file, toType: "image/webp", quality: 0.85 });
       return Array.isArray(converted) ? converted[0] : converted;
     } catch {

@@ -146,9 +146,8 @@ export function setupChat(io: Server): void {
       if (!room.participants.has(socket.id)) return;
 
       const entry = room.chatHistory.find((m) => m.id === messageId);
-      if (!entry || "type" in entry) return;
-      const msg = entry as ChatMessage;
-      if (msg.senderId !== socket.id) return;
+      if (!entry) return;
+      if (entry.senderId !== socket.id) return;
 
       if (room.pinnedMessageId === messageId) room.pinnedMessageId = null;
       room.chatHistory = room.chatHistory.filter((m) => m.id !== messageId);

@@ -164,7 +164,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
 
       const onChatPinUpdate = ({ pinnedMessageId, chatHistory: history }: { pinnedMessageId: string | null; chatHistory: ChatEntry[] }) => {
         setChatHistory(history.slice(-MAX_CLIENT_CHAT).map((entry) =>
-          !("type" in entry) ? { ...entry, pinned: entry.id === pinnedMessageId } : entry,
+          ({ ...entry, pinned: entry.id === pinnedMessageId }),
         ));
       };
 

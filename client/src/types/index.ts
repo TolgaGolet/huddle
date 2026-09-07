@@ -46,6 +46,7 @@ export interface PollMessage {
   options: PollOption[];
   allowMultiple: boolean;
   timestamp: number;
+  pinned?: boolean;
 }
 
 export type ChatEntry = ChatMessage | PollMessage;

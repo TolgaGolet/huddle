@@ -1,26 +1,46 @@
-import { Check } from "lucide-react";
+import { Check, MoreVertical, Pin } from "lucide-react";
 import type { PollMessage } from "../types";
 
 interface Props {
   poll: PollMessage;
   localId: string;
   onVote: (pollId: string, optionId: string) => void;
+  onContextMenu?: (poll: PollMessage, e: React.MouseEvent) => void;
 }
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function PollDisplay({ poll, localId, onVote }: Props) {
+export default function PollDisplay({ poll, localId, onVote, onContextMenu }: Props) {
   const totalVotes = poll.options.reduce((sum, o) => sum + o.voterIds.length, 0);
 
   return (
-    <div className="bg-gray-800/60 border border-gray-700 rounded-xl p-3 space-y-2">
+    <div
+      className={`group relative bg-gray-800/60 border border-gray-700 rounded-xl p-3 space-y-2 ${
+        poll.pinned ? "border-l-2 border-l-amber-400/70" : ""
+      }`}
+    >
+      {poll.pinned && (
+        <span className="inline-flex items-center gap-1 text-[10px] text-amber-400">
+          <Pin size={9} /> Pinned
+        </span>
+      )}
       <div className="flex items-baseline gap-2">
         <span className="text-sm font-semibold text-indigo-400">{poll.senderName}</span>
         <span className="text-[10px] text-gray-600">{formatTime(poll.timestamp)}</span>
         <span className="text-[10px] text-gray-600 bg-gray-700/60 px-1.5 py-0.5 rounded">Poll</span>
       </div>
+      {onContextMenu && (
+        <button
+          type="button"
+          onClick={(e) => onContextMenu(poll, e)}
+          className="absolute -top-3 right-0 hidden group-hover:flex items-center bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-1.5 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
+          title="More actions"
+        >
+          <MoreVertical size={13} />
+        </button>
+      )}
 
       <p className="text-sm font-medium text-gray-200">{poll.question}</p>
 

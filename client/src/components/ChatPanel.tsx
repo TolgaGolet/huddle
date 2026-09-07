@@ -29,6 +29,7 @@ interface ContextMenuState {
   y: number;
   isOwn: boolean;
   isPinned: boolean;
+  isPoll: boolean;
 }
 
 function formatTime(ts: number): string {
@@ -49,6 +50,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
   const isAtBottomRef = useRef(true);
   const prevHistoryLenRef = useRef(chatHistory.length);
   const [newMessageCount, setNewMessageCount] = useState(0);
+  const [showScrollDown, setShowScrollDown] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -60,7 +62,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const pinnedMessage = useMemo(
-    () => chatHistory.find((entry): entry is ChatMessage => !isPollMessage(entry) && !!entry.pinned) ?? null,
+    () => chatHistory.find((entry) => entry.pinned === true) ?? null,
     [chatHistory],
   );
 
@@ -91,6 +93,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 50;
     isAtBottomRef.current = atBottom;
+    setShowScrollDown(!atBottom);
     if (atBottom) setNewMessageCount(0);
   }, []);
 
@@ -132,6 +135,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
   function scrollToBottom() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     setNewMessageCount(0);
+    setShowScrollDown(false);
   }
 
   const handleKeyDown = useCallback(
@@ -280,7 +284,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
     requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
-  function openContextMenu(msg: ChatMessage, e: React.MouseEvent) {
+  function openContextMenu(entry: ChatEntry, e: React.MouseEvent) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const container = scrollContainerRef.current?.getBoundingClientRect();
     // Estimated menu size (min-w-40 = 160px wide, up to ~130px tall) used to
@@ -296,11 +300,12 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
     x = Math.max(8, x);
     y = Math.max(8, y);
     setContextMenu({
-      messageId: msg.id,
+      messageId: entry.id,
       x,
+      isOwn: entry.senderId === localId,
       y,
-      isOwn: msg.senderId === localId,
-      isPinned: !!msg.pinned,
+      isPinned: !!entry.pinned,
+      isPoll: isPollMessage(entry),
     });
   }
 
@@ -526,7 +531,9 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
                   {pinnedMessage.senderName}
                 </span>
                 <p className="text-xs text-gray-300 truncate">
-                  {pinnedMessage.text || (pinnedMessage.imageUrls?.length ? "[Image]" : "[GIF]")}
+                  {"type" in pinnedMessage
+                    ? `Poll: ${pinnedMessage.question}`
+                    : pinnedMessage.text || (pinnedMessage.imageUrls?.length ? "[Image]" : "[GIF]")}
                 </p>
               </button>
             </div>
@@ -551,12 +558,14 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
             )}
             {chatHistory.map((entry) =>
               isPollMessage(entry) ? (
-                <PollDisplay
-                  key={entry.id}
-                  poll={entry}
-                  localId={localId}
-                  onVote={handlePollVote}
-                />
+                <div key={entry.id} ref={(el) => setMessageRef(entry.id, el)}>
+                  <PollDisplay
+                    poll={entry}
+                    localId={localId}
+                    onVote={handlePollVote}
+                    onContextMenu={openContextMenu}
+                  />
+                </div>
               ) : (
                 renderChatMessage(entry)
               ),
@@ -572,7 +581,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
             style={{ left: contextMenu.x, top: contextMenu.y }}
             className="absolute z-30 min-w-40 py-1 rounded-lg bg-gray-800 border border-gray-700 shadow-xl"
           >
-            {contextMenu.isOwn && (
+            {contextMenu.isOwn && !contextMenu.isPoll && (
               <button
                 type="button"
                 onClick={() => {
@@ -605,13 +614,17 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
           </div>
         )}
 
-        {newMessageCount > 0 && (
+        {showScrollDown && (
           <button
             type="button"
             onClick={scrollToBottom}
             className="absolute bottom-3 right-4 flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium shadow-lg transition-colors cursor-pointer z-10"
           >
-            {newMessageCount} new {newMessageCount === 1 ? "message" : "messages"}
+            {newMessageCount > 0 && (
+              <>
+                {newMessageCount} new {newMessageCount === 1 ? "message" : "messages"}
+              </>
+            )}
             <ChevronDown size={14} />
           </button>
         )}
