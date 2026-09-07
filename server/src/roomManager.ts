@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { nanoid } from "nanoid";
+import { randomBytes } from "node:crypto";
 
 export interface Participant {
   id: string;
@@ -18,8 +19,11 @@ export interface ChatMessage {
     id: string;
     senderName: string;
     text: string;
+    imageUrl?: string;
   };
   gifUrl?: string;
+  imageUrls?: string[];
+  encrypted?: boolean;
 }
 
 export interface PollOption {
@@ -47,6 +51,7 @@ export interface Room {
   password: string | null;
   participants: Map<string, Participant>;
   chatHistory: ChatEntry[];
+  encryptionSalt: string | null;
 }
 
 const MAX_CHAT_HISTORY = 200;
@@ -63,7 +68,13 @@ const rooms = new Map<string, Room>();
 
 export function createRoom(password?: string): Room {
   const id = nanoid(6);
-  const room: Room = { id, password: password || null, participants: new Map(), chatHistory: [] };
+  const room: Room = {
+    id,
+    password: password || null,
+    participants: new Map(),
+    chatHistory: [],
+    encryptionSalt: password ? randomBytes(16).toString("base64url") : null,
+  };
   rooms.set(id, room);
   return room;
 }
@@ -131,6 +142,10 @@ export function addChatMessage(roomId: string, msg: ChatEntry): void {
   if (room.chatHistory.length > MAX_CHAT_HISTORY) {
     room.chatHistory.shift();
   }
+}
+
+export function getChatHistory(roomId: string): ChatEntry[] {
+  return getRoom(roomId)?.chatHistory ?? [];
 }
 
 export function getParticipantsArray(roomId: string): Participant[] {

@@ -9,6 +9,7 @@ import { giphyRouter } from "./giphyRouter.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
+import { clearStaleImages, imageRouter } from "./imageRouter.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -32,6 +33,7 @@ app.get("/health", (_req, res) => {
 
 app.use("/api", roomRouter);
 app.use("/api/giphy", giphyRouter);
+app.use("/api", imageRouter);
 
 setupSignaling(io);
 setupChat(io);
@@ -52,6 +54,8 @@ setInterval(() => {
   console.log(`[mem] rss=${rss}MB heap=${heapUsed}/${heapTotal}MB ext=${external}MB conns=${io.engine.clientsCount}`);
 }, 30_000);
 
-httpServer.listen(PORT, () => {
-  console.log(`Huddle server running on http://localhost:${PORT}`);
+void clearStaleImages().then(() => {
+  httpServer.listen(PORT, () => {
+    console.log(`Huddle server running on http://localhost:${PORT}`);
+  });
 });

@@ -350,7 +350,7 @@ export default function RoomPage() {
                 : "flex-1 flex flex-col"
             }
           >
-            <ChatPanel socket={socket} chatHistory={chatHistory} localId={socket?.id || "local"} />
+            <ChatPanel socket={socket} chatHistory={chatHistory} localId={socket?.id || "local"} roomId={roomId} />
           </div>
         </main>
       </div>

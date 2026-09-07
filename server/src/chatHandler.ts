@@ -7,13 +7,28 @@ const GIPHY_CDN = "https://media";
 
 interface IncomingChatMessage {
   text: string;
-  replyTo?: { id: string; senderName: string; text: string };
+  replyTo?: { id: string; senderName: string; text: string; imageUrl?: string };
   gifUrl?: string;
+  imageUrls?: string[];
+}
+
+function validImageUrls(roomId: string, imageUrls: unknown): imageUrls is string[] {
+  if (!Array.isArray(imageUrls) || imageUrls.length > 10) return false;
+  const prefix = `/api/rooms/${roomId}/images/`;
+  return imageUrls.every((url) =>
+    typeof url === "string" &&
+    url.startsWith(prefix) &&
+    /^\/api\/rooms\/[^/]+\/images\/[a-z0-9_-]{10}\.(jpg|jpeg|png|gif|webp|bmp|avif|heic|heif)$/.test(url),
+  );
+}
+
+function validImageUrl(roomId: string, imageUrl: unknown): imageUrl is string {
+  return validImageUrls(roomId, [imageUrl]);
 }
 
 export function setupChat(io: Server): void {
   io.on("connection", (socket: Socket) => {
-    socket.on("chat-message", ({ text, replyTo, gifUrl }: IncomingChatMessage) => {
+    socket.on("chat-message", ({ text, replyTo, gifUrl, imageUrls }: IncomingChatMessage) => {
       const roomId = socketRoomMap.get(socket.id);
       if (!roomId) return;
 
@@ -30,9 +45,10 @@ export function setupChat(io: Server): void {
         typeof gifUrl === "string" && gifUrl.startsWith(GIPHY_CDN)
           ? gifUrl
           : undefined;
+      const safeImageUrls = validImageUrls(roomId, imageUrls) ? imageUrls : undefined;
 
-      // A message must have text or a GIF
-      if (!trimmed && !safeGifUrl) return;
+      // A message must have text, a GIF, or at least one room-scoped image.
+      if (!trimmed && !safeGifUrl && !safeImageUrls?.length) return;
 
       const msg: ChatMessage = {
         id: nanoid(10),
@@ -46,13 +62,18 @@ export function setupChat(io: Server): void {
       if (safeGifUrl) {
         msg.gifUrl = safeGifUrl;
       }
+      if (safeImageUrls?.length) {
+        msg.imageUrls = safeImageUrls;
+      }
 
-      if (replyTo?.id && replyTo.senderName && replyTo.text) {
+      const replyImageUrl = validImageUrl(roomId, replyTo?.imageUrl) ? replyTo.imageUrl : undefined;
+      if (replyTo?.id && replyTo.senderName && (replyTo.text || replyImageUrl)) {
         msg.replyTo = {
           id: replyTo.id,
           senderName: replyTo.senderName,
-          text: replyTo.text,
+          text: replyTo.text || "[Image]",
         };
+        if (replyImageUrl) msg.replyTo.imageUrl = replyImageUrl;
       }
 
       addChatMessage(roomId, msg);

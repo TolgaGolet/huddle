@@ -10,6 +10,7 @@ import {
   isRoomFull,
   MAX_PARTICIPANTS,
 } from "./roomManager.js";
+import { deleteRoomImages } from "./imageRouter.js";
 
 export const socketRoomMap = new Map<string, string>();
 const roomScreenSharer = new Map<string, string>();
@@ -120,6 +121,9 @@ export function setupSignaling(io: Server): void {
       removeParticipant(roomId, socket.id);
       socketRoomMap.delete(socket.id);
       socket.to(roomId).emit("participant-left", { id: socket.id });
+      if (!getRoom(roomId)) {
+        void deleteRoomImages(roomId);
+      }
     });
   });
 }
