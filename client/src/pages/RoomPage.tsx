@@ -14,6 +14,7 @@ import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS } from "../types";
 import { huddleLog } from "../lib/huddleLog";
+import { playMuteSound, playUnmuteSound } from "../lib/notificationSounds";
 
 export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -198,6 +199,9 @@ export default function RoomPage() {
     if (audioTrack) {
       audioTrack.enabled = isMuted;
       setIsMuted(!isMuted);
+      // isMuted = currently muted -> we are unmuting now
+      if (isMuted) playUnmuteSound();
+      else playMuteSound();
       socket?.emit("mute-toggle", { isMuted: !isMuted });
     }
   }, [localStream, isMuted, socket]);

@@ -34,3 +34,11 @@ export function playJoinSound() {
 export function playLeaveSound() {
   playTone([480, 360], 0.25, 0.10);
 }
+
+export function playMuteSound() {
+  playTone([520, 340], 0.14, 0.08);
+}
+
+export function playUnmuteSound() {
+  playTone([340, 560], 0.14, 0.08);
+}
