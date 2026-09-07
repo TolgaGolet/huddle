@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Smile, BarChart3, Reply, X, ChevronDown, Image as ImageIcon } from "lucide-react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Send, Smile, BarChart3, Reply, X, ChevronDown, Image as ImageIcon, MoreVertical, Pencil, Trash2, Pin, PinOff } from "lucide-react";
 import type { Socket } from "socket.io-client";
 import type { ChatMessage, ChatEntry } from "../types";
 import { isPollMessage } from "../types";
@@ -23,6 +23,14 @@ interface PendingImage { id: string; file: File; previewUrl: string; }
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "👌"];
 
+interface ContextMenuState {
+  messageId: string;
+  x: number;
+  y: number;
+  isOwn: boolean;
+  isPinned: boolean;
+}
+
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -45,6 +53,16 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
   const [isDragging, setIsDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const pinnedMessage = useMemo(
+    () => chatHistory.find((entry): entry is ChatMessage => !isPollMessage(entry) && !!entry.pinned) ?? null,
+    [chatHistory],
+  );
 
   function addImages(fileList: FileList | File[]) {
     setUploadError(null);
@@ -262,16 +280,90 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
     requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
+  function openContextMenu(msg: ChatMessage, e: React.MouseEvent) {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const container = scrollContainerRef.current?.getBoundingClientRect();
+    // Estimated menu size (min-w-40 = 160px wide, up to ~130px tall) used to
+    // keep the menu clamped inside the scroll container.
+    const MENU_W = 160;
+    const MENU_H = 130;
+    let x = container ? rect.left - container.left : rect.left;
+    let y = container ? rect.bottom - container.top : rect.bottom;
+    if (container) {
+      x = Math.min(x, container.width - MENU_W - 8);
+      y = Math.min(y, container.height - MENU_H - 8);
+    }
+    x = Math.max(8, x);
+    y = Math.max(8, y);
+    setContextMenu({
+      messageId: msg.id,
+      x,
+      y,
+      isOwn: msg.senderId === localId,
+      isPinned: !!msg.pinned,
+    });
+  }
+
+  function handleDeleteMessage(messageId: string) {
+    setContextMenu(null);
+    setConfirmDeleteId(messageId);
+  }
+
+  function confirmDelete() {
+    const messageId = confirmDeleteId;
+    setConfirmDeleteId(null);
+    if (!messageId) return;
+    if (editingMessageId === messageId) setEditingMessageId(null);
+    socket?.emit("chat-delete", { messageId });
+  }
+
+  function startEdit(msg: ChatMessage) {
+    setContextMenu(null);
+    setEditingMessageId(msg.id);
+    setEditText(msg.text);
+    requestAnimationFrame(() => editTextareaRef.current?.focus());
+  }
+
+  function submitEdit() {
+    if (!editingMessageId || !socket || !editText.trim()) return;
+    socket.emit("chat-edit", { messageId: editingMessageId, text: editText.trim() });
+    setEditingMessageId(null);
+    setEditText("");
+  }
+
+  function handlePinMessage(messageId: string) {
+    setContextMenu(null);
+    socket?.emit("chat-pin", { messageId });
+  }
+
+  // Close the context menu on any click outside of it.
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-context-menu]")) setContextMenu(null);
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [contextMenu]);
+
   function renderChatMessage(msg: ChatMessage) {
     const reactions = msg.reactions || {};
     const reactionEntries = Object.entries(reactions).filter(([, names]) => names.length > 0);
+    const isEditing = editingMessageId === msg.id;
 
     return (
       <div
         key={msg.id}
         ref={(el) => setMessageRef(msg.id, el)}
-        className="group relative rounded-lg px-2 py-1 -mx-2 transition-colors hover:bg-gray-800/40"
+        className={`group relative rounded-lg px-2 py-1 -mx-2 transition-colors hover:bg-gray-800/40 ${
+          msg.pinned ? "border-l-2 border-amber-400/70" : ""
+        }`}
       >
+        {msg.pinned && (
+          <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 mb-0.5">
+            <Pin size={9} /> Pinned
+          </span>
+        )}
         {/* Reply quote */}
         {msg.replyTo && (
           <button
@@ -331,7 +423,31 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
                 })}
               </div>
             ) : null}
-            {msg.text && <div className="text-sm text-gray-300 leading-relaxed">{formatMessage(msg.text)}</div>}
+            {isEditing ? (
+              <div className="mt-1 flex items-center gap-1.5">
+                <textarea
+                  ref={editTextareaRef}
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(); }
+                    if (e.key === "Escape") { setEditingMessageId(null); setEditText(""); }
+                  }}
+                  rows={1}
+                  className="flex-1 px-2 py-1 rounded bg-gray-800 border border-indigo-500 text-sm text-white focus:outline-none resize-none"
+                  autoFocus
+                />
+                <button type="button" onClick={submitEdit} className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs text-white cursor-pointer transition-colors">Save</button>
+                <button type="button" onClick={() => { setEditingMessageId(null); setEditText(""); }} className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 cursor-pointer transition-colors">Cancel</button>
+              </div>
+            ) : (
+              msg.text && (
+                <div className="text-sm text-gray-300 leading-relaxed">
+                  {formatMessage(msg.text)}
+                  {msg.edited && <span className="text-[10px] text-gray-500 ml-1.5">(edited)</span>}
+                </div>
+              )
+            )}
           </>
         )}
 
@@ -378,6 +494,14 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
           >
             <Reply size={13} />
           </button>
+          <button
+            type="button"
+            onClick={(e) => openContextMenu(msg, e)}
+            className="px-1.5 py-1 hover:bg-gray-700 transition-colors cursor-pointer text-gray-400 hover:text-gray-200 border-l border-gray-700"
+            title="More actions"
+          >
+            <MoreVertical size={13} />
+          </button>
         </div>
       </div>
     );
@@ -387,7 +511,35 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
     <div className="relative flex flex-col h-full" onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }} onDrop={(event) => { event.preventDefault(); setIsDragging(false); addImages(event.dataTransfer.files); }}>
       {isDragging && <div className="absolute inset-2 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-indigo-400 bg-gray-950/90 text-indigo-300 pointer-events-none">Drop images to send</div>}
       {/* Messages list */}
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1 min-h-0 flex flex-col">
+        {/* Sticky pinned message banner */}
+        {pinnedMessage && (
+          <div className="z-10 flex items-start gap-2 px-4 py-2 bg-gray-900/95 backdrop-blur border-b border-amber-400/30 shadow-sm shrink-0">
+            <Pin size={12} className="text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <button
+                type="button"
+                onClick={() => scrollToMessage(pinnedMessage.id)}
+                className="block w-full text-left cursor-pointer"
+              >
+                <span className={`text-[11px] font-medium ${avatarTextColor(pinnedMessage.senderName)}`}>
+                  {pinnedMessage.senderName}
+                </span>
+                <p className="text-xs text-gray-300 truncate">
+                  {pinnedMessage.text || (pinnedMessage.imageUrls?.length ? "[Image]" : "[GIF]")}
+                </p>
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => handlePinMessage(pinnedMessage.id)}
+              className="p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer shrink-0"
+              title="Unpin message"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
@@ -413,6 +565,46 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
           </div>
         </div>
 
+        {/* Message context menu */}
+        {contextMenu && (
+          <div
+            data-context-menu
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            className="absolute z-30 min-w-40 py-1 rounded-lg bg-gray-800 border border-gray-700 shadow-xl"
+          >
+            {contextMenu.isOwn && (
+              <button
+                type="button"
+                onClick={() => {
+                  const msg = chatHistory.find((m) => m.id === contextMenu.messageId);
+                  if (msg && !isPollMessage(msg) && msg.text) startEdit(msg);
+                  else setContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
+              >
+                <Pencil size={12} /> Edit message
+              </button>
+            )}
+            {contextMenu.isOwn && (
+              <button
+                type="button"
+                onClick={() => handleDeleteMessage(contextMenu.messageId)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-gray-700 transition-colors cursor-pointer"
+              >
+                <Trash2 size={12} /> Delete message
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => handlePinMessage(contextMenu.messageId)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
+            >
+              {contextMenu.isPinned ? <PinOff size={12} /> : <Pin size={12} />}
+              {contextMenu.isPinned ? "Unpin message" : "Pin message"}
+            </button>
+          </div>
+        )}
+
         {newMessageCount > 0 && (
           <button
             type="button"
@@ -422,6 +614,40 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
             {newMessageCount} new {newMessageCount === 1 ? "message" : "messages"}
             <ChevronDown size={14} />
           </button>
+        )}
+
+        {/* Delete confirmation dialog */}
+        {confirmDeleteId && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60" onMouseDown={() => setConfirmDeleteId(null)}>
+            <div
+              className="mx-4 w-72 rounded-xl bg-gray-800 border border-gray-700 shadow-2xl p-4"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <Trash2 size={14} className="text-red-400" />
+                <h3 className="text-sm font-semibold text-white">Delete message?</h3>
+              </div>
+              <p className="text-xs text-gray-400 mb-4">
+                This message will be removed for everyone in the room. This cannot be undone.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteId(null)}
+                  className="px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmDelete}
+                  className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-xs text-white transition-colors cursor-pointer"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 

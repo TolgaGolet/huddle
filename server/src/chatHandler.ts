@@ -114,5 +114,63 @@ export function setupChat(io: Server): void {
         reactions: msg.reactions,
       });
     });
+
+    socket.on("chat-edit", ({ messageId, text }: { messageId: string; text: string }) => {
+      const roomId = socketRoomMap.get(socket.id);
+      if (!roomId) return;
+      const room = getRoom(roomId);
+      if (!room) return;
+      const participant = room.participants.get(socket.id);
+      if (!participant) return;
+
+      const entry = room.chatHistory.find((m) => m.id === messageId);
+      if (!entry || "type" in entry) return;
+      const msg = entry as ChatMessage;
+
+      // Only the sender can edit their own message. GIFs and image-only
+      // messages cannot be edited to text.
+      if (msg.senderId !== socket.id) return;
+      const trimmed = text?.trim() ?? "";
+      if (!trimmed || msg.gifUrl || msg.imageUrls?.length) return;
+
+      msg.text = trimmed;
+      msg.edited = true;
+      io.to(roomId).emit("chat-message-edit", { messageId, text: trimmed });
+    });
+
+    socket.on("chat-delete", ({ messageId }: { messageId: string }) => {
+      const roomId = socketRoomMap.get(socket.id);
+      if (!roomId) return;
+      const room = getRoom(roomId);
+      if (!room) return;
+      if (!room.participants.has(socket.id)) return;
+
+      const entry = room.chatHistory.find((m) => m.id === messageId);
+      if (!entry || "type" in entry) return;
+      const msg = entry as ChatMessage;
+      if (msg.senderId !== socket.id) return;
+
+      if (room.pinnedMessageId === messageId) room.pinnedMessageId = null;
+      room.chatHistory = room.chatHistory.filter((m) => m.id !== messageId);
+      io.to(roomId).emit("chat-message-delete", { messageId });
+    });
+
+    socket.on("chat-pin", ({ messageId }: { messageId: string }) => {
+      const roomId = socketRoomMap.get(socket.id);
+      if (!roomId) return;
+      const room = getRoom(roomId);
+      if (!room) return;
+      if (!room.participants.has(socket.id)) return;
+
+      const entry = room.chatHistory.find((m) => m.id === messageId);
+      if (!entry) return;
+
+      // Toggle: pinning a different message unpins the previous one.
+      room.pinnedMessageId = room.pinnedMessageId === messageId ? null : messageId;
+      io.to(roomId).emit("chat-pin-update", {
+        pinnedMessageId: room.pinnedMessageId,
+        chatHistory: room.chatHistory,
+      });
+    });
   });
 }

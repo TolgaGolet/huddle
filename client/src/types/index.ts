@@ -26,6 +26,8 @@ export interface ChatMessage {
   };
   gifUrl?: string;
   imageUrls?: string[];
+  edited?: boolean;
+  pinned?: boolean;
 }
 
 export interface PollOption {

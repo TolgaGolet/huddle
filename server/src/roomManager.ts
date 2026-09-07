@@ -24,6 +24,8 @@ export interface ChatMessage {
   gifUrl?: string;
   imageUrls?: string[];
   encrypted?: boolean;
+  edited?: boolean;
+  pinned?: boolean;
 }
 
 export interface PollOption {
@@ -52,6 +54,7 @@ export interface Room {
   participants: Map<string, Participant>;
   chatHistory: ChatEntry[];
   encryptionSalt: string | null;
+  pinnedMessageId: string | null;
 }
 
 const MAX_CHAT_HISTORY = 200;
@@ -73,6 +76,7 @@ export function createRoom(password?: string): Room {
     password: password || null,
     participants: new Map(),
     chatHistory: [],
+    pinnedMessageId: null,
     encryptionSalt: password ? randomBytes(16).toString("base64url") : null,
   };
   rooms.set(id, room);

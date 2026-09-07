@@ -148,6 +148,26 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         );
       };
 
+      const onChatMessageEdit = ({ messageId, text }: { messageId: string; text: string }) => {
+        setChatHistory((prev) =>
+          prev.map((entry) =>
+            entry.id === messageId && !("type" in entry)
+              ? { ...entry, text, edited: true }
+              : entry,
+          ),
+        );
+      };
+
+      const onChatMessageDelete = ({ messageId }: { messageId: string }) => {
+        setChatHistory((prev) => prev.filter((entry) => entry.id !== messageId));
+      };
+
+      const onChatPinUpdate = ({ pinnedMessageId, chatHistory: history }: { pinnedMessageId: string | null; chatHistory: ChatEntry[] }) => {
+        setChatHistory(history.slice(-MAX_CLIENT_CHAT).map((entry) =>
+          !("type" in entry) ? { ...entry, pinned: entry.id === pinnedMessageId } : entry,
+        ));
+      };
+
       socket.on("connect", onConnect);
       socket.on("disconnect", onDisconnect);
       socket.on("error", onError);
@@ -159,6 +179,9 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       socket.on("screen-share-stopped", onScreenShareStopped);
       socket.on("chat-message", onChatMessage);
       socket.on("chat-reaction-update", onChatReactionUpdate);
+      socket.on("chat-message-edit", onChatMessageEdit);
+      socket.on("chat-message-delete", onChatMessageDelete);
+      socket.on("chat-pin-update", onChatPinUpdate);
       socket.on("poll-create", onPollCreate);
       socket.on("poll-update", onPollUpdate);
     }, 0);
