@@ -6,6 +6,9 @@ import { useWebRTC } from "../hooks/useWebRTC";
 import { useMediaDevices } from "../hooks/useMediaDevices";
 import { useCaptureAudio } from "../hooks/useCaptureAudio";
 import { useVoiceActivity } from "../hooks/useVoiceActivity";
+import { useAudioSettings } from "../hooks/useAudioSettings";
+import { useMicTelemetry } from "../hooks/useMicTelemetry";
+import { useTransmissionGate } from "../hooks/useTransmissionGate";
 import ParticipantsList from "../components/ParticipantsList";
 import ChatPanel from "../components/ChatPanel";
 import VoiceControls from "../components/VoiceControls";
@@ -64,12 +67,24 @@ export default function RoomPage() {
   }, []);
 
   const { audioInputs, selectedDeviceId, setSelectedDeviceId } = useMediaDevices();
+  const {
+    settings,
+    setNoiseCancellationEnabled,
+    setTransmissionThreshold,
+    setManualThresholdDb,
+  } = useAudioSettings();
   const { processStream, localAnalyser, needsAudioGesture, resumeAudio, cleanup } = useCaptureAudio();
   const rawStreamRef = useRef<MediaStream | null>(null);
   // Generation guard: only the newest acquisition may install its stream.
   // Stale getUserMedia completions (e.g. from a superseded device switch)
   // are stopped instead of overwriting the active capture.
   const acquireGenRef = useRef(0);
+
+  // Check if noise suppression is supported as a controllable constraint
+  const isNoiseCancellationSupported = Boolean(
+    typeof navigator !== "undefined" &&
+      navigator.mediaDevices?.getSupportedConstraints?.()?.noiseSuppression,
+  );
 
   /**
    * Build browser-compatible audio constraints that request native WebRTC
@@ -84,25 +99,28 @@ export default function RoomPage() {
    * not support a constraint still returns a usable track. Device selection
    * uses `exact` so switching devices is honored.
    */
-  const buildAudioConstraints = useCallback((deviceId?: string): MediaTrackConstraints => {
-    const constraints: MediaTrackConstraints = {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    };
-    if (deviceId) {
-      constraints.deviceId = { exact: deviceId };
-    }
-    return constraints;
-  }, []);
+  const buildAudioConstraints = useCallback(
+    (deviceId?: string, noiseCancellation = settings.noiseCancellationEnabled): MediaTrackConstraints => {
+      const constraints: MediaTrackConstraints = {
+        echoCancellation: true,
+        noiseSuppression: noiseCancellation,
+        autoGainControl: true,
+      };
+      if (deviceId) {
+        constraints.deviceId = { exact: deviceId };
+      }
+      return constraints;
+    },
+    [settings.noiseCancellationEnabled],
+  );
 
   const acquireMic = useCallback(
-    async (deviceId?: string) => {
+    async (deviceId?: string, noiseCancellation?: boolean) => {
       const gen = ++acquireGenRef.current;
       const startedAt = performance.now();
       try {
         const raw = await navigator.mediaDevices.getUserMedia({
-          audio: buildAudioConstraints(deviceId),
+          audio: buildAudioConstraints(deviceId, noiseCancellation),
         });
         huddleLog("capture", {
           event: "getUserMedia-resolved",
@@ -144,7 +162,26 @@ export default function RoomPage() {
 
         const processed = await processStream(raw);
         if (gen !== acquireGenRef.current) return;
-        setLocalStream(processed);
+
+        // Clone the native capture track specifically for the outbound WebRTC stream.
+        // This decouples outbound transmission gating (track.enabled) from the localAnalyser
+        // tap. Setting outboundTrack.enabled = false silences transmission without silencing
+        // the raw analyser input, allowing the gate to reopen when speech resumes.
+        const rawAudioTrack = raw.getAudioTracks()[0];
+        const outboundTrack = rawAudioTrack ? rawAudioTrack.clone() : null;
+        const outboundStream = outboundTrack ? new MediaStream([outboundTrack]) : processed;
+
+        const outboundAudioTrack = outboundStream.getAudioTracks()[0];
+        if (outboundAudioTrack) {
+          outboundAudioTrack.enabled = !isMuted;
+        }
+
+        // Clean up previously active outbound tracks
+        if (localStream && localStream !== raw) {
+          localStream.getAudioTracks().forEach((t) => t.stop());
+        }
+
+        setLocalStream(outboundStream);
         huddleLog("capture", {
           event: "localStream-committed",
           gen,
@@ -154,13 +191,16 @@ export default function RoomPage() {
         huddleLog("capture", { event: "getUserMedia-failed", error: String(err) });
       }
     },
-    [processStream, buildAudioConstraints],
+    [processStream, buildAudioConstraints, isMuted, localStream],
   );
 
   useEffect(() => {
     acquireMic();
     return () => {
       rawStreamRef.current?.getTracks().forEach((t) => t.stop());
+      if (localStream && localStream !== rawStreamRef.current) {
+        localStream.getTracks().forEach((t) => t.stop());
+      }
       cleanup();
     };
   }, []);
@@ -173,6 +213,35 @@ export default function RoomPage() {
       acquireMic(deviceId);
     },
     [acquireMic, setSelectedDeviceId],
+  );
+
+  const handleNoiseCancellationChange = useCallback(
+    async (enabled: boolean) => {
+      setNoiseCancellationEnabled(enabled);
+
+      const track = rawStreamRef.current?.getAudioTracks()[0];
+      if (track && typeof track.applyConstraints === "function") {
+        try {
+          await track.applyConstraints({
+            noiseSuppression: enabled,
+          });
+          huddleLog("capture", {
+            event: "applyConstraints-noiseSuppression-success",
+            enabled,
+          });
+          return;
+        } catch (err) {
+          huddleLog("capture", {
+            event: "applyConstraints-failed-fallback-reacquire",
+            error: String(err),
+          });
+        }
+      }
+
+      // Fallback: reacquire mic with new constraints
+      acquireMic(selectedDeviceId, enabled);
+    },
+    [setNoiseCancellationEnabled, acquireMic, selectedDeviceId],
   );
 
   const handleScreenShareStopped = useCallback(() => {
@@ -191,20 +260,49 @@ export default function RoomPage() {
   const { remoteAnalysers, screenStreams, startScreenShare, stopScreenShare, setRemoteVolume } =
     useWebRTC({ socket, localStream, onScreenShareStopped: handleScreenShareStopped, onSignalingReady: handleSignalingReady });
 
-  const speaking = useVoiceActivity(remoteAnalysers, localAnalyser, socket?.id);
+  // Steam-chat style voice transmission threshold gate:
+  // Suppresses transmitting slight noises, fan hums, mouse clicks when below threshold.
+  const isTransmitting = useTransmissionGate({
+    localAnalyser,
+    outboundStream: localStream,
+    threshold: settings.transmissionThreshold,
+    manualThresholdDb: settings.manualThresholdDb,
+    isMuted,
+  });
+
+  const rawSpeaking = useVoiceActivity(remoteAnalysers, localAnalyser, socket?.id);
+
+  // Speaking indicator for local participant should illuminate ONLY if voice is actively
+  // being transmitted to other users (unmuted AND passing transmission threshold).
+  const speaking = useRef(new Set<string>()).current;
+  speaking.clear();
+  for (const id of rawSpeaking) {
+    if (id === (socket?.id || "local")) {
+      if (isTransmitting && !isMuted) {
+        speaking.add(id);
+      }
+    } else {
+      speaking.add(id);
+    }
+  }
+
+  const telemetry = useMicTelemetry(
+    localAnalyser,
+    isMuted,
+    settings.transmissionThreshold,
+    settings.manualThresholdDb,
+    showSettings,
+  );
 
   const handleToggleMute = useCallback(() => {
-    if (!localStream) return;
-    const audioTrack = localStream.getAudioTracks()[0];
-    if (audioTrack) {
-      audioTrack.enabled = isMuted;
-      setIsMuted(!isMuted);
-      // isMuted = currently muted -> we are unmuting now
-      if (isMuted) playUnmuteSound();
-      else playMuteSound();
-      socket?.emit("mute-toggle", { isMuted: !isMuted });
-    }
-  }, [localStream, isMuted, socket]);
+    setIsMuted((prev) => {
+      const nextMuted = !prev;
+      if (nextMuted) playMuteSound();
+      else playUnmuteSound();
+      socket?.emit("mute-toggle", { isMuted: nextMuted });
+      return nextMuted;
+    });
+  }, [socket]);
 
   const someoneElseSharing = !!currentScreenSharer && currentScreenSharer !== socket?.id;
 
@@ -366,6 +464,14 @@ export default function RoomPage() {
           audioInputs={audioInputs}
           selectedDeviceId={selectedDeviceId}
           onDeviceChange={handleDeviceChange}
+          noiseCancellationEnabled={settings.noiseCancellationEnabled}
+          onNoiseCancellationChange={handleNoiseCancellationChange}
+          isNoiseCancellationSupported={isNoiseCancellationSupported}
+          transmissionThreshold={settings.transmissionThreshold}
+          onTransmissionThresholdChange={setTransmissionThreshold}
+          manualThresholdDb={settings.manualThresholdDb}
+          onManualThresholdDbChange={setManualThresholdDb}
+          telemetry={telemetry}
         />
       )}
 

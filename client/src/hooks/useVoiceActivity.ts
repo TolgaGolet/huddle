@@ -1,4 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ATTACK_MS,
+  calculateAnalyserLevel,
+  CLOSE_THRESHOLD_DB,
+  NOISE_FLOOR_MAX_DB,
+  NOISE_FLOOR_MIN_DB,
+  OPEN_THRESHOLD_DB,
+  RELEASE_MS,
+  updateAdaptiveNoiseFloor,
+} from "../lib/audioLevels";
 
 /**
  * Visual voice-activity detection.
@@ -16,26 +26,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
  */
 
 const POLL_INTERVAL = 100; // ms — frequent enough for responsive UI rings
-const OPEN_THRESHOLD_DB = -42; // ~6.3% RMS; speech typically exceeds this
-const CLOSE_THRESHOLD_DB = -48; // hysteresis prevents flicker near the threshold
-const ATTACK_MS = 60; // open quickly when speech starts
-const RELEASE_MS = 500; // hold open briefly after speech ends (hangover)
-const NOISE_FLOOR_LEARN_RATE = 0.02; // slow adaptation so sustained speech doesn't raise the floor
-const NOISE_FLOOR_MIN_DB = -70;
-const NOISE_FLOOR_MAX_DB = -35;
 
 interface VoiceState {
   levelDb: number;
   noiseFloorDb: number;
   openSince: number; // timestamp the gate opened (0 = closed)
   closedSince: number; // timestamp the gate closed (0 = open)
-}
-
-function rmsToDb(rms: number): number {
-  if (rms <= 0) return -100;
-  // Clamp to avoid log(0)/Infinity; 8-bit data is 0..255 centered at 128.
-  const clamped = Math.max(rms, 1e-7);
-  return 20 * Math.log10(clamped / 128);
 }
 
 export function useVoiceActivity(
@@ -77,16 +73,7 @@ export function useVoiceActivity(
           bufferRef.current = new Uint8Array(binCount);
         }
         const buf = bufferRef.current;
-        analyser.getByteTimeDomainData(buf);
-
-        // Compute RMS of the centered signal (8-bit PCM, midpoint 128).
-        let sumSq = 0;
-        for (let i = 0; i < binCount; i++) {
-          const v = buf[i] - 128;
-          sumSq += v * v;
-        }
-        const rms = Math.sqrt(sumSq / binCount);
-        const levelDb = rmsToDb(rms);
+        const { levelDb } = calculateAnalyserLevel(analyser, buf);
 
         let st = states.get(id);
         if (!st) {
@@ -101,12 +88,7 @@ export function useVoiceActivity(
 
         // Adaptive noise floor: slowly track downward when quiet, never track
         // upward fast enough to suppress sustained speech.
-        if (levelDb < st.noiseFloorDb) {
-          st.noiseFloorDb = levelDb;
-        } else {
-          st.noiseFloorDb += (levelDb - st.noiseFloorDb) * NOISE_FLOOR_LEARN_RATE;
-        }
-        st.noiseFloorDb = Math.max(Math.min(st.noiseFloorDb, NOISE_FLOOR_MAX_DB), NOISE_FLOOR_MIN_DB);
+        st.noiseFloorDb = updateAdaptiveNoiseFloor(st.noiseFloorDb, levelDb);
         st.levelDb = levelDb;
 
         const openThr = Math.max(OPEN_THRESHOLD_DB, st.noiseFloorDb + 12);

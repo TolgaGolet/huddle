@@ -59,3 +59,20 @@ export interface Room {
   id: string;
   participants: Participant[];
 }
+
+export type VoiceTransmissionThreshold = "off" | "low" | "medium" | "high" | "very-high" | "manual";
+
+export interface AudioSettingsState {
+  noiseCancellationEnabled: boolean;
+  transmissionThreshold: VoiceTransmissionThreshold;
+  manualThresholdDb: number;
+}
+
+export interface MicTelemetry {
+  levelDb: number;
+  noiseFloorDb: number;
+  thresholdDb: number | null;
+  isTransmitting: boolean;
+  isMuted: boolean;
+  hasInput: boolean;
+}
