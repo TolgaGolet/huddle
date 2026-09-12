@@ -36,6 +36,15 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// Extract image files from clipboard data (e.g. screenshots copied via
+// Snipping Tool, or copied image files in Explorer).
+function extractClipboardImages(clipboardData: DataTransfer | null): File[] {
+  if (!clipboardData) return [];
+  return Array.from(clipboardData.items)
+    .map((item) => (item.kind === "file" ? item.getAsFile() : null))
+    .filter((file): file is File => !!file && isImageFile(file) && file.size > 0);
+}
+
 export default function ChatPanel({ socket, chatHistory, localId, roomId }: Props) {
   const [text, setText] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -60,6 +69,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   const pinnedMessage = useMemo(
     () => chatHistory.find((entry) => entry.pinned === true) ?? null,
@@ -78,6 +88,15 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
     }
     if (accepted.length) setPendingImages((current) => [...current, ...accepted]);
     if (errors.length) setUploadError(errors[0]);
+  }
+
+  // Extract image files from clipboard data (e.g. screenshots copied via
+  // Snipping Tool, or copied image files in Explorer).
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const images = extractClipboardImages(e.clipboardData);
+    if (!images.length) return;
+    e.preventDefault();
+    addImages(images);
   }
 
   function removeImage(id: string) {
@@ -172,7 +191,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
         });
       }
     },
-    [text],
+    [text, pendingImages],
   );
 
   async function doSend() {
@@ -341,6 +360,16 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
     socket?.emit("chat-pin", { messageId });
   }
 
+  // Close the lightbox with Escape while it is open.
+  useEffect(() => {
+    if (!lightboxUrl) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightboxUrl(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxUrl]);
+
   // Close the context menu on any click outside of it.
   useEffect(() => {
     if (!contextMenu) return;
@@ -379,11 +408,18 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
             <Reply size={10} className="text-gray-500 shrink-0" />
             <span className="text-[11px] text-indigo-400 font-medium shrink-0">{msg.replyTo.senderName}</span>
             {msg.replyTo.imageUrl ? (
-              <img
-                src={`${msg.replyTo.imageUrl}?socketId=${encodeURIComponent(localId)}`}
-                alt="Replied image"
-                className="h-8 w-8 rounded object-cover shrink-0"
-              />
+              <button
+                type="button"
+                onClick={() => setLightboxUrl(`${msg.replyTo!.imageUrl}?socketId=${encodeURIComponent(localId)}`)}
+                className="shrink-0 cursor-zoom-in"
+                title="View image"
+              >
+                <img
+                  src={`${msg.replyTo.imageUrl}?socketId=${encodeURIComponent(localId)}`}
+                  alt="Replied image"
+                  className="h-8 w-8 rounded object-cover"
+                />
+              </button>
             ) : (
               <span className="text-[11px] text-gray-500 truncate max-w-48">{msg.replyTo.text || "[Image]"}</span>
             )}
@@ -422,9 +458,17 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
               <div className="mt-1 grid grid-cols-2 gap-1.5 max-w-sm">
                 {msg.imageUrls.map((url) => {
                   const imageUrl = `${url}?socketId=${encodeURIComponent(localId)}`;
-                  return <a key={url} href={imageUrl} target="_blank" rel="noopener noreferrer">
-                    <img src={imageUrl} alt="Shared image" className="rounded-lg max-h-48 w-full object-cover hover:brightness-90 transition-all" loading="lazy" onLoad={scrollPinnedToBottom} />
-                  </a>;
+                  return (
+                    <button
+                      key={url}
+                      type="button"
+                      onClick={() => setLightboxUrl(imageUrl)}
+                      className="cursor-zoom-in"
+                      title="View image"
+                    >
+                      <img src={imageUrl} alt="Shared image" className="rounded-lg max-h-48 w-full object-cover hover:brightness-90 transition-all" loading="lazy" onLoad={scrollPinnedToBottom} />
+                    </button>
+                  );
                 })}
               </div>
             ) : null}
@@ -629,6 +673,31 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
           </button>
         )}
 
+        {/* Image lightbox */}
+        {lightboxUrl && (
+          <div
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
+            onMouseDown={() => setLightboxUrl(null)}
+          >
+            <div className="relative max-h-full max-w-full" onMouseDown={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setLightboxUrl(null)}
+                className="absolute -top-2 -right-2 z-10 rounded-full bg-gray-800 border border-gray-600 p-1.5 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors cursor-pointer shadow-lg"
+                title="Close"
+              >
+                <X size={16} />
+              </button>
+              <img
+                src={lightboxUrl}
+                alt="Shared image"
+                className="max-h-full max-w-full rounded-lg shadow-2xl"
+                onClick={() => setLightboxUrl(null)}
+              />
+            </div>
+          </div>
+        )}
+
         {/* Delete confirmation dialog */}
         {confirmDeleteId && (
           <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60" onMouseDown={() => setConfirmDeleteId(null)}>
@@ -773,6 +842,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               placeholder="Type a message..."
               rows={1}
               className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors resize-none min-h-[36px] max-h-28 overflow-y-auto"
