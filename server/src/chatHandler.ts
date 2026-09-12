@@ -28,6 +28,20 @@ function validImageUrl(roomId: string, imageUrl: unknown): imageUrl is string {
 
 export function setupChat(io: Server): void {
   io.on("connection", (socket: Socket) => {
+    // Typing indicator relay: broadcast to the room so others can show
+    // "X is typing...". Clients auto-expire the indicator themselves.
+    socket.on("typing", () => {
+      const roomId = socketRoomMap.get(socket.id);
+      if (!roomId) return;
+      const room = getRoom(roomId);
+      const participant = room?.participants.get(socket.id);
+      if (!participant) return;
+      io.to(roomId).emit("typing", {
+        senderId: socket.id,
+        senderName: participant.name,
+      });
+    });
+
     socket.on("chat-message", ({ text, replyTo, gifUrl, imageUrls }: IncomingChatMessage) => {
       const roomId = socketRoomMap.get(socket.id);
       if (!roomId) return;

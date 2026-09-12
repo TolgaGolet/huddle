@@ -17,6 +17,8 @@ interface Props {
   chatHistory: ChatEntry[];
   localId: string;
   roomId: string;
+  typingUsers: string[];
+  notifyTyping: () => void;
 }
 
 interface PendingImage { id: string; file: File; previewUrl: string; }
@@ -45,7 +47,7 @@ function extractClipboardImages(clipboardData: DataTransfer | null): File[] {
     .filter((file): file is File => !!file && isImageFile(file) && file.size > 0);
 }
 
-export default function ChatPanel({ socket, chatHistory, localId, roomId }: Props) {
+export default function ChatPanel({ socket, chatHistory, localId, roomId, typingUsers, notifyTyping }: Props) {
   const [text, setText] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showGifPicker, setShowGifPicker] = useState(false);
@@ -70,6 +72,28 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
   const [editText, setEditText] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const lastTypingSentRef = useRef(0);
+
+  // Human-readable typing indicator, WhatsApp-style:
+  // "A is typing..." / "A and B are typing..." / "A, B and 2 others are typing..."
+  const typingLabel = useMemo(() => {
+    const count = typingUsers.length;
+    if (count === 0) return null;
+    if (count === 1) return `${typingUsers[0]} is typing...`;
+    if (count === 2) return `${typingUsers[0]} and ${typingUsers[1]} are typing...`;
+    const shown = typingUsers.slice(0, 2).join(", ");
+    const others = count - 2;
+    return `${shown} and ${others} ${others === 1 ? "other" : "others"} are typing...`;
+  }, [typingUsers]);
+
+  // Throttle typing emissions to at most one per second while the user types.
+  const handleTyping = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTypingSentRef.current >= 1000) {
+      lastTypingSentRef.current = now;
+      notifyTyping();
+    }
+  }, [notifyTyping]);
 
   const pinnedMessage = useMemo(
     () => chatHistory.find((entry) => entry.pinned === true) ?? null,
@@ -735,6 +759,13 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
 
       {/* Input area */}
       <div className="px-4 pb-4 relative">
+        {/* Typing indicator */}
+        {typingLabel && (
+          <p className="mb-1 h-4 text-[11px] text-indigo-400 italic truncate" aria-live="polite">
+            {typingLabel}
+          </p>
+        )}
+
         {/* Reply preview */}
         {replyingTo && (
           <div className="flex items-center gap-2 mb-2 px-3 py-2 bg-gray-800/60 border border-gray-700 rounded-lg">
@@ -840,7 +871,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId }: Prop
             <textarea
               ref={textareaRef}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => { setText(e.target.value); handleTyping(); }}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder="Type a message..."

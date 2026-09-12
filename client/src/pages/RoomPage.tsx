@@ -27,7 +27,7 @@ export default function RoomPage() {
   const name = state?.name || "Anonymous";
   const password = state?.password;
 
-  const { socket, participants, chatHistory, connected, joinError, currentScreenSharer, joinRoom } = useSocket({
+  const { socket, participants, chatHistory, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
     roomId: roomId || "",
     name,
     password,
@@ -453,7 +453,7 @@ export default function RoomPage() {
                 : "flex-1 flex flex-col"
             }
           >
-            <ChatPanel socket={socket} chatHistory={chatHistory} localId={socket?.id || "local"} roomId={roomId} />
+            <ChatPanel socket={socket} chatHistory={chatHistory} localId={socket?.id || "local"} roomId={roomId} typingUsers={typingUsers} notifyTyping={notifyTyping} />
           </div>
         </main>
       </div>

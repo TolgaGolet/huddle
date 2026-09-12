@@ -55,3 +55,8 @@ export function playDisconnectSound() {
 export function playReconnectSound() {
   playTone([330, 440, 660], 0.35, 0.12);
 }
+
+/** Short, subtle two-note cue for an incoming chat message. */
+export function playMessageSound() {
+  playTone([660, 880], 0.18, 0.10);
+}
