@@ -46,6 +46,17 @@ interface UseWebRTCOptions {
   onSignalingReady?: () => void;
 }
 
+/** Max ICE restart attempts on a peer before a full teardown + rebuild. */
+const MAX_ICE_RESTARTS = 2;
+/** Backoff (ms) before rebuilding a failed peer, so both sides have a chance
+ * to close their stale PCs and the new gathering run is not colliding with
+ * the previous one. */
+const PEER_REBUILD_DELAY_MS = 1500;
+/** Max time from peer creation to a fully connected transport before the
+ * peer is considered stuck and rebuilt. Fast-fails dead negotiations so the
+ * newcomer is not stuck silently waiting for audio that will never flow. */
+const PEER_CONNECT_TIMEOUT_MS = 12000;
+
 export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignalingReady }: UseWebRTCOptions) {
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const remoteAudioRef = useRef(new RemoteAudioManager());
@@ -69,11 +80,41 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
   // disconnected so we can escalate after a bounded timeout.
   const iceRestartRef = useRef<Map<string, boolean>>(new Map());
   const disconnectedSinceRef = useRef<Map<string, number>>(new Map());
+  // Per-peer count of ICE restart attempts since the last successful
+  // connection. Once this exceeds MAX_ICE_RESTARTS the peer is torn down and
+  // fully rebuilt (new RTCPeerConnection + renegotiation) instead of
+  // endlessly restarting ICE on a transport that cannot recover.
+  const restartCountRef = useRef<Map<string, number>>(new Map());
   const statsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Per-peer last-seen audio activity counters, used by the recovery watchdog
   // to detect a connected-but-silent pair (stuck audio m-line).
   const lastAudioBytesRef = useRef<Map<string, { in: number; out: number; at: number }>>(new Map());
   const silentSinceRef = useRef<Map<string, number>>(new Map());
+  // Per-peer RTCPeerConnectionState, mirrored into React state so the UI can
+  // show a "Connecting…" badge for peers that have not finished connecting.
+  const [peerStates, setPeerStates] = useState<Map<string, RTCPeerConnectionState>>(new Map());
+  const setPeerState = useCallback((peerId: string, state: RTCPeerConnectionState) => {
+    setPeerStates((prev) => {
+      if (prev.get(peerId) === state) return prev;
+      const next = new Map(prev);
+      next.set(peerId, state);
+      return next;
+    });
+  }, []);
+  // Per-peer connect timers: fire if the peer has not reached `connected`
+  // within PEER_CONNECT_TIMEOUT_MS of creation, and force a rebuild.
+  const connectTimeoutRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const clearConnectTimeout = useCallback((peerId: string) => {
+    const t = connectTimeoutRef.current.get(peerId);
+    if (t) {
+      clearTimeout(t);
+      connectTimeoutRef.current.delete(peerId);
+    }
+  }, []);
+  // Late-bound reference to `rebuildPeer` (defined below `createPeer`). Using
+  // a ref avoids a TDZ cycle between the two callbacks while keeping deps
+  // stable.
+  const rebuildPeerRef = useRef<(peerId: string) => void>(() => {});
 
   localStreamRef.current = localStream;
   socketRef.current = socket;
@@ -91,8 +132,16 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     sdpLockRef.current.delete(peerId);
     iceRestartRef.current.delete(peerId);
     disconnectedSinceRef.current.delete(peerId);
+    restartCountRef.current.delete(peerId);
     lastAudioBytesRef.current.delete(peerId);
     silentSinceRef.current.delete(peerId);
+    clearConnectTimeout(peerId);
+    setPeerStates((prev) => {
+      if (!prev.has(peerId)) return prev;
+      const next = new Map(prev);
+      next.delete(peerId);
+      return next;
+    });
     remoteAudioRef.current.removeStream(peerId);
     screenSendersRef.current.delete(peerId);
     setRemoteAnalysers(new Map(remoteAudioRef.current.getAnalysers()));
@@ -125,6 +174,10 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     sdpLockRef.current.clear();
     iceRestartRef.current.clear();
     disconnectedSinceRef.current.clear();
+    restartCountRef.current.clear();
+    for (const t of connectTimeoutRef.current.values()) clearTimeout(t);
+    connectTimeoutRef.current.clear();
+    setPeerStates(new Map());
     screenSendersRef.current.clear();
     lastAudioBytesRef.current.clear();
     silentSinceRef.current.clear();
@@ -141,6 +194,28 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peersRef.current.set(peerId, pc);
+
+      // Arm a stuck-peer timer: if this peer never reaches `connected`, the
+      // sampler-style escalation happens too slowly for a newcomer waiting on
+      // audio. A full rebuild after PEER_CONNECT_TIMEOUT_MS fast-fails dead
+      // negotiations so join-time audio converges quickly.
+      clearConnectTimeout(peerId);
+      connectTimeoutRef.current.set(
+        peerId,
+        setTimeout(() => {
+          connectTimeoutRef.current.delete(peerId);
+          const p = peersRef.current.get(peerId);
+          if (p && p.connectionState !== "connected" && p.connectionState !== "closed") {
+            huddleWarn("connection", {
+              peerId,
+              event: "connect-timeout-rebuild",
+              state: p.connectionState,
+              afterMs: PEER_CONNECT_TIMEOUT_MS,
+            });
+            rebuildPeerRef.current(peerId);
+          }
+        }, PEER_CONNECT_TIMEOUT_MS),
+      );
 
       const stream = localStreamRef.current;
       // Deterministic audio m-line: if we have a mic track, add it as a
@@ -191,17 +266,41 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       pc.onconnectionstatechange = () => {
         const state = pc.connectionState;
         huddleLog("connection", { peerId, state });
-        if (state === "failed") {
-          // Hard failure: restart ICE immediately (guarded against re-entry).
-          if (!iceRestartRef.current.get(peerId)) {
-            iceRestartRef.current.set(peerId, true);
-            try {
-              pc.restartIce();
-            } catch {
-              /* restart may throw if negotiation is in flight */
+        setPeerState(peerId, state);
+        if (state === "connected") {
+          // Success: cancel the stuck-peer rebuild timer and reset recovery
+          // bookkeeping so a healthy peer is never rebuilt unnecessarily.
+          clearConnectTimeout(peerId);
+          restartCountRef.current.delete(peerId);
+          silentSinceRef.current.delete(peerId);
+          lastAudioBytesRef.current.delete(peerId);
+          disconnectedSinceRef.current.delete(peerId);
+        } else if (state === "failed") {
+          // Hard failure. First try an ICE restart (bounded attempts); if the
+          // transport keeps failing (NAT rebinding, network switch, expired
+          // STUN-only mapping), tear the peer down and rebuild it from
+          // scratch so a completely fresh ICE gathering run happens.
+          const attempts = restartCountRef.current.get(peerId) ?? 0;
+          if (attempts < MAX_ICE_RESTARTS) {
+            restartCountRef.current.set(peerId, attempts + 1);
+            if (!iceRestartRef.current.get(peerId)) {
+              iceRestartRef.current.set(peerId, true);
+              try {
+                pc.restartIce();
+              } catch {
+                /* restart may throw if negotiation is in flight */
+              }
+              // Clear the flag once negotiation completes (see onnegotiationneeded).
+              setTimeout(() => iceRestartRef.current.set(peerId, false), 2000);
             }
-            // Clear the flag once negotiation completes (see onnegotiationneeded).
-            setTimeout(() => iceRestartRef.current.set(peerId, false), 2000);
+          } else {
+            huddleWarn("connection", {
+              peerId,
+              event: "ice-rebuild",
+              attempts,
+              reason: "exhausted-ice-restarts",
+            });
+            rebuildPeer(peerId);
           }
           disconnectedSinceRef.current.delete(peerId);
         } else if (state === "disconnected") {
@@ -211,7 +310,8 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
             disconnectedSinceRef.current.set(peerId, Date.now());
           }
         } else {
-          // connected / connecting / closed / new
+          // connecting / closed / new — nothing to clean up; the `connected`
+          // branch above already reset recovery bookkeeping.
           disconnectedSinceRef.current.delete(peerId);
         }
       };
@@ -250,6 +350,31 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     [removePeer, withSdpLock],
   );
 
+  /**
+   * Tear down a peer and recreate it from scratch after a short delay.
+   * The new RTCPeerConnection triggers `onnegotiationneeded` automatically,
+   * which emits a fresh offer to the remote side. If the remote side still
+   * holds a stale-but-open PC, the polite/impolite glare handling in
+   * `handleOffer` rolls back and accepts the fresh offer, and the rebuilt
+   * connection converges. If the remote PC is dead too, it will fail into
+   * its own rebuild and the fresh offer creates a new PC there.
+   */
+  const rebuildPeer = useCallback(
+    (peerId: string) => {
+      removePeer(peerId);
+      setTimeout(() => {
+        const sock = socketRef.current;
+        if (!sock?.connected) return;
+        // Do not rebuild for peers that have left the room while we waited.
+        if (!peersRef.current.has(peerId)) {
+          createPeer(peerId, true);
+        }
+      }, PEER_REBUILD_DELAY_MS);
+    },
+    [removePeer, createPeer],
+  );
+  rebuildPeerRef.current = rebuildPeer;
+
   useEffect(() => {
     if (!socket) return;
     const myId = socket.id;
@@ -270,6 +395,13 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       await withSdpLock(from, async () => {
         try {
           let pc = peersRef.current.get(from);
+          // A dead or failed PC cannot accept a fresh offer; discard it so a
+          // brand-new connection is created and converged from this offer.
+          if (pc && (pc.connectionState === "failed" || pc.connectionState === "closed")) {
+            huddleWarn("negotiate", { from, event: "discard-dead-peer", state: pc.connectionState });
+            removePeer(from);
+            pc = undefined;
+          }
           if (!pc) {
             pc = createPeer(from, false) ?? undefined;
           }
@@ -344,12 +476,18 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       }
     };
 
-    const handleParticipantJoined = (_data: { id: string }) => {
-      // The newly joined client creates the peer and the initial offer for each
-      // existing participant in `handleRoomJoined`. Existing participants only
-      // receive this UI notification and then the newcomer's `offer`, which
-      // lazily creates the answering peer in `handleOffer`. This eliminates
-      // the initial-offer glare where both sides negotiated at once.
+    const handleParticipantJoined = ({ id }: { id: string }) => {
+      // Bidirectional peer creation: BOTH the newcomer and every existing
+      // participant create the peer immediately. The existing perfect-
+      // negotiation glare handling (polite/impolite by id ordering, rollback,
+      // serialized SDP lock) resolves the collision deterministically, so
+      // double offers cannot wedge the pair. This removes the single point
+      // of failure where a lost or late newcomer offer left the pair dead
+      // ("others can't hear me but I can hear them") until a page refresh.
+      if (id === myId) return;
+      if (peersRef.current.has(id)) return;
+      huddleLog("peer", { event: "create-on-join", peerId: id });
+      createPeer(id, true);
     };
 
     const handleParticipantLeft = ({ id }: { id: string }) => {
@@ -523,9 +661,22 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     const SAMPLE_INTERVAL_MS = 5000;
 
     const sampleStats = async (peerId: string, pc: RTCPeerConnection) => {
-      // Escalate prolonged disconnection to an ICE restart.
+      // Discard a peer that can never connect: closed PCs are useless and a
+      // PC stuck in "connecting" for a long time means ICE gathering/checks
+      // failed permanently. Escalate to rebuild instead of waiting forever.
+      if (pc.connectionState === "closed") {
+        rebuildPeer(peerId);
+        return;
+      }
+      // Escalate prolonged disconnection to an ICE restart, and eventually to
+      // a full peer rebuild when ICE restarts are exhausted.
       const since = disconnectedSinceRef.current.get(peerId);
       if (since !== undefined && Date.now() - since > DISCONNECT_ESCALATION_MS) {
+        if ((restartCountRef.current.get(peerId) ?? 0) >= MAX_ICE_RESTARTS) {
+          huddleWarn("watchdog", { peerId, event: "disconnect-rebuild" });
+          rebuildPeer(peerId);
+          return;
+        }
         if (!iceRestartRef.current.get(peerId)) {
           iceRestartRef.current.set(peerId, true);
           try {
@@ -677,10 +828,12 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
         statsTimerRef.current = null;
       }
     };
-  }, []);
+  }, [rebuildPeer]);
 
   return {
     remoteAnalysers,
+    /** Per-peer RTCPeerConnectionState for UI (e.g. "Connecting…" badges). */
+    peerStates,
     screenStreams,
     startScreenShare,
     stopScreenShare,

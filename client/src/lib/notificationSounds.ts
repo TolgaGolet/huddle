@@ -42,3 +42,16 @@ export function playMuteSound() {
 export function playUnmuteSound() {
   playTone([340, 560], 0.14, 0.08);
 }
+
+/**
+ * Distinctive alert for losing the connection to the room. A repeating
+ * descending pattern so it is unmistakably an error, not a join/leave cue.
+ */
+export function playDisconnectSound() {
+  playTone([660, 440, 330, 220], 0.6, 0.18);
+}
+
+/** Positive ascending cue played when the connection to the room is restored. */
+export function playReconnectSound() {
+  playTone([330, 440, 660], 0.35, 0.12);
+}

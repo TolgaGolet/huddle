@@ -257,7 +257,7 @@ export default function RoomPage() {
     joinRoom();
   }, [joinRoom]);
 
-  const { remoteAnalysers, screenStreams, startScreenShare, stopScreenShare, setRemoteVolume } =
+  const { remoteAnalysers, screenStreams, startScreenShare, stopScreenShare, setRemoteVolume, peerStates } =
     useWebRTC({ socket, localStream, onScreenShareStopped: handleScreenShareStopped, onSignalingReady: handleSignalingReady });
 
   // Steam-chat style voice transmission threshold gate:
@@ -427,6 +427,7 @@ export default function RoomPage() {
             peerVolumes={peerVolumes}
             onSetPeerVolume={handleSetPeerVolume}
             maxParticipants={MAX_PARTICIPANTS}
+            peerStates={peerStates}
           />
           <VoiceControls
             isMuted={isMuted}

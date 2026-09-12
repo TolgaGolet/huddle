@@ -10,6 +10,8 @@ interface Props {
   peerVolumes: Map<string, number>;
   onSetPeerVolume: (peerId: string, volume: number) => void;
   maxParticipants?: number;
+  /** Per-peer WebRTC connection state; used to show "Connecting…" badges. */
+  peerStates?: Map<string, RTCPeerConnectionState>;
 }
 
 interface ContextMenuState {
@@ -27,6 +29,7 @@ export default function ParticipantsList({
   peerVolumes,
   onSetPeerVolume,
   maxParticipants,
+  peerStates,
 }: Props) {
   const [ctx, setCtx] = useState<ContextMenuState | null>(null);
 
@@ -63,6 +66,7 @@ export default function ParticipantsList({
           participant={p}
           isSpeaking={speaking.has(p.id)}
           isLocal={p.id === localId}
+          connectionState={p.id === localId ? "connected" : peerStates?.get(p.id)}
           onContextMenu={(e) => openMenu(e, p)}
           onMenuClick={(e) => openMenu(e, p)}
         />

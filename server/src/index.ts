@@ -23,6 +23,15 @@ const io = new Server(httpServer, {
   transports: ["websocket"],
   perMessageDeflate: false,
   maxHttpBufferSize: 64 * 1024,
+  // Keepalive tuning: long-running voice sessions are routinely interrupted by
+  // background-tab throttling, laptop sleep, or transient network changes.
+  // The defaults (25s ping / 20s timeout) drop clients that briefly stall;
+  // these values tolerate 60s of unresponsiveness before disconnecting.
+  pingInterval: 25000,
+  pingTimeout: 60000,
+  // Allow a short grace period so a client that reconnects quickly (network
+  // blip) can resume without a full handshake penalty.
+  connectTimeout: 30000,
 });
 
 app.use(express.json());
