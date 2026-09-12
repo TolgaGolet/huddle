@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import type { Socket } from "socket.io-client";
 import { RemoteAudioManager } from "../lib/audioEngine";
-import { huddleLog, huddleWarn, huddleDebugEnabled } from "../lib/huddleLog";
+import { huddleLog, huddleWarn } from "../lib/huddleLog";
 
 // ICE servers. STUN-only by default, which works for most home/office NATs.
 // For symmetric NATs, carrier-grade NAT, or strict corporate firewalls, set
@@ -650,9 +650,17 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       // Structured diagnostic log. In development (or when HUDDLE debug is
       // enabled) log every sample; in production emit a reduced-rate summary
       // line so silent-pair diagnosis is possible from shipped logs.
+      //
+      // Firefox: `console.debug` output is shown by default in the console
+      // (unlike Chrome, which hides debug-level messages unless "Verbose" is
+      // selected), so the 5s sampler floods the Firefox console. Skip the
+      // periodic stats log entirely in Firefox; the event-driven watchdog /
+      // negotiation logs remain active everywhere.
       const isDev =
         (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
-      if (isDev || huddleDebugEnabled()) {
+      const isFirefox =
+        typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent);
+      if (isDev && !isFirefox) {
         console.debug("[huddle:webrtc-stats]", diag);
       }
     };
