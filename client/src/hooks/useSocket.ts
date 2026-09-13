@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { Participant, ChatMessage, ChatEntry, PollMessage } from "../types";
-import { playJoinSound, playLeaveSound, playDisconnectSound, playReconnectSound, playMessageSound } from "../lib/notificationSounds";
+import { playJoinSound, playLeaveSound, playMessageSound } from "../lib/notificationSounds";
 import { huddleLog } from "../lib/huddleLog";
 
 interface UseSocketOptions {
@@ -31,9 +31,6 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
-  // True once we have ever connected; used to distinguish the initial
-  // connection (silent) from a recovery after a drop (play a cue).
-  const wasConnectedRef = useRef(false);
   const [currentScreenSharer, setCurrentScreenSharer] = useState<string | null>(null);
   // Names of other participants currently typing (most recent first).
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
@@ -74,33 +71,12 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     // Defer socket creation by one macrotask so React StrictMode cleanup
     // can cancel before a WebSocket is actually opened.
     const timer = setTimeout(() => {
-      const sock: Socket = socket = io({
-        transports: ["websocket"],
-        // Resilient reconnection: long-running sessions are routinely
-        // interrupted by network changes, laptop sleep, or NAT rebinding.
-        // Retrying for up to ~5 minutes with capped backoff lets the client
-        // survive transient drops instead of appearing as a "random kick".
-        reconnection: true,
-        reconnectionAttempts: Infinity,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        // Server pings us every 25s and allows 60s (2 missed pings) before
-        // considering the transport dead. This tolerates brief CPU stalls and
-        // background-tab throttling without dropping the connection.
-        timeout: 20000,
-      });
+      socket = io({ transports: ["websocket"] });
       socketRef.current = socket;
       setSocket(socket);
 
       const onConnect = () => {
         setConnected(true);
-        // Play a restoration cue only when recovering from a drop, so the
-        // initial connection is silent and the user is not overloaded with
-        // sounds they cannot attribute to an event.
-        if (wasConnectedRef.current) {
-          playReconnectSound();
-        }
-        wasConnectedRef.current = true;
         // Mark as not-joined so a reconnect re-issues the join using the
         // latest readiness signal from the caller (see `joinRoom`).
         joinedRef.current = false;
@@ -109,17 +85,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         }
       };
 
-      const onDisconnect = (reason: Socket.DisconnectReason) => {
-        // Only alert on *unintentional* disconnects. Manual disconnects
-        // (leaving the room, joining errors) and server shutdowns are
-        // deliberate; io client disconnect, ping timeout, transport close,
-        // and transport errors are the "app kicked me" cases the user must
-        // be made aware of.
-        const unintentional =
-          reason === "io client disconnect" ? false : reason !== "io server disconnect";
-        if (unintentional) {
-          playDisconnectSound();
-        }
+      const onDisconnect = () => {
         setConnected(false);
         // Allow `joinRoom` to rejoin on the next connect once the caller
         // reinstalls signaling listeners.
@@ -190,11 +156,11 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         // messages from other participants (server broadcasts to all).
         const typingState = typingMapRef.current;
         if (typingState.delete(msg.senderId)) setTypingFromMap(typingState);
-        if (msg.senderId !== sock.id) playMessageSound();
+        if (msg.senderId !== socket!.id) playMessageSound();
       };
 
       const onTyping = ({ senderId, senderName }: { senderId: string; senderName: string }) => {
-        if (senderId === sock.id) return;
+        if (senderId === socket!.id) return;
         const typingState = typingMapRef.current;
         const existing = typingState.get(senderId);
         if (existing) clearTimeout(existing.timer);

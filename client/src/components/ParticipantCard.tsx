@@ -1,4 +1,4 @@
-import { Mic, MicOff, EllipsisVertical, Loader2 } from "lucide-react";
+import { Mic, MicOff, EllipsisVertical } from "lucide-react";
 import type { Participant } from "../types";
 import { avatarBgColor } from "../lib/avatarColor";
 
@@ -6,8 +6,6 @@ interface Props {
   participant: Participant;
   isSpeaking: boolean;
   isLocal?: boolean;
-  /** WebRTC connection state of the peer link; undefined while unknown. */
-  connectionState?: RTCPeerConnectionState;
   onContextMenu?: (e: React.MouseEvent) => void;
   onMenuClick?: (e: React.MouseEvent) => void;
 }
@@ -21,20 +19,7 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-export default function ParticipantCard({ participant, isSpeaking, isLocal, connectionState, onContextMenu, onMenuClick }: Props) {
-  // "Connecting" is any state where the audio link is not yet usable. Note
-  // the media pipeline also requires the PC to be connected; "disconnected"
-  // means audio may be interrupted, which we surface the same way.
-  const isConnecting =
-    !isLocal &&
-    (connectionState === undefined ||
-      connectionState === "new" ||
-      connectionState === "connecting" ||
-      connectionState === "disconnected" ||
-      connectionState === "failed");
-  const stateLabel =
-    connectionState === "failed" ? "Reconnecting…" : "Connecting…";
-
+export default function ParticipantCard({ participant, isSpeaking, isLocal, onContextMenu, onMenuClick }: Props) {
   return (
     <div
       onContextMenu={onContextMenu}
@@ -51,15 +36,6 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, conn
         {participant.name}
         {isLocal && <span className="text-gray-500 ml-1">(you)</span>}
       </span>
-      {isConnecting && (
-        <span
-          className="flex items-center gap-1 text-[11px] text-amber-400 flex-shrink-0"
-          title="Still establishing audio — they may not hear you yet"
-        >
-          <Loader2 size={12} className="animate-spin" />
-          {stateLabel}
-        </span>
-      )}
       {participant.isMuted ? (
         <MicOff size={16} className="text-red-400 flex-shrink-0" />
       ) : (
