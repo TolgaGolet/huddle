@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { Participant, ChatMessage, ChatEntry, PollMessage } from "../types";
-import { playJoinSound, playLeaveSound, playMessageSound } from "../lib/notificationSounds";
+import { playJoinSound, playLeaveSound, playMessageSound, playDisconnectedSound } from "../lib/notificationSounds";
 import { huddleLog } from "../lib/huddleLog";
 
 interface UseSocketOptions {
@@ -85,11 +85,18 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         }
       };
 
-      const onDisconnect = () => {
+      const onDisconnect = (reason: string) => {
         setConnected(false);
         // Allow `joinRoom` to rejoin on the next connect once the caller
         // reinstalls signaling listeners.
         joinedRef.current = false;
+        // Only treat as an unexpected disconnection when we had joined the
+        // room and the client did not initiate the disconnect (intentional
+        // leave navigates away and disconnects with reason "client namespace
+        // disconnect" / "io client disconnect").
+        if (wantsJoinRef.current && reason !== "io client disconnect") {
+          playDisconnectedSound();
+        }
       };
 
       const onError = (data: { message: string }) => {

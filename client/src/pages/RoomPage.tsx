@@ -257,7 +257,7 @@ export default function RoomPage() {
     joinRoom();
   }, [joinRoom]);
 
-  const { remoteAnalysers, screenStreams, startScreenShare, stopScreenShare, setRemoteVolume } =
+  const { remoteAnalysers, screenStreams, peerConnectionStates, remotePlaybackBlocked, resumeRemotePlayback, startScreenShare, stopScreenShare, setRemoteVolume } =
     useWebRTC({ socket, localStream, onScreenShareStopped: handleScreenShareStopped, onSignalingReady: handleSignalingReady });
 
   // Steam-chat style voice transmission threshold gate:
@@ -346,6 +346,18 @@ export default function RoomPage() {
 
   const allParticipants = [localParticipant, ...participants];
 
+  // "Connecting…" indicator: a remote participant is connecting while their
+  // peer connection is not yet `connected` (new/connecting/failed — `failed`
+  // is included because recovery is automatic and users should know audio is
+  // not flowing yet). The local participant shows it while ANY remote peer is
+  // still connecting, so the user understands others can't hear them yet.
+  const connecting = new Set<string>();
+  for (const [peerId, state] of peerConnectionStates) {
+    if (state !== "connected" && state !== "closed") connecting.add(peerId);
+  }
+  const anyRemoteConnecting = connecting.size > 0;
+  if (anyRemoteConnecting) connecting.add(socket?.id || "local");
+
   const firstScreenStream = screenStreams.entries().next().value;
   const screenSharerName =
     firstScreenStream && allParticipants.find((p) => p.id === firstScreenStream[0])?.name;
@@ -367,6 +379,23 @@ export default function RoomPage() {
           </span>
           <button
             onClick={resumeAudio}
+            className="px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
+          >
+            Enable audio
+          </button>
+        </div>
+      )}
+      {/* Remote playback blocked: the AudioContext that plays OTHER users'
+          voices is suspended (autoplay block / OS interruption). Without this
+          banner there was no recovery path — the user heard nobody. */}
+      {remotePlaybackBlocked && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs">
+          <span className="flex items-center gap-2">
+            <Volume2 size={14} />
+            Incoming audio was paused by your browser. Click to hear others.
+          </span>
+          <button
+            onClick={resumeRemotePlayback}
             className="px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
           >
             Enable audio
@@ -427,6 +456,7 @@ export default function RoomPage() {
             peerVolumes={peerVolumes}
             onSetPeerVolume={handleSetPeerVolume}
             maxParticipants={MAX_PARTICIPANTS}
+            connecting={connecting}
           />
           <VoiceControls
             isMuted={isMuted}

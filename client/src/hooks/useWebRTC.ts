@@ -55,6 +55,9 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
   const onSignalingReadyRef = useRef(onSignalingReady);
   const [remoteAnalysers, setRemoteAnalysers] = useState<Map<string, AnalyserNode>>(new Map());
   const [screenStreams, setScreenStreams] = useState<Map<string, MediaStream>>(new Map());
+  // True when the remote-playback AudioContext is suspended (autoplay block /
+  // OS interruption) — surfaced so the UI can offer a gesture-based recovery.
+  const [remotePlaybackBlocked, setRemotePlaybackBlocked] = useState(false);
   const screenTrackRef = useRef<MediaStreamTrack | null>(null);
   const screenSendersRef = useRef<Map<string, RTCRtpSender>>(new Map());
   const makingOfferRef = useRef<Map<string, boolean>>(new Map());
@@ -74,6 +77,15 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
   // to detect a connected-but-silent pair (stuck audio m-line).
   const lastAudioBytesRef = useRef<Map<string, { in: number; out: number; at: number }>>(new Map());
   const silentSinceRef = useRef<Map<string, number>>(new Map());
+  // Consecutive failed ICE restarts per peer, for exponential backoff and the
+  // peer-recreation fallback (automates the manual "rejoin fixes it" fix).
+  const restartFailuresRef = useRef<Map<string, number>>(new Map());
+  // Pending ICE candidates that failed to apply (e.g. arrived during an ICE
+  // restart while the old remote description was still set). They are retried
+  // once the peer returns to a stable signaling state.
+  const retryCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  // Per-peer connection state exposed to the UI ("Connecting…" indicator).
+  const [peerConnectionStates, setPeerConnectionStates] = useState<Map<string, RTCPeerConnectionState>>(new Map());
 
   localStreamRef.current = localStream;
   socketRef.current = socket;
@@ -93,6 +105,14 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     disconnectedSinceRef.current.delete(peerId);
     lastAudioBytesRef.current.delete(peerId);
     silentSinceRef.current.delete(peerId);
+    restartFailuresRef.current.delete(peerId);
+    retryCandidatesRef.current.delete(peerId);
+    setPeerConnectionStates((prev) => {
+      if (!prev.has(peerId)) return prev;
+      const next = new Map(prev);
+      next.delete(peerId);
+      return next;
+    });
     remoteAudioRef.current.removeStream(peerId);
     screenSendersRef.current.delete(peerId);
     setRemoteAnalysers(new Map(remoteAudioRef.current.getAnalysers()));
@@ -128,6 +148,9 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     screenSendersRef.current.clear();
     lastAudioBytesRef.current.clear();
     silentSinceRef.current.clear();
+    restartFailuresRef.current.clear();
+    retryCandidatesRef.current.clear();
+    setPeerConnectionStates(new Map());
   }, [removePeer]);
 
   const createPeer = useCallback(
@@ -170,8 +193,12 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       };
 
       pc.ontrack = (e) => {
-        const s = e.streams[0];
-        if (!s) return;
+        // When the remote peer attached its microphone via replaceTrack on a
+        // trackless transceiver (mic wasn't ready when the peer was created),
+        // the negotiated m-line carries no msid and `e.streams` is EMPTY.
+        // Wrap the receiver's track in a local MediaStream so audio still
+        // flows — dropping the track here caused permanent one-way audio.
+        const s = e.streams[0] ?? new MediaStream([e.track]);
 
         if (e.track.kind === "audio") {
           remoteAudioRef.current.addStream(peerId, s);
@@ -191,29 +218,65 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       pc.onconnectionstatechange = () => {
         const state = pc.connectionState;
         huddleLog("connection", { peerId, state });
-        if (state === "failed") {
-          // Hard failure: restart ICE immediately (guarded against re-entry).
-          if (!iceRestartRef.current.get(peerId)) {
-            iceRestartRef.current.set(peerId, true);
-            try {
-              pc.restartIce();
-            } catch {
-              /* restart may throw if negotiation is in flight */
-            }
-            // Clear the flag once negotiation completes (see onnegotiationneeded).
-            setTimeout(() => iceRestartRef.current.set(peerId, false), 2000);
-          }
+        setPeerConnectionStates((prev) => {
+          if (prev.get(peerId) === state) return prev;
+          const next = new Map(prev);
+          next.set(peerId, state);
+          return next;
+        });
+        if (state === "connected") {
+          // A successful connection resets the restart-failure ladder.
+          restartFailuresRef.current.delete(peerId);
           disconnectedSinceRef.current.delete(peerId);
-        } else if (state === "disconnected") {
+          return;
+        }
+        if (state === "failed") {
+          disconnectedSinceRef.current.delete(peerId);
+          // Hard failure: restart ICE with exponential backoff. After
+          // MAX_RESTARTS consecutive failures, tear the peer down and
+          // recreate it from scratch (a fresh RTCPeerConnection + offer),
+          // which is exactly the manual "rejoin" fix users resorted to.
+          const MAX_RESTARTS = 3;
+          const failures = (restartFailuresRef.current.get(peerId) ?? 0) + 1;
+          restartFailuresRef.current.set(peerId, failures);
+          if (failures > MAX_RESTARTS) {
+            huddleWarn("connection", { peerId, event: "recreate-peer", failures });
+            removePeer(peerId);
+            const fresh = createPeer(peerId, true);
+            if (fresh) {
+              // `createPeer` added the audio m-line, so onnegotiationneeded
+              // has already fired and the offer is on its way.
+              restartFailuresRef.current.set(peerId, 0);
+            }
+            return;
+          }
+          if (iceRestartRef.current.get(peerId)) return;
+          iceRestartRef.current.set(peerId, true);
+          // Backoff: 2s, 4s, 8s (capped).
+          const delay = Math.min(2000 * 2 ** (failures - 1), 8000);
+          setTimeout(() => {
+            iceRestartRef.current.set(peerId, false);
+            const current = peersRef.current.get(peerId);
+            if (current && current.connectionState === "failed") {
+              try {
+                current.restartIce();
+              } catch {
+                /* restart may throw if negotiation is in flight */
+              }
+            }
+          }, delay);
+          return;
+        }
+        if (state === "disconnected") {
           // Track when we became disconnected so the stats sampler can
           // escalate to an ICE restart after a bounded timeout.
           if (!disconnectedSinceRef.current.has(peerId)) {
             disconnectedSinceRef.current.set(peerId, Date.now());
           }
-        } else {
-          // connected / connecting / closed / new
-          disconnectedSinceRef.current.delete(peerId);
+          return;
         }
+        // connecting / new / closed
+        disconnectedSinceRef.current.delete(peerId);
       };
 
       pc.onnegotiationneeded = async () => {
@@ -226,6 +289,17 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
             // audio m-line unnegotiated.
             if (pc.signalingState !== "stable") {
               huddleLog("negotiate", { peerId, event: "skip-offer", signalingState: pc.signalingState });
+              // Re-arm: retry the offer once the peer returns to stable, so a
+              // skipped negotiation is never silently lost.
+              pc.addEventListener(
+                "signalingstatechange",
+                () => {
+                  if (pc.signalingState === "stable" && pc.connectionState !== "closed") {
+                    pc.onnegotiationneeded?.(new Event("negotiationneeded"));
+                  }
+                },
+                { once: true },
+              );
               return;
             }
             makingOfferRef.current.set(peerId, true);
@@ -262,7 +336,36 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       for (const c of candidates) {
         try {
           await pc.addIceCandidate(new RTCIceCandidate(c));
-        } catch { /* stale candidate */ }
+        } catch {
+          // Stale generation (e.g. ICE restart raced the flush): keep it for
+          // the post-stable retry instead of dropping it forever.
+          bufferRetryCandidate(peerId, c);
+        }
+      }
+    };
+
+    // Candidates that failed to apply (typically new-generation candidates
+    // arriving while the old remote description was still set during an ICE
+    // restart). Retried once the peer is stable — losing these was the root
+    // cause of the endless `failed` restart loop.
+    const bufferRetryCandidate = (peerId: string, candidate: RTCIceCandidateInit) => {
+      const list = retryCandidatesRef.current.get(peerId) ?? [];
+      list.push(candidate);
+      retryCandidatesRef.current.set(peerId, list);
+    };
+
+    const flushRetryCandidates = async (peerId: string) => {
+      const pc = peersRef.current.get(peerId);
+      const candidates = retryCandidatesRef.current.get(peerId);
+      if (!pc || !candidates || candidates.length === 0) return;
+      retryCandidatesRef.current.delete(peerId);
+      for (const c of candidates) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        } catch {
+          // Still stale — re-buffer for the next stable transition.
+          bufferRetryCandidate(peerId, c);
+        }
       }
     };
 
@@ -283,6 +386,24 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
               // Impolite side: keep our offer, ignore the conflicting inbound offer
               // and any candidates that belong to it.
               huddleLog("negotiate", { from, event: "ignore-offer", isPolite, signalingState: pc.signalingState });
+              // Recovery: if our own offer is never answered (the remote may
+              // have given up), force a renegotiation after a grace period so
+              // the peer cannot dead-end in `have-local-offer` forever.
+              setTimeout(() => {
+                const current = peersRef.current.get(from);
+                if (
+                  current &&
+                  current.signalingState === "have-local-offer" &&
+                  current.connectionState !== "connected"
+                ) {
+                  huddleWarn("negotiate", { peerId: from, event: "ignore-offer-recovery" });
+                  try {
+                    current.restartIce();
+                  } catch {
+                    /* negotiation may be in flight */
+                  }
+                }
+              }, 5000);
               return;
             }
             // Polite side: roll back our local offer so we can accept theirs.
@@ -296,6 +417,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
 
           await pc.setRemoteDescription(offer);
           await flushCandidates(from);
+          await flushRetryCandidates(from);
           await pc.setLocalDescription();
           huddleLog("negotiate", {
             from,
@@ -321,6 +443,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
           }
           await pc.setRemoteDescription(answer);
           await flushCandidates(from);
+          await flushRetryCandidates(from);
           huddleLog("negotiate", { from, event: "answer-applied", signalingState: pc.signalingState });
         } catch (err) {
           huddleWarn("negotiate", { from, event: "answer-error", error: String(err) });
@@ -340,7 +463,10 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch {
-        // Ignore candidates that arrive after rollback
+        // The candidate belongs to a newer ICE generation than the currently
+        // applied remote description (e.g. mid-restart). Buffer it and retry
+        // once signaling is stable — never drop it permanently.
+        bufferRetryCandidate(from, candidate);
       }
     };
 
@@ -423,7 +549,20 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
 
   useEffect(() => {
     const mgr = remoteAudioRef.current;
-    return () => mgr.destroy();
+    // Surface remote-playback autoplay blocks to the UI (the manager's
+    // onHealth/resumePlayback were previously dead code — a suspended remote
+    // AudioContext meant permanent one-way audio with no recovery path).
+    const offHealth = mgr.onHealth((blocked) => setRemotePlaybackBlocked(blocked));
+    return () => {
+      offHealth();
+      mgr.destroy();
+    };
+  }, []);
+
+  /** User-gesture recovery for a suspended remote-playback AudioContext. */
+  const resumeRemotePlayback = useCallback(async () => {
+    const ok = await remoteAudioRef.current.resumePlayback();
+    if (ok) setRemotePlaybackBlocked(false);
   }, []);
 
   useEffect(() => {
@@ -433,13 +572,27 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
 
     for (const [peerId, pc] of peersRef.current) {
       if (pc.connectionState === "closed") continue;
-      const audioSenders = pc.getSenders().filter((s) => s.track?.kind === "audio");
-      if (audioSenders.length > 0) {
+      // Prefer replacing the track on an existing audio transceiver. A
+      // transceiver created without a track (mic not ready at peer creation)
+      // has a sender with NO track, so matching on `s.track?.kind` misses it
+      // — that bug fell through to `addTrack`, creating a DUPLICATE audio
+      // m-line and a renegotiation instead of the intended seamless
+      // replaceTrack, leaving the remote side with a dead first m-line.
+      const audioTransceiver = pc
+        .getTransceivers()
+        .find((t) => t.receiver.track?.kind === "audio" && !t.sender.track);
+      const audioSender =
+        audioTransceiver?.sender ??
+        pc.getSenders().find((s) => s.track?.kind === "audio");
+      if (audioSender) {
+        if (audioTransceiver && audioTransceiver.direction !== "sendrecv") {
+          try { audioTransceiver.direction = "sendrecv"; } catch { /* ignore */ }
+        }
         // If the sender already has a track (set by the previous effect), replace it.
         // If it was created empty (addTransceiver without a track), replaceTrack
         // succeeds without renegotiation.
         huddleLog("audio", { peerId, event: "replaceTrack" });
-        audioSenders[0].replaceTrack(newTrack).catch((err) => {
+        audioSender.replaceTrack(newTrack).catch((err) => {
           huddleWarn("audio", { peerId, event: "replaceTrack-error", error: String(err) });
         });
       } else {
@@ -682,6 +835,9 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
   return {
     remoteAnalysers,
     screenStreams,
+    peerConnectionStates,
+    remotePlaybackBlocked,
+    resumeRemotePlayback,
     startScreenShare,
     stopScreenShare,
     setRemoteVolume,

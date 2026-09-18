@@ -57,6 +57,10 @@ export function useTransmissionGate({
   const openSinceRef = useRef<number>(0);
   const noiseFloorRef = useRef<number>(-60);
   const bufferRef = useRef<Uint8Array | null>(null);
+  // Tracks the previous isMuted value so the unmute transition can re-arm
+  // the gate (close it once) — otherwise the fail-open state from the muted
+  // period persists until the first speech/pause cycle.
+  const prevMutedRef = useRef<boolean>(isMuted);
 
   // Synchronize outbound track.enabled based on manual mute and gate status
   useEffect(() => {
@@ -78,12 +82,31 @@ export function useTransmissionGate({
       return;
     }
 
-    if (!localAnalyser || isMuted) {
-      setGateOpen(false);
+    if (!localAnalyser) {
+      // No analyser (mic not ready / AudioContext suspended): we CANNOT
+      // measure the level, so the gate must fail OPEN — a closed gate here
+      // would silently disable the outbound track and cause one-way audio
+      // whenever the analyser's AudioContext is autoplay-blocked.
+      setGateOpen(true);
       consecutiveHighRef.current = 0;
       openSinceRef.current = 0;
       return;
     }
+
+    if (isMuted) {
+      // While muted the gate is irrelevant (track is disabled by mute), but
+      // on the unmute TRANSITION re-arm it closed so transmission resumes
+      // under the configured threshold instead of staying open from the
+      // muted period.
+      if (!prevMutedRef.current) {
+        setGateOpen(false);
+        consecutiveHighRef.current = 0;
+        openSinceRef.current = 0;
+      }
+      prevMutedRef.current = true;
+      return;
+    }
+    prevMutedRef.current = false;
 
     const limits = getThresholdDb(threshold, manualThresholdDb);
     if (!limits) {

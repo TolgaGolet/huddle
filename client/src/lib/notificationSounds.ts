@@ -35,6 +35,14 @@ export function playLeaveSound() {
   playTone([480, 360], 0.25, 0.10);
 }
 
+/**
+ * Urgent three-note descending cue for an unexpected disconnection
+ * (transport loss), distinct from the calm two-note leave sound.
+ */
+export function playDisconnectedSound() {
+  playTone([600, 450, 300], 0.45, 0.12);
+}
+
 export function playMuteSound() {
   playTone([520, 340], 0.14, 0.08);
 }

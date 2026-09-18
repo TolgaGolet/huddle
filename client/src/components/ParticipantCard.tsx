@@ -6,6 +6,8 @@ interface Props {
   participant: Participant;
   isSpeaking: boolean;
   isLocal?: boolean;
+  /** True while this participant's peer connection is still being established. */
+  isConnecting?: boolean;
   onContextMenu?: (e: React.MouseEvent) => void;
   onMenuClick?: (e: React.MouseEvent) => void;
 }
@@ -19,7 +21,7 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-export default function ParticipantCard({ participant, isSpeaking, isLocal, onContextMenu, onMenuClick }: Props) {
+export default function ParticipantCard({ participant, isSpeaking, isLocal, isConnecting, onContextMenu, onMenuClick }: Props) {
   return (
     <div
       onContextMenu={onContextMenu}
@@ -35,6 +37,11 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, onCo
       <span className="flex-1 text-sm truncate text-gray-200">
         {participant.name}
         {isLocal && <span className="text-gray-500 ml-1">(you)</span>}
+        {isConnecting && (
+          <span className="ml-1.5 text-[11px] italic text-amber-400" title="Still establishing the audio connection">
+            Connecting…
+          </span>
+        )}
       </span>
       {participant.isMuted ? (
         <MicOff size={16} className="text-red-400 flex-shrink-0" />

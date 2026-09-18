@@ -10,6 +10,8 @@ interface Props {
   peerVolumes: Map<string, number>;
   onSetPeerVolume: (peerId: string, volume: number) => void;
   maxParticipants?: number;
+  /** Participant ids whose peer connection is still being established. */
+  connecting?: Set<string>;
 }
 
 interface ContextMenuState {
@@ -27,6 +29,7 @@ export default function ParticipantsList({
   peerVolumes,
   onSetPeerVolume,
   maxParticipants,
+  connecting,
 }: Props) {
   const [ctx, setCtx] = useState<ContextMenuState | null>(null);
 
@@ -63,6 +66,7 @@ export default function ParticipantsList({
           participant={p}
           isSpeaking={speaking.has(p.id)}
           isLocal={p.id === localId}
+          isConnecting={connecting?.has(p.id)}
           onContextMenu={(e) => openMenu(e, p)}
           onMenuClick={(e) => openMenu(e, p)}
         />
