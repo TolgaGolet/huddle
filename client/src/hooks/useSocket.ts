@@ -24,6 +24,15 @@ export interface UseSocketReturn {
 
 const MAX_CLIENT_CHAT = 200;
 
+/**
+ * Errors that can occur transiently during an automatic rejoin after a
+ * network blip (the server may briefly still hold our stale participant
+ * entry, or the room may be in its empty-room grace window). These are
+ * retried with backoff instead of kicking the user out of the room.
+ */
+const TRANSIENT_JOIN_ERRORS = new Set(["Name already taken in this room", "Room not found"]);
+const JOIN_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
+
 export function useSocket({ roomId, name, password }: UseSocketOptions): UseSocketReturn {
   const socketRef = useRef<Socket | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -48,6 +57,9 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
   joinArgsRef.current = { roomId, name, password };
   const joinedRef = useRef(false);
   const wantsJoinRef = useRef(false);
+  // Retry bookkeeping for transient join errors (see TRANSIENT_JOIN_ERRORS).
+  const joinRetryRef = useRef(0);
+  const joinRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const joinRoom = useCallback(() => {
     wantsJoinRef.current = true;
@@ -58,6 +70,24 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     huddleLog("socket", { event: "join-room-emit", roomId: rid });
     sock.emit("join-room", { roomId: rid, name: nm, password: pw });
   }, []);
+
+  // Re-emit join-room after a backoff delay. Used when the server rejected a
+  // rejoin with a transient error (e.g. our stale entry hadn't been evicted
+  // yet); the situation typically resolves itself within a few seconds.
+  const scheduleJoinRetry = useCallback(() => {
+    const attempt = joinRetryRef.current;
+    if (attempt >= JOIN_RETRY_DELAYS_MS.length) return false;
+    const delay = JOIN_RETRY_DELAYS_MS[attempt];
+    joinRetryRef.current = attempt + 1;
+    if (joinRetryTimerRef.current) clearTimeout(joinRetryTimerRef.current);
+    joinRetryTimerRef.current = setTimeout(() => {
+      joinRetryTimerRef.current = null;
+      joinedRef.current = false;
+      joinRoom();
+    }, delay);
+    huddleLog("socket", { event: "join-retry-scheduled", attempt: attempt + 1, delayMs: delay });
+    return true;
+  }, [joinRoom]);
 
   // Live view of other participants' typing state, shared with listener
   // closures defined inside the connection effect.
@@ -101,12 +131,27 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
 
       const onError = (data: { message: string }) => {
         huddleLog("socket", { event: "join-error", message: data.message });
+        // Transient errors during an automatic rejoin (stale participant
+        // entry not yet evicted, room inside its empty-room grace window)
+        // must NOT kick the user — retry with backoff instead. Only surface
+        // the error (and let RoomPage navigate away) once retries are
+        // exhausted or the error is genuinely fatal (bad password, full).
+        if (wantsJoinRef.current && TRANSIENT_JOIN_ERRORS.has(data.message)) {
+          joinedRef.current = false;
+          if (scheduleJoinRetry()) return;
+          huddleLog("socket", { event: "join-retry-exhausted", message: data.message });
+        }
         setJoinError(data.message);
         socket!.disconnect();
       };
 
       const onRoomJoined = (data: { participants: Participant[]; chatHistory: ChatEntry[]; screenSharer: string | null }) => {
         huddleLog("socket", { event: "room-joined-received", participantCount: data.participants.length });
+        joinRetryRef.current = 0;
+        if (joinRetryTimerRef.current) {
+          clearTimeout(joinRetryTimerRef.current);
+          joinRetryTimerRef.current = null;
+        }
         setParticipants(data.participants);
         setChatHistory(data.chatHistory.slice(-MAX_CLIENT_CHAT));
         setCurrentScreenSharer(data.screenSharer);
@@ -247,6 +292,11 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       clearTimeout(timer);
       wantsJoinRef.current = false;
       joinedRef.current = false;
+      joinRetryRef.current = 0;
+      if (joinRetryTimerRef.current) {
+        clearTimeout(joinRetryTimerRef.current);
+        joinRetryTimerRef.current = null;
+      }
       if (socket) {
         socket.removeAllListeners();
         socket.disconnect();
@@ -254,7 +304,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         setSocket(null);
       }
     };
-  }, [roomId, name, password, joinRoom]);
+  }, [roomId, name, password, joinRoom, scheduleJoinRetry]);
 
   return { socket, participants, chatHistory, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
 }

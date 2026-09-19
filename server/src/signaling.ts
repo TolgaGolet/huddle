@@ -29,6 +29,21 @@ export function setupSignaling(io: Server): void {
         return;
       }
 
+      // Rejoin race fix: after a network blip the client's socket reconnects
+      // with a new socket.id and re-emits join-room, but the server may still
+      // hold the participant entry of the OLD socket for up to ~20s (default
+      // pingTimeout). If that stale entry owns the requested name, evict it
+      // instead of rejecting the join — otherwise the user is kicked from the
+      // room by "Name already taken" through no fault of their own.
+      const lowerName = name.toLowerCase();
+      for (const p of room.participants.values()) {
+        if (p.name.toLowerCase() === lowerName && !io.sockets.sockets.has(p.id)) {
+          room.participants.delete(p.id);
+          socketRoomMap.delete(p.id);
+          socket.to(roomId).emit("participant-left", { id: p.id });
+        }
+      }
+
       if (isNameTaken(roomId, name)) {
         socket.emit("error", { message: "Name already taken in this room" });
         return;
@@ -121,6 +136,9 @@ export function setupSignaling(io: Server): void {
       removeParticipant(roomId, socket.id);
       socketRoomMap.delete(socket.id);
       socket.to(roomId).emit("participant-left", { id: socket.id });
+      // The room lingers for ROOM_GRACE_MS after the last participant leaves
+      // (in case everyone is reconnecting after a shared network blip). Only
+      // clean up its images once the room is truly gone.
       if (!getRoom(roomId)) {
         void deleteRoomImages(roomId);
       }

@@ -4,12 +4,12 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
-import { router as roomRouter } from "./roomManager.js";
+import { router as roomRouter, purgeExpiredRooms } from "./roomManager.js";
 import { giphyRouter } from "./giphyRouter.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
-import { clearStaleImages, imageRouter } from "./imageRouter.js";
+import { clearStaleImages, deleteRoomImages, imageRouter } from "./imageRouter.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -52,6 +52,16 @@ setInterval(() => {
   const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(1);
   const external = (mem.external / 1024 / 1024).toFixed(1);
   console.log(`[mem] rss=${rss}MB heap=${heapUsed}/${heapTotal}MB ext=${external}MB conns=${io.engine.clientsCount}`);
+}, 30_000);
+
+// Periodically destroy rooms that stayed empty past their grace period and
+// clean up their uploaded images. This is the backstop for the lazy purge in
+// getRoom(); without it, image files of abandoned rooms would never be
+// deleted because nothing calls getRoom() for a room nobody references.
+setInterval(() => {
+  for (const roomId of purgeExpiredRooms()) {
+    void deleteRoomImages(roomId);
+  }
 }, 30_000);
 
 void clearStaleImages().then(() => {

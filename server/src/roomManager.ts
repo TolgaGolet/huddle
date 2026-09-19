@@ -55,9 +55,20 @@ export interface Room {
   chatHistory: ChatEntry[];
   encryptionSalt: string | null;
   pinnedMessageId: string | null;
+  /** Set when the last participant leaves; the room is deleted once this age exceeds ROOM_GRACE_MS. */
+  emptySince: number | null;
 }
 
 const MAX_CHAT_HISTORY = 200;
+
+/**
+ * Grace period before an empty room is deleted. When every participant's
+ * socket drops at once (shared network hiccup, server blip), each client's
+ * Socket.IO auto-reconnect re-joins within seconds. Deleting the room
+ * immediately would make every rejoin fail with "Room not found" and kick
+ * all users back to the landing page, so we keep the room alive briefly.
+ */
+export const ROOM_GRACE_MS = 60_000;
 
 /**
  * Maximum participants per room. Huddle uses a peer-to-peer mesh topology
@@ -78,6 +89,7 @@ export function createRoom(password?: string): Room {
     chatHistory: [],
     pinnedMessageId: null,
     encryptionSalt: password ? randomBytes(16).toString("base64url") : null,
+    emptySince: null,
   };
   rooms.set(id, room);
   return room;
@@ -91,7 +103,48 @@ export function verifyPassword(roomId: string, password?: string): boolean {
 }
 
 export function getRoom(id: string): Room | undefined {
-  return rooms.get(id);
+  const room = rooms.get(id);
+  if (!room) return undefined;
+  // Lazy purge: an empty room past its grace period is treated as gone.
+  if (
+    room.participants.size === 0 &&
+    room.emptySince !== null &&
+    Date.now() - room.emptySince > ROOM_GRACE_MS
+  ) {
+    rooms.delete(id);
+    return undefined;
+  }
+  return room;
+}
+
+/**
+ * Permanently delete a room regardless of its grace period. Returns true if
+ * the room existed and was deleted. Callers use this to clean up room
+ * resources (e.g. uploaded images) once the room is truly gone.
+ */
+export function destroyRoom(id: string): boolean {
+  return rooms.delete(id);
+}
+
+/**
+ * Sweep all rooms and permanently delete any that have been empty longer
+ * than ROOM_GRACE_MS. Returns the ids of the destroyed rooms so callers can
+ * clean up associated resources (e.g. uploaded images).
+ */
+export function purgeExpiredRooms(): string[] {
+  const now = Date.now();
+  const destroyed: string[] = [];
+  for (const [id, room] of rooms) {
+    if (
+      room.participants.size === 0 &&
+      room.emptySince !== null &&
+      now - room.emptySince > ROOM_GRACE_MS
+    ) {
+      rooms.delete(id);
+      destroyed.push(id);
+    }
+  }
+  return destroyed;
 }
 
 export function isNameTaken(roomId: string, name: string): boolean {
@@ -118,6 +171,7 @@ export function getParticipantCount(roomId: string): number {
 export function addParticipant(roomId: string, socketId: string, name: string): Participant | null {
   const room = rooms.get(roomId);
   if (!room) return null;
+  room.emptySince = null;
   const participant: Participant = { id: socketId, name, isMuted: false };
   room.participants.set(socketId, participant);
   return participant;
@@ -128,7 +182,10 @@ export function removeParticipant(roomId: string, socketId: string): void {
   if (!room) return;
   room.participants.delete(socketId);
   if (room.participants.size === 0) {
-    rooms.delete(roomId);
+    // Don't delete immediately: every participant may be reconnecting after
+    // a shared network blip. The room is purged lazily via getRoom() once
+    // ROOM_GRACE_MS elapses with no rejoin.
+    room.emptySince = Date.now();
   }
 }
 
@@ -153,7 +210,7 @@ export function getChatHistory(roomId: string): ChatEntry[] {
 }
 
 export function getParticipantsArray(roomId: string): Participant[] {
-  const room = rooms.get(roomId);
+  const room = getRoom(roomId);
   if (!room) return [];
   return Array.from(room.participants.values());
 }
@@ -167,7 +224,7 @@ router.post("/rooms", (req, res) => {
 });
 
 router.get("/rooms/:id", (req, res) => {
-  const room = rooms.get(req.params.id);
+  const room = getRoom(req.params.id);
   if (!room) {
     res.json({ exists: false, hasPassword: false, participantCount: 0, maxParticipants: MAX_PARTICIPANTS });
     return;
