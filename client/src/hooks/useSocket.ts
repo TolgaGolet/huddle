@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { Participant, ChatMessage, ChatEntry, PollMessage } from "../types";
 import { playJoinSound, playLeaveSound, playMessageSound, playDisconnectedSound } from "../lib/notificationSounds";
-import { huddleLog } from "../lib/huddleLog";
+import { huddleLog, huddleWarn } from "../lib/huddleLog";
 
 interface UseSocketOptions {
   roomId: string;
@@ -120,6 +120,11 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         // Allow `joinRoom` to rejoin on the next connect once the caller
         // reinstalls signaling listeners.
         joinedRef.current = false;
+        // Structured diagnostics: a transport drop tears down every peer in
+        // `useWebRTC` (`resetAllPeers`), so the disconnect reason is essential
+        // context for one-way-audio / "Connecting…" incidents. Socket.IO
+        // reasons are coarse enums (no PII).
+        huddleLog("socket", { event: "disconnect", reason });
         // Only treat as an unexpected disconnection when we had joined the
         // room and the client did not initiate the disconnect (intentional
         // leave navigates away and disconnects with reason "client namespace
@@ -128,6 +133,14 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
           playDisconnectedSound();
         }
       };
+
+      // A failed WebSocket handshake (proxy idle timeout, DNS, TLS, server
+      // restart) surfaces here — previously it only appeared as a browser
+      // network error with no app context. Socket.IO auto-retries; we log
+      // enough to correlate with the peer teardown/rejoin timeline.
+      socket.on("connect_error", (err: Error) => {
+        huddleWarn("socket", { event: "connect-error", message: err.message });
+      });
 
       const onError = (data: { message: string }) => {
         huddleLog("socket", { event: "join-error", message: data.message });

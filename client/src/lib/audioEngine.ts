@@ -155,6 +155,12 @@ export class RemoteAudioManager {
   /**
    * Attempt to resume playback after an autoplay/interruption block. Must be
    * called from a user gesture on Safari/iOS. Safe to call repeatedly.
+   *
+   * Returns `true` ONLY when the playback AudioContext is actually running and
+   * every attached element reports it is playing. Previously this returned
+   * `anyPlayed`, which could be `true` while the context was still suspended —
+   * the caller then cleared the "incoming audio paused" banner even though
+   * playback was still blocked, leaving one-way audio with no recovery prompt.
    */
   async resumePlayback(): Promise<boolean> {
     if (!this.ctx) return false;
@@ -164,17 +170,20 @@ export class RemoteAudioManager {
     } catch {
       /* will be retried on next gesture */
     }
-    let anyPlayed = false;
+    let allPlayed = true;
     for (const audio of this.audioElements.values()) {
       try {
         await audio.play();
-        anyPlayed = true;
       } catch {
         /* still blocked; caller may retry */
       }
+      // `play()` resolving does not guarantee audible output; trust the
+      // element's own paused state as the source of truth.
+      if (audio.paused) allPlayed = false;
     }
-    this.notifyHealth(false);
-    return anyPlayed;
+    const healthy = ctx.state === "running" && allPlayed;
+    this.notifyHealth(!healthy);
+    return healthy;
   }
 
   private getContext(): AudioContext {
@@ -202,6 +211,10 @@ export class RemoteAudioManager {
     audio.srcObject = stream;
     audio.volume = 0;
     audio.play().catch(() => this.notifyHealth(true));
+    // `play()` can resolve while the element is still paused (or become paused
+    // again after an interruption). Track the element's real state so the
+    // health signal and `resumePlayback` reflect actual playback.
+    audio.onpause = () => this.notifyHealth(true);
 
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
@@ -247,6 +260,7 @@ export class RemoteAudioManager {
     this.gains.get(peerId)?.disconnect();
     const audio = this.audioElements.get(peerId);
     if (audio) {
+      audio.onpause = null;
       audio.pause();
       audio.srcObject = null;
       audio.load();

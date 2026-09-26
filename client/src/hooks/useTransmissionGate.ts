@@ -93,6 +93,18 @@ export function useTransmissionGate({
       return;
     }
 
+    // A non-null analyser whose AudioContext is suspended/interrupted produces
+    // only silence. Treating that as "below threshold" would keep the gate
+    // closed and mute an otherwise healthy outbound track (one-way audio). If
+    // we cannot actually measure, fail OPEN just like the missing-analyser case.
+    const analyserCtxState = (localAnalyser.context as BaseAudioContext | undefined)?.state;
+    if (analyserCtxState && analyserCtxState !== "running") {
+      setGateOpen(true);
+      consecutiveHighRef.current = 0;
+      openSinceRef.current = 0;
+      return;
+    }
+
     if (isMuted) {
       // While muted the gate is irrelevant (track is disabled by mute), but
       // on the unmute TRANSITION re-arm it closed so transmission resumes
@@ -117,6 +129,18 @@ export function useTransmissionGate({
     const { openDb, closeDb } = limits;
 
     const onTick = () => {
+      // Re-check every tick: the AudioContext can be suspended mid-session
+      // (autoplay policy, OS interruption, device switch) while the analyser
+      // object stays the same. A suspended context yields only silence, which
+      // would otherwise read as "below threshold" and keep the gate closed.
+      const ctxState = (localAnalyser.context as BaseAudioContext | undefined)?.state;
+      if (ctxState && ctxState !== "running") {
+        setGateOpen(true);
+        consecutiveHighRef.current = 0;
+        openSinceRef.current = 0;
+        return;
+      }
+
       const binCount = localAnalyser.fftSize;
       if (!bufferRef.current || bufferRef.current.length < binCount) {
         bufferRef.current = new Uint8Array(binCount);

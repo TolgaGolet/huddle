@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import type { Socket } from "socket.io-client";
 import { RemoteAudioManager } from "../lib/audioEngine";
+import { DirectionalAudioWatchdog, type Direction } from "../lib/audioWatchdog";
 import { huddleLog, huddleWarn } from "../lib/huddleLog";
 
 // ICE servers. STUN-only by default, which works for most home/office NATs.
@@ -73,10 +74,23 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
   const iceRestartRef = useRef<Map<string, boolean>>(new Map());
   const disconnectedSinceRef = useRef<Map<string, number>>(new Map());
   const statsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Per-peer last-seen audio activity counters, used by the recovery watchdog
-  // to detect a connected-but-silent pair (stuck audio m-line).
-  const lastAudioBytesRef = useRef<Map<string, { in: number; out: number; at: number }>>(new Map());
-  const silentSinceRef = useRef<Map<string, number>>(new Map());
+  // Directional audio-stall watchdog. Tracks inbound and outbound RTP progress
+  // INDEPENDENTLY so a flowing direction can never mask a stalled one (the old
+  // `inBytes > prev.in || outBytes > prev.out` check let one-way audio persist
+  // forever). Pure logic lives in `lib/audioWatchdog.ts` and is unit-tested.
+  const audioWatchdogRef = useRef(new DirectionalAudioWatchdog());
+  // Monotonic generation per peer. Async callbacks (ICE-restart timers, stats
+  // sampling, SDP work) capture the generation when they are scheduled and bail
+  // out if the peer has since been removed/recreated, so a stale timer can never
+  // restart or mutate a replacement peer connection.
+  const peerGenRef = useRef<Map<string, number>>(new Map());
+  // Recovery escalation bookkeeping per direction (bounded retries → recreate).
+  const audioRecoveryRef = useRef<Map<string, { in: number; out: number }>>(new Map());
+  // Ref-stable handle to the one-way-audio recovery routine so the long-lived
+  // stats sampler (mounted once) always calls the latest closure.
+  const recoverOneWayAudioRef = useRef<
+    (peerId: string, pc: RTCPeerConnection, dir: Direction, flatForMs: number) => void
+  >(() => {});
   // Consecutive failed ICE restarts per peer, for exponential backoff and the
   // peer-recreation fallback (automates the manual "rejoin fixes it" fix).
   const restartFailuresRef = useRef<Map<string, number>>(new Map());
@@ -103,8 +117,10 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     sdpLockRef.current.delete(peerId);
     iceRestartRef.current.delete(peerId);
     disconnectedSinceRef.current.delete(peerId);
-    lastAudioBytesRef.current.delete(peerId);
-    silentSinceRef.current.delete(peerId);
+    audioWatchdogRef.current.reset(peerId);
+    audioRecoveryRef.current.delete(peerId);
+    // Invalidate any in-flight async callbacks bound to this peer instance.
+    peerGenRef.current.set(peerId, (peerGenRef.current.get(peerId) ?? 0) + 1);
     restartFailuresRef.current.delete(peerId);
     retryCandidatesRef.current.delete(peerId);
     setPeerConnectionStates((prev) => {
@@ -144,10 +160,8 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     makingOfferRef.current.clear();
     sdpLockRef.current.clear();
     iceRestartRef.current.clear();
-    disconnectedSinceRef.current.clear();
-    screenSendersRef.current.clear();
-    lastAudioBytesRef.current.clear();
-    silentSinceRef.current.clear();
+    audioWatchdogRef.current.resetAll();
+    audioRecoveryRef.current.clear();
     restartFailuresRef.current.clear();
     retryCandidatesRef.current.clear();
     setPeerConnectionStates(new Map());
@@ -164,6 +178,13 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peersRef.current.set(peerId, pc);
+      // Capture the generation for THIS peer instance. Every async callback
+      // scheduled below re-checks it before touching the connection, so work
+      // queued for a removed/recreated peer can never affect its replacement.
+      const peerGen = (peerGenRef.current.get(peerId) ?? 0) + 1;
+      peerGenRef.current.set(peerId, peerGen);
+      const isCurrentPeer = () =>
+        peersRef.current.get(peerId) === pc && peerGenRef.current.get(peerId) === peerGen;
 
       const stream = localStreamRef.current;
       // Deterministic audio m-line: if we have a mic track, add it as a
@@ -255,11 +276,12 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
           // Backoff: 2s, 4s, 8s (capped).
           const delay = Math.min(2000 * 2 ** (failures - 1), 8000);
           setTimeout(() => {
+            // The peer may have been removed/recreated while we backed off.
+            if (!isCurrentPeer()) return;
             iceRestartRef.current.set(peerId, false);
-            const current = peersRef.current.get(peerId);
-            if (current && current.connectionState === "failed") {
+            if (pc.connectionState === "failed") {
               try {
-                current.restartIce();
+                pc.restartIce();
               } catch {
                 /* restart may throw if negotiation is in flight */
               }
@@ -389,10 +411,12 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
               // Recovery: if our own offer is never answered (the remote may
               // have given up), force a renegotiation after a grace period so
               // the peer cannot dead-end in `have-local-offer` forever.
+              const gen = peerGenRef.current.get(from) ?? 0;
               setTimeout(() => {
                 const current = peersRef.current.get(from);
                 if (
                   current &&
+                  peerGenRef.current.get(from) === gen &&
                   current.signalingState === "have-local-offer" &&
                   current.connectionState !== "connected"
                 ) {
@@ -565,6 +589,76 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     if (ok) setRemotePlaybackBlocked(false);
   }, []);
 
+  /**
+   * Recover a single stalled audio direction. Kept separate from the stats
+   * sampler so the escalation policy is testable and the sampler stays focused
+   * on measurement.
+   *
+   * Escalation is bounded to avoid recovery storms and infinite recreate loops:
+   *   1. Re-sync the audio transceiver (force `sendrecv`, re-attach our track).
+   *   2. `restartIce()` to force a fresh negotiation / candidate run.
+   *   3. After `MAX_AUDIO_RECOVERIES` stalled windows in the same direction,
+   *      tear the peer down and recreate it — the automated equivalent of the
+   *      manual "rejoin fixes it" workaround.
+   * The per-direction counter resets whenever that direction shows progress.
+   */
+  const recoverOneWayAudio = useCallback(
+    (peerId: string, pc: RTCPeerConnection, dir: Direction, flatForMs: number) => {
+      const MAX_AUDIO_RECOVERIES = 2;
+      const counts = audioRecoveryRef.current.get(peerId) ?? { in: 0, out: 0 };
+      counts[dir] += 1;
+      audioRecoveryRef.current.set(peerId, counts);
+      const attempt = counts[dir];
+
+      huddleWarn("watchdog", {
+        peerId,
+        event: "one-way-audio",
+        dir,
+        flatForMs,
+        attempt,
+      });
+
+      if (attempt > MAX_AUDIO_RECOVERIES) {
+        huddleWarn("watchdog", { peerId, event: "recreate-peer", dir, attempt });
+        audioRecoveryRef.current.delete(peerId);
+        removePeer(peerId);
+        const fresh = createPeer(peerId, true);
+        if (fresh) {
+          restartFailuresRef.current.set(peerId, 0);
+        }
+        return;
+      }
+
+      try {
+        // Re-sync the audio transceiver: ensure it is bidirectional and that our
+        // live microphone track is attached (a trackless sender sends nothing).
+        const track = localStreamRef.current?.getAudioTracks()[0] ?? null;
+        for (const tx of pc.getTransceivers()) {
+          if (tx.receiver.track?.kind !== "audio") continue;
+          if (tx.direction !== "sendrecv") {
+            try {
+              tx.direction = "sendrecv";
+            } catch {
+              /* ignore */
+            }
+          }
+          if (track && tx.sender.track !== track) {
+            tx.sender.replaceTrack(track).catch(() => {
+              /* restartIce below will retry */
+            });
+          }
+        }
+        // Force a fresh negotiation / candidate run for the broken path.
+        audioWatchdogRef.current.rebaseline(peerId, dir);
+        pc.restartIce();
+      } catch (err) {
+        huddleWarn("watchdog", { peerId, event: "renegotiate-error", dir, error: String(err) });
+      }
+    },
+    [createPeer, removePeer],
+  );
+  recoverOneWayAudioRef.current = recoverOneWayAudio;
+
   useEffect(() => {
     if (!localStream) return;
     const newTrack = localStream.getAudioTracks()[0];
@@ -706,9 +800,16 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       let inPackets = 0;
       let outPackets = 0;
       let inLost = 0;
+      // Whether the browser actually exposed each audio RTP stat. A missing
+      // stat (common cross-browser difference) must be distinguished from a
+      // genuine zero, otherwise a browser without `bytesReceived` would look
+      // permanently stalled and trigger spurious recovery.
+      let hasInbound = false;
+      let hasOutbound = false;
       report.forEach((s) => {
         if (s.type === "outbound-rtp" && (s as RTCOutboundRtpStreamStats).kind === "audio") {
           const r = s as RTCOutboundRtpStreamStats & Record<string, unknown>;
+          hasOutbound = true;
           outBytes = r.bytesSent ?? 0;
           outPackets = r.packetsSent ?? 0;
           diag.outbound = {
@@ -717,6 +818,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
           };
         } else if (s.type === "inbound-rtp" && (s as RTCInboundRtpStreamStats).kind === "audio") {
           const r = s as RTCInboundRtpStreamStats & Record<string, unknown>;
+          hasInbound = true;
           inBytes = r.bytesReceived ?? 0;
           inPackets = r.packetsReceived ?? 0;
           inLost = r.packetsLost ?? 0;
@@ -748,57 +850,50 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
         }
       });
 
-      // --- Recovery watchdog: detect a connected-but-silent pair ---------
-      // A stuck audio m-line keeps `connectionState === "connected"` (the ICE
-      // transport and any video m-line still work) while audio is dead in both
-      // directions. Track per-peer audio byte counters over time; if a peer
-      // stays connected with no audio progress for a bounded window, force a
-      // full renegotiation of that peer's audio (restartIce + re-sync track).
+      // --- Recovery watchdog: detect audio broken in ONE direction ----------
+      // Inbound and outbound RTP progress are tracked INDEPENDENTLY. A stuck or
+      // one-way audio path keeps `connectionState === "connected"` (the ICE
+      // transport is alive) while audio dies in one direction. The old check
+      // (`inBytes > prev.in || outBytes > prev.out`) treated progress in EITHER
+      // direction as healthy, so one-way audio was masked forever.
+      //
+      // `DirectionalAudioWatchdog` decides per direction, tolerating counter
+      // resets (ICE restarts) and browser stat gaps (missing stats are
+      // "unknown", never recovered). Outbound is only watched while the local
+      // track is live and enabled, so a muted / gate-closed sender is treated
+      // as intentional silence rather than a stall.
       const now = Date.now();
-      const prev = lastAudioBytesRef.current.get(peerId);
-      const progressed = !prev || inBytes > prev.in || outBytes > prev.out;
-      lastAudioBytesRef.current.set(peerId, { in: inBytes, out: outBytes, at: now });
-      if (!progressed && !silentSinceRef.current.has(peerId)) {
-        silentSinceRef.current.set(peerId, now);
-      } else if (progressed) {
-        silentSinceRef.current.delete(peerId);
-      }
+      const outboundTrack = localStreamRef.current?.getAudioTracks()[0] ?? null;
+      const audioTransceiver = pc.getTransceivers().find((t) => t.receiver.track?.kind === "audio");
+      const negotiatedDirection = audioTransceiver?.currentDirection ?? audioTransceiver?.direction;
+      const decision = audioWatchdogRef.current.observe(peerId, {
+        in: { bytes: hasInbound ? inBytes : null, packets: hasInbound ? inPackets : null },
+        out: { bytes: hasOutbound ? outBytes : null, packets: hasOutbound ? outPackets : null },
+        expectsInbound: negotiatedDirection === "sendrecv" || negotiatedDirection === "recvonly",
+        expectsOutbound: negotiatedDirection === "sendrecv" || negotiatedDirection === "sendonly",
+        outboundTrackActive: !!outboundTrack && outboundTrack.enabled && outboundTrack.readyState === "live",
+        now,
+      });
 
-      const SILENT_RENEGOTIATE_MS = 15000;
-      const silentSince = silentSinceRef.current.get(peerId);
-      if (silentSince !== undefined && now - silentSince > SILENT_RENEGOTIATE_MS) {
-        silentSinceRef.current.delete(peerId);
-        lastAudioBytesRef.current.delete(peerId);
-        huddleWarn("watchdog", {
-          peerId,
-          event: "silent-pair-renegotiate",
-          inBytes,
-          outBytes,
-          inPackets,
-          outPackets,
-          inLost,
-        });
-        try {
-          // Ensure every audio transceiver is sendrecv and carrying our track,
-          // then force a fresh negotiation via ICE restart.
-          const track = localStreamRef.current?.getAudioTracks()[0];
-          for (const tx of pc.getTransceivers()) {
-            if (tx.receiver.track.kind === "audio") {
-              if (tx.direction !== "sendrecv") {
-                try { tx.direction = "sendrecv"; } catch { /* ignore */ }
-              }
-              if (track && !tx.sender.track) {
-                tx.sender.replaceTrack(track).catch(() => {
-                  /* ignore — restartIce will retry */
-                });
-              }
-            }
+      for (const dir of ["in", "out"] as const) {
+        const d = decision[dir];
+        if (d.status === "stalled" && d.shouldRecover) {
+          recoverOneWayAudioRef.current(peerId, pc, dir, d.flatForMs);
+        } else if (d.status === "progressing") {
+          // This direction recovered — clear its escalation ladder.
+          const counts = audioRecoveryRef.current.get(peerId);
+          if (counts && counts[dir] > 0) {
+            counts[dir] = 0;
           }
-          pc.restartIce();
-        } catch (err) {
-          huddleWarn("watchdog", { peerId, event: "renegotiate-error", error: String(err) });
         }
       }
+      diag.watchdog = {
+        in: decision.in.status,
+        out: decision.out.status,
+        negotiatedDirection,
+        outboundTrackActive: !!outboundTrack && outboundTrack.enabled && outboundTrack.readyState === "live",
+        inLost,
+      };
 
       // Structured diagnostic log. In development (or when HUDDLE debug is
       // enabled) log every sample; in production emit a reduced-rate summary
