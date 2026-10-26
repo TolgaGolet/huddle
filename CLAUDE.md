@@ -1,0 +1,53 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+Huddle is a lightweight Discord alternative: peer-to-peer WebRTC voice + screen sharing, plus text chat (reactions, edits, pins, replies, GIFs, images, polls) in ephemeral, optionally password-protected rooms. npm workspaces monorepo: `client/` (React 19 + Vite + Tailwind v4) and `server/` (Express 5 + Socket.IO), both TypeScript ESM.
+
+## Commands
+
+Run from the repo root:
+
+```sh
+npm install
+npm run dev                      # server (tsx watch, :3001) + client (vite, :4173) concurrently
+npm run build                    # client (tsc -b && vite build) then server (tsc -> server/dist)
+npm start                        # node server/dist/index.js — serves API, Socket.IO and client/dist
+npm run test -w client           # vitest run (only test: client/src/lib/audioWatchdog.test.ts)
+npx -w client vitest run src/lib/audioWatchdog.test.ts -t "<test name>"   # single test
+```
+
+There is no linter configured; `tsc -b` during the client build is the type check. The server has no tests.
+
+In dev, Vite proxies `/api` and `/socket.io` (websocket) to `localhost:3001`, so open the client at `http://localhost:4173`.
+
+## Configuration
+
+- Server env is loaded from `server/.env` (see `server/src/loadEnv.ts`, imported first in `index.ts`): `PORT`, `NODE_ENV`, `GIPHY_API_KEY`.
+- Client env is **baked in at build time** (changing server runtime env does not affect a built client):
+  - `VITE_ICE_SERVERS` — JSON `RTCIceServer[]`; defaults to Google STUN only. TURN is needed for symmetric NAT/CGNAT/strict firewalls (symptom: stuck "Connecting…" / `ICE failed`).
+  - `VITE_HUDDLE_DEBUG=false` — silences the noisiest diagnostic logs (on by default).
+
+## Architecture
+
+### Server (`server/src`)
+- All state is **in-memory** (`roomManager.ts`): rooms, participants, last 200 chat entries. Nothing persists across restarts. Rooms are capped at `MAX_PARTICIPANTS = 6` (full-mesh P2P doesn't scale further).
+- Empty rooms are kept for `ROOM_GRACE_MS` (60s) so clients auto-reconnecting after a shared network blip can rejoin instead of getting "Room not found". Purge is lazy in `getRoom()` plus a 30s interval in `index.ts` that also deletes the room's uploaded images.
+- Socket.IO handlers are split by feature, each registering its own `io.on("connection")`: `signaling.ts` (join/leave, relays `offer`/`answer`/`ice-candidate` by socket id, mute, screen-share events), `chatHandler.ts`, `pollHandler.ts`. Socket.IO is websocket-only with a 64 KB message cap.
+- Images are uploaded over HTTP (`imageRouter.ts`, multer) to `uploads/<roomId>/` relative to the process cwd; the directory is wiped on startup. For password-protected rooms, files are AES-256-GCM encrypted at rest with a key derived from the room password + per-room salt (`imageCrypto.ts`).
+- `giphyRouter.ts` proxies Giphy so the API key stays server-side.
+- In production the server also serves `client/dist` with an SPA fallback route.
+
+### Client (`client/src`)
+- Two routes (`App.tsx`): `LandingPage` (create/join) and `RoomPage` (the whole call UI, which wires the hooks together).
+- `hooks/useSocket.ts` owns the Socket.IO connection, room join, and **automatic rejoin after transport reconnect**, treating some join errors (e.g. stale participant not yet evicted) as transient.
+- `hooks/useWebRTC.ts` is the core and most delicate file: one `RTCPeerConnection` per remote peer (mesh), using the **perfect negotiation** pattern (polite/impolite roles, `makingOffer`, rollback on offer collision), ICE restart recovery, screen-share tracks, and the directional audio watchdog. Many comments document specific race conditions that were fixed — read them before changing negotiation logic.
+- Audio pipeline (`lib/audioEngine.ts`): the outbound track is the **native `getUserMedia` track** sent directly to WebRTC (so browser AEC/NS/AGC keep working when the tab is backgrounded). Web Audio is used only for the local analyser (speaking indicator / voice gate) and remote playback (`RemoteAudioManager`). Don't route outbound audio through a Web Audio destination node — that caused robotic/muting regressions.
+- Background-tab resilience: periodic real-time checks use `lib/workerTimer.ts` (Web Worker intervals aren't throttled to 1s like `setInterval`). `useTransmissionGate` (voice-activated transmission with adaptive noise floor, `lib/audioLevels.ts`) relies on this.
+- `lib/audioWatchdog.ts` tracks inbound and outbound RTP independently per peer to detect one-directional audio stalls.
+- Shared client types live in `types/index.ts`; server types are defined in `roomManager.ts` — keep socket payload shapes in sync manually.
+
+### Diagnostics
+`lib/huddleLog.ts` emits always-on structured logs prefixed `[huddle:<scope>]` (`socket`, `peer`, `negotiate`, `connection`, `audio`, `watchdog`, `capture`) in dev and prod. They must never contain SDP, media, IPs, or credentials — keep it that way when adding logs. For watchdog logs, `dir: "in"` = not receiving the remote's audio, `dir: "out"` = our audio isn't reaching them.
