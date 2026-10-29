@@ -1,5 +1,3 @@
-export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
-export const MAX_IMAGES_PER_SEND = 10;
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif", "heic", "heif"]);
 
 export function isImageFile(file: File): boolean {

@@ -15,11 +15,12 @@ npm install
 npm run dev                      # server (tsx watch, :3001) + client (vite, :4173) concurrently
 npm run build                    # client (tsc -b && vite build) then server (tsc -> server/dist)
 npm start                        # node server/dist/index.js — serves API, Socket.IO and client/dist
-npm run test -w client           # vitest run (only test: client/src/lib/audioWatchdog.test.ts)
-npx -w client vitest run src/lib/audioWatchdog.test.ts -t "<test name>"   # single test
+npm run test -w client           # vitest run (client tests are colocated as *.test.ts)
+npx -w client vitest run <path/to/file.test.ts> -t "<test name>"   # single test
+npm run test -w server           # vitest run (server/src/*.test.ts; excluded from the tsc build)
 ```
 
-There is no linter configured; `tsc -b` during the client build is the type check. The server has no tests.
+vitest is declared only in `client/` (hoisted to root, where the server's script finds it). **Don't add it to another workspace:** npm 11 then prunes lightningcss binaries from the lockfile and the build fails (`Cannot find module '../lightningcss.win32-x64-msvc.node'`). Fix: `git checkout package-lock.json && npm ci`. No linter; `tsc -b` in the client build is the type check.
 
 In dev, Vite proxies `/api` and `/socket.io` (websocket) to `localhost:3001`, so open the client at `http://localhost:4173`.
 
@@ -28,14 +29,16 @@ In dev, Vite proxies `/api` and `/socket.io` (websocket) to `localhost:3001`, so
 - Server env is loaded from `server/.env` (see `server/src/loadEnv.ts`, imported first in `index.ts`): `PORT`, `NODE_ENV`, `GIPHY_API_KEY`.
 - Client env is **baked in at build time** (changing server runtime env does not affect a built client):
   - `VITE_ICE_SERVERS` — JSON `RTCIceServer[]`; defaults to Google STUN only. TURN is needed for symmetric NAT/CGNAT/strict firewalls (symptom: stuck "Connecting…" / `ICE failed`).
-  - `VITE_HUDDLE_DEBUG=false` — silences the noisiest diagnostic logs (on by default).
+  - `VITE_HUDDLE_DEBUG=false` — intended to silence noisy diagnostics, but **currently has no effect**: `huddleDebugEnabled()` in `lib/huddleLog.ts` is never called (CQ-17).
 
 ## Architecture
 
 ### Server (`server/src`)
 - All state is **in-memory** (`roomManager.ts`): rooms, participants, last 200 chat entries. Nothing persists across restarts. Rooms are capped at `MAX_PARTICIPANTS = 6` (full-mesh P2P doesn't scale further).
-- Empty rooms are kept for `ROOM_GRACE_MS` (60s) so clients auto-reconnecting after a shared network blip can rejoin instead of getting "Room not found". Purge is lazy in `getRoom()` plus a 30s interval in `index.ts` that also deletes the room's uploaded images.
+- Empty rooms (including newly created, never-joined ones) are kept for `ROOM_GRACE_MS` (60s) so clients auto-reconnecting after a shared network blip can rejoin instead of getting "Room not found". Purge is lazy in `getRoom()` plus a 30s sweep in `index.ts`; every deletion goes through `deleteRoom()`, which fires `onRoomDestroyed` (used by `index.ts` to delete the room's uploaded images). Don't delete from `rooms` directly, or cleanup is skipped.
 - Socket.IO handlers are split by feature, each registering its own `io.on("connection")`: `signaling.ts` (join/leave, relays `offer`/`answer`/`ice-candidate` by socket id, mute, screen-share events), `chatHandler.ts`, `pollHandler.ts`. Socket.IO is websocket-only with a 64 KB message cap.
+- **Never register a client event with a bare `socket.on`:** an uncaught throw exits the process and wipes every room. Use `on`/`onRoom`/`onRelay` (`socketRoute.ts`, catches errors; `onRoom` also resolves room + participant, `onRelay` enforces same-room peer for SDP/ICE) with a parser from `validation.ts` (`unknown` → typed value or `null`; over-limit input is rejected). Input limits and `MAX_PARTICIPANTS` live once in `server/src/limits.ts`, which the client re-exports from `types/index.ts`; keep that file import-free so the client build can compile it.
+- Server error logs go through `errorSummary` (`errorLog.ts`): error name + stack frames only, since messages can quote user input. Anything reaching `uncaughtException`/`unhandledRejection` is logged and the process exits (so a supervisor restarts it), so fire-and-forget promises must not reject.
 - Images are uploaded over HTTP (`imageRouter.ts`, multer) to `uploads/<roomId>/` relative to the process cwd; the directory is wiped on startup. For password-protected rooms, files are AES-256-GCM encrypted at rest with a key derived from the room password + per-room salt (`imageCrypto.ts`).
 - `giphyRouter.ts` proxies Giphy so the API key stays server-side.
 - In production the server also serves `client/dist` with an SPA fallback route.

@@ -3,6 +3,7 @@ import type { Socket } from "socket.io-client";
 import { RemoteAudioManager } from "../lib/audioEngine";
 import { DirectionalAudioWatchdog, type Direction } from "../lib/audioWatchdog";
 import { huddleLog, huddleWarn } from "../lib/huddleLog";
+import { isPoliteFor } from "../lib/negotiation";
 
 // ICE servers. STUN-only by default, which works for most home/office NATs.
 // For symmetric NATs, carrier-grade NAT, or strict corporate firewalls, set
@@ -348,7 +349,6 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
 
   useEffect(() => {
     if (!socket) return;
-    const myId = socket.id;
 
     const flushCandidates = async (peerId: string) => {
       const pc = peersRef.current.get(peerId);
@@ -394,13 +394,18 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     const handleOffer = async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
       await withSdpLock(from, async () => {
         try {
+          // Read the live id: it is undefined before "connect" and changes on reconnect.
+          // Check it before createPeer so a stale offer never leaves an orphan peer.
+          const selfId = socket.id;
+          if (!selfId) return; // not connected; the offer will be re-sent after rejoin
+
           let pc = peersRef.current.get(from);
           if (!pc) {
             pc = createPeer(from, false) ?? undefined;
           }
           if (!pc) return;
 
-          const isPolite = myId! > from;
+          const isPolite = isPoliteFor(selfId, from);
           const offerCollision = makingOfferRef.current.get(from) || pc.signalingState !== "stable";
 
           if (offerCollision) {

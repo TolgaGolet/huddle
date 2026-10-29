@@ -1,23 +1,41 @@
-import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, pbkdf2, randomBytes } from "node:crypto";
+import { promisify } from "node:util";
+import type { Room } from "./roomManager.js";
 
 const ITERATIONS = 120_000;
+const pbkdf2Async = promisify(pbkdf2);
 
-export function deriveRoomKey(password: string, salt: string): Buffer {
-  return pbkdf2Sync(password, Buffer.from(salt, "base64url"), ITERATIONS, 32, "sha256");
+/** Async (libuv thread pool) so the 120k-iteration derivation never blocks the event loop. */
+export function deriveRoomKey(password: string, salt: string): Promise<Buffer> {
+  return pbkdf2Async(password, Buffer.from(salt, "base64url"), ITERATIONS, 32, "sha256");
 }
 
-export function encryptFile(data: Buffer, password: string, salt: string): Buffer {
+/**
+ * Per-room AES key, derived once and cached on the room (so it goes away with
+ * it); null for rooms without a password. The promise itself is cached so
+ * concurrent image requests share a single derivation.
+ */
+export function roomImageKey(room: Room): Promise<Buffer> | null {
+  if (!room.password || !room.encryptionSalt) return null;
+  room.imageKey ??= deriveRoomKey(room.password, room.encryptionSalt).catch((err: unknown) => {
+    room.imageKey = null; // let the next request retry
+    throw err;
+  });
+  return room.imageKey;
+}
+
+export function encryptFile(data: Buffer, key: Buffer): Buffer {
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", deriveRoomKey(password, salt), iv);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
   const encrypted = Buffer.concat([cipher.update(data), cipher.final()]);
   return Buffer.concat([Buffer.from("HIMG1"), iv, cipher.getAuthTag(), encrypted]);
 }
 
-export function decryptFile(data: Buffer, password: string, salt: string): Buffer {
+export function decryptFile(data: Buffer, key: Buffer): Buffer {
   if (data.subarray(0, 5).toString() !== "HIMG1") return data;
   const iv = data.subarray(5, 17);
   const tag = data.subarray(17, 33);
-  const decipher = createDecipheriv("aes-256-gcm", deriveRoomKey(password, salt), iv);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(data.subarray(33)), decipher.final()]);
 }

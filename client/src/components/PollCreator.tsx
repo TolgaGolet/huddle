@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { X, Plus, Trash2 } from "lucide-react";
+import { MAX_POLL_OPTION_LENGTH, MAX_POLL_OPTIONS, MAX_POLL_QUESTION_LENGTH } from "../types";
 
 interface Props {
   onSubmit: (data: { question: string; options: string[]; allowMultiple: boolean }) => void;
@@ -23,7 +24,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
   }, [onClose]);
 
   function addOption() {
-    if (options.length < 10) {
+    if (options.length < MAX_POLL_OPTIONS) {
       setOptions([...options, ""]);
     }
   }
@@ -72,7 +73,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
           placeholder="Ask a question..."
           className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-600 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           autoFocus
-          maxLength={200}
+          maxLength={MAX_POLL_QUESTION_LENGTH}
         />
 
         <div className="space-y-2">
@@ -84,7 +85,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
                 onChange={(e) => updateOption(i, e.target.value)}
                 placeholder={`Option ${i + 1}`}
                 className="flex-1 px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
-                maxLength={100}
+                maxLength={MAX_POLL_OPTION_LENGTH}
               />
               {options.length > 2 && (
                 <button
@@ -99,7 +100,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
           ))}
         </div>
 
-        {options.length < 10 && (
+        {options.length < MAX_POLL_OPTIONS && (
           <button
             type="button"
             onClick={addOption}

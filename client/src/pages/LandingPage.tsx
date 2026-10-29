@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Users, Plus, Lock } from "lucide-react";
+import { MAX_NAME_LENGTH, MAX_PASSWORD_LENGTH } from "../types";
 
 type Mode = "idle" | "join" | "create";
 
@@ -73,6 +74,10 @@ export default function LandingPage() {
         body: JSON.stringify({ password: password.trim() || undefined }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Failed to create room. Please try again.");
+        return;
+      }
       goToRoom(data.roomId, password.trim() || undefined);
     } catch {
       setError("Failed to create room. Please try again.");
@@ -124,6 +129,7 @@ export default function LandingPage() {
               placeholder="Your name"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              maxLength={MAX_NAME_LENGTH}
               autoFocus
               className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
             />
@@ -146,6 +152,7 @@ export default function LandingPage() {
                   placeholder="Room password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  maxLength={MAX_PASSWORD_LENGTH}
                   autoFocus
                   className="flex-1 px-4 py-3 rounded-lg bg-gray-800 border border-amber-600/50 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500 transition-colors"
                 />
@@ -178,6 +185,7 @@ export default function LandingPage() {
               placeholder="Your name"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              maxLength={MAX_NAME_LENGTH}
               autoFocus
               className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
             />
@@ -188,6 +196,7 @@ export default function LandingPage() {
                 placeholder="Password (optional)"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                maxLength={MAX_PASSWORD_LENGTH}
                 className="flex-1 px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
               />
             </div>

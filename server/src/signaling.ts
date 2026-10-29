@@ -8,16 +8,39 @@ import {
   verifyPassword,
   isNameTaken,
   isRoomFull,
-  MAX_PARTICIPANTS,
+  socketRoomMap,
 } from "./roomManager.js";
-import { deleteRoomImages } from "./imageRouter.js";
+import { MAX_PARTICIPANTS } from "./limits.js";
+import { on, onRelay, onRoom } from "./socketRoute.js";
+import { noPayload, parseJoinRoom, parseMute } from "./validation.js";
 
-export const socketRoomMap = new Map<string, string>();
 const roomScreenSharer = new Map<string, string>();
 
 export function setupSignaling(io: Server): void {
   io.on("connection", (socket: Socket) => {
-    socket.on("join-room", ({ roomId, name, password }: { roomId: string; name: string; password?: string }) => {
+    // Remove this socket from the room it has joined (if any) and tell the
+    // others. Used on disconnect, and by a successful join-room into another
+    // room so the socket never leaves a ghost participant behind.
+    const leaveCurrentRoom = () => {
+      const roomId = socketRoomMap.get(socket.id);
+      if (!roomId) return;
+      if (roomScreenSharer.get(roomId) === socket.id) {
+        roomScreenSharer.delete(roomId);
+        socket.to(roomId).emit("screen-share-stopped", { id: socket.id });
+      }
+      removeParticipant(roomId, socket.id);
+      socket.to(roomId).emit("participant-left", { id: socket.id });
+      void socket.leave(roomId);
+      // The room lingers for ROOM_GRACE_MS after the last participant leaves
+      // (in case everyone is reconnecting after a shared network blip); its
+      // images are deleted via onRoomDestroyed once it is truly gone.
+    };
+
+    on(socket, "join-room", parseJoinRoom, ({ roomId, name, password }) => {
+      // A repeated join for the room this socket is already in (double emit
+      // or retry) is a no-op: re-adding it would make peers tear down working
+      // connections, and the earlier join already answered with room-joined.
+      if (socketRoomMap.get(socket.id) === roomId) return;
       const room = getRoom(roomId);
       if (!room) {
         socket.emit("error", { message: "Room not found" });
@@ -38,8 +61,7 @@ export function setupSignaling(io: Server): void {
       const lowerName = name.toLowerCase();
       for (const p of room.participants.values()) {
         if (p.name.toLowerCase() === lowerName && !io.sockets.sockets.has(p.id)) {
-          room.participants.delete(p.id);
-          socketRoomMap.delete(p.id);
+          removeParticipant(roomId, p.id);
           socket.to(roomId).emit("participant-left", { id: p.id });
         }
       }
@@ -56,10 +78,12 @@ export function setupSignaling(io: Server): void {
         return;
       }
 
+      // Only now that the new join is certain to succeed, leave the previous
+      // room; a failed join must not drop the socket from the room it is in.
+      leaveCurrentRoom();
       const participant = addParticipant(roomId, socket.id, name);
       if (!participant) return;
 
-      socketRoomMap.set(socket.id, roomId);
       socket.join(roomId);
 
       const existingParticipants = getParticipantsArray(roomId).filter(
@@ -72,76 +96,35 @@ export function setupSignaling(io: Server): void {
       });
 
       socket.to(roomId).emit("participant-joined", participant);
+    }, () => {
+      // Answer an invalid payload (missing/oversized name, non-string fields)
+      // instead of dropping it, so the client can leave "Connecting…".
+      socket.emit("error", { message: "Invalid name or room" });
     });
 
-    // Authorization helper for relayed signaling. Every SDP/ICE message must
-    // originate from a socket that has joined a room, and its `to` target must
-    // be a different socket currently in the SAME room. This prevents a stale
-    // or unauthenticated client from injecting offers/candidates into unrelated
-    // peers, which could otherwise desynchronize a victim's negotiation.
-    const requireRoomPeer = (to: string): string | null => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return null;
-      if (to === socket.id) return null;
-      const targetRoomId = socketRoomMap.get(to);
-      if (targetRoomId !== roomId) return null;
-      return roomId;
-    };
+    onRelay(socket, "offer", "offer");
+    onRelay(socket, "answer", "answer");
+    onRelay(socket, "ice-candidate", "candidate");
 
-    socket.on("offer", ({ to, offer }: { to: string; offer: RTCSessionDescriptionInit }) => {
-      if (!requireRoomPeer(to)) return;
-      socket.to(to).emit("offer", { from: socket.id, offer });
-    });
-
-    socket.on("answer", ({ to, answer }: { to: string; answer: RTCSessionDescriptionInit }) => {
-      if (!requireRoomPeer(to)) return;
-      socket.to(to).emit("answer", { from: socket.id, answer });
-    });
-
-    socket.on("ice-candidate", ({ to, candidate }: { to: string; candidate: RTCIceCandidateInit }) => {
-      if (!requireRoomPeer(to)) return;
-      socket.to(to).emit("ice-candidate", { from: socket.id, candidate });
-    });
-
-    socket.on("mute-toggle", ({ isMuted }: { isMuted: boolean }) => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
+    onRoom(socket, "mute-toggle", parseMute, ({ roomId }, { isMuted }) => {
       setMuted(roomId, socket.id, isMuted);
       socket.to(roomId).emit("participant-muted", { id: socket.id, isMuted });
     });
 
-    socket.on("screen-share-started", () => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
+    onRoom(socket, "screen-share-started", noPayload, ({ roomId }) => {
       roomScreenSharer.set(roomId, socket.id);
       socket.to(roomId).emit("screen-share-started", { id: socket.id });
     });
 
-    socket.on("screen-share-stopped", () => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
+    onRoom(socket, "screen-share-stopped", noPayload, ({ roomId }) => {
       if (roomScreenSharer.get(roomId) === socket.id) {
         roomScreenSharer.delete(roomId);
       }
       socket.to(roomId).emit("screen-share-stopped", { id: socket.id });
     });
 
-    socket.on("disconnect", () => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
-      if (roomScreenSharer.get(roomId) === socket.id) {
-        roomScreenSharer.delete(roomId);
-        socket.to(roomId).emit("screen-share-stopped", { id: socket.id });
-      }
-      removeParticipant(roomId, socket.id);
-      socketRoomMap.delete(socket.id);
-      socket.to(roomId).emit("participant-left", { id: socket.id });
-      // The room lingers for ROOM_GRACE_MS after the last participant leaves
-      // (in case everyone is reconnecting after a shared network blip). Only
-      // clean up its images once the room is truly gone.
-      if (!getRoom(roomId)) {
-        void deleteRoomImages(roomId);
-      }
-    });
+    // Not client input (Socket.IO passes a reason string); wrapped only so a
+    // throw during cleanup cannot crash the process.
+    on(socket, "disconnect", noPayload, leaveCurrentRoom);
   });
 }

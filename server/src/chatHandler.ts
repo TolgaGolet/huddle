@@ -1,76 +1,61 @@
 import type { Server, Socket } from "socket.io";
 import { nanoid } from "nanoid";
-import { addChatMessage, getRoom, type ChatMessage } from "./roomManager.js";
-import { socketRoomMap } from "./signaling.js";
+import { addChatMessage, emptyReactions, type ChatMessage } from "./roomManager.js";
+import { isRoomImageUrl } from "./imageRouter.js";
+import { onRoom } from "./socketRoute.js";
+import {
+  noPayload,
+  parseChatEdit,
+  parseChatMessage,
+  parseChatReaction,
+  parseMessageId,
+} from "./validation.js";
 
-const GIPHY_CDN = "https://media";
+// GIFs must come from Giphy's CDN (media.giphy.com, media0-4.giphy.com) so a
+// crafted URL cannot make every member's browser fetch an arbitrary host.
+const GIPHY_CDN_HOST = /^media\d*\.giphy\.com$/;
+// Distinct reaction keys per message. The emoji is free-form (any picker
+// emoji), so without a cap a client could grow a message's reaction map, and
+// every broadcast of it, without bound.
+const MAX_REACTION_KEYS = 20;
 
-interface IncomingChatMessage {
-  text: string;
-  replyTo?: { id: string; senderName: string; text: string; imageUrl?: string };
-  gifUrl?: string;
-  imageUrls?: string[];
-}
-
-function validImageUrls(roomId: string, imageUrls: unknown): imageUrls is string[] {
-  if (!Array.isArray(imageUrls) || imageUrls.length > 10) return false;
-  const prefix = `/api/rooms/${roomId}/images/`;
-  return imageUrls.every((url) =>
-    typeof url === "string" &&
-    url.startsWith(prefix) &&
-    /^\/api\/rooms\/[^/]+\/images\/[a-z0-9_-]{10}\.(jpg|jpeg|png|gif|webp|bmp|avif|heic|heif)$/.test(url),
-  );
-}
-
-function validImageUrl(roomId: string, imageUrl: unknown): imageUrl is string {
-  return validImageUrls(roomId, [imageUrl]);
+function isGiphyUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && GIPHY_CDN_HOST.test(u.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function setupChat(io: Server): void {
   io.on("connection", (socket: Socket) => {
     // Typing indicator relay: broadcast to the room so others can show
     // "X is typing...". Clients auto-expire the indicator themselves.
-    socket.on("typing", () => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
-      const room = getRoom(roomId);
-      const participant = room?.participants.get(socket.id);
-      if (!participant) return;
+    onRoom(socket, "typing", noPayload, ({ roomId, participant }) => {
       io.to(roomId).emit("typing", {
         senderId: socket.id,
         senderName: participant.name,
       });
     });
 
-    socket.on("chat-message", ({ text, replyTo, gifUrl, imageUrls }: IncomingChatMessage) => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
-
-      const room = getRoom(roomId);
-      if (!room) return;
-
-      const participant = room.participants.get(socket.id);
-      if (!participant) return;
-
-      const trimmed = text?.trim() ?? "";
-
+    onRoom(socket, "chat-message", parseChatMessage, ({ roomId, participant }, { text, replyTo, gifUrl, imageUrls }) => {
       // Validate gifUrl is a GIPHY CDN URL to prevent abuse
-      const safeGifUrl =
-        typeof gifUrl === "string" && gifUrl.startsWith(GIPHY_CDN)
-          ? gifUrl
-          : undefined;
-      const safeImageUrls = validImageUrls(roomId, imageUrls) ? imageUrls : undefined;
+      const safeGifUrl = gifUrl && isGiphyUrl(gifUrl) ? gifUrl : undefined;
+      // Shape and count are enforced by the parser; each URL must also point
+      // at an image uploaded to this room.
+      const safeImageUrls = imageUrls?.every((u) => isRoomImageUrl(roomId, u)) ? imageUrls : undefined;
 
       // A message must have text, a GIF, or at least one room-scoped image.
-      if (!trimmed && !safeGifUrl && !safeImageUrls?.length) return;
+      if (!text && !safeGifUrl && !safeImageUrls?.length) return;
 
       const msg: ChatMessage = {
         id: nanoid(10),
         senderId: socket.id,
         senderName: participant.name,
-        text: trimmed,
+        text,
         timestamp: Date.now(),
-        reactions: {},
+        reactions: emptyReactions(),
       };
 
       if (safeGifUrl) {
@@ -80,8 +65,9 @@ export function setupChat(io: Server): void {
         msg.imageUrls = safeImageUrls;
       }
 
-      const replyImageUrl = validImageUrl(roomId, replyTo?.imageUrl) ? replyTo.imageUrl : undefined;
-      if (replyTo?.id && replyTo.senderName && (replyTo.text || replyImageUrl)) {
+      const replyImageUrl =
+        replyTo?.imageUrl && isRoomImageUrl(roomId, replyTo.imageUrl) ? replyTo.imageUrl : undefined;
+      if (replyTo && (replyTo.text || replyImageUrl)) {
         msg.replyTo = {
           id: replyTo.id,
           senderName: replyTo.senderName,
@@ -94,23 +80,12 @@ export function setupChat(io: Server): void {
       io.to(roomId).emit("chat-message", msg);
     });
 
-    socket.on("chat-reaction", ({ messageId, emoji }: { messageId: string; emoji: string }) => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
-
-      const room = getRoom(roomId);
-      if (!room) return;
-
-      const participant = room.participants.get(socket.id);
-      if (!participant) return;
-
+    onRoom(socket, "chat-reaction", parseChatReaction, ({ roomId, room, participant }, { messageId, emoji }) => {
       const entry = room.chatHistory.find((m) => m.id === messageId);
       if (!entry || "type" in entry) return;
 
       const msg = entry as ChatMessage;
-      if (!msg.reactions) msg.reactions = {};
-
-      const list = msg.reactions[emoji] || [];
+      const list = msg.reactions[emoji] ?? [];
       const idx = list.indexOf(participant.name);
       if (idx >= 0) {
         list.splice(idx, 1);
@@ -120,6 +95,7 @@ export function setupChat(io: Server): void {
           msg.reactions[emoji] = list;
         }
       } else {
+        if (!(emoji in msg.reactions) && Object.keys(msg.reactions).length >= MAX_REACTION_KEYS) return;
         msg.reactions[emoji] = [...list, participant.name];
       }
 
@@ -129,14 +105,7 @@ export function setupChat(io: Server): void {
       });
     });
 
-    socket.on("chat-edit", ({ messageId, text }: { messageId: string; text: string }) => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
-      const room = getRoom(roomId);
-      if (!room) return;
-      const participant = room.participants.get(socket.id);
-      if (!participant) return;
-
+    onRoom(socket, "chat-edit", parseChatEdit, ({ roomId, room }, { messageId, text }) => {
       const entry = room.chatHistory.find((m) => m.id === messageId);
       if (!entry || "type" in entry) return;
       const msg = entry as ChatMessage;
@@ -144,21 +113,14 @@ export function setupChat(io: Server): void {
       // Only the sender can edit their own message. GIFs and image-only
       // messages cannot be edited to text.
       if (msg.senderId !== socket.id) return;
-      const trimmed = text?.trim() ?? "";
-      if (!trimmed || msg.gifUrl || msg.imageUrls?.length) return;
+      if (msg.gifUrl || msg.imageUrls?.length) return;
 
-      msg.text = trimmed;
+      msg.text = text;
       msg.edited = true;
-      io.to(roomId).emit("chat-message-edit", { messageId, text: trimmed });
+      io.to(roomId).emit("chat-message-edit", { messageId, text });
     });
 
-    socket.on("chat-delete", ({ messageId }: { messageId: string }) => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
-      const room = getRoom(roomId);
-      if (!room) return;
-      if (!room.participants.has(socket.id)) return;
-
+    onRoom(socket, "chat-delete", parseMessageId, ({ roomId, room }, { messageId }) => {
       const entry = room.chatHistory.find((m) => m.id === messageId);
       if (!entry) return;
       if (entry.senderId !== socket.id) return;
@@ -168,13 +130,7 @@ export function setupChat(io: Server): void {
       io.to(roomId).emit("chat-message-delete", { messageId });
     });
 
-    socket.on("chat-pin", ({ messageId }: { messageId: string }) => {
-      const roomId = socketRoomMap.get(socket.id);
-      if (!roomId) return;
-      const room = getRoom(roomId);
-      if (!room) return;
-      if (!room.participants.has(socket.id)) return;
-
+    onRoom(socket, "chat-pin", parseMessageId, ({ roomId, room }, { messageId }) => {
       const entry = room.chatHistory.find((m) => m.id === messageId);
       if (!entry) return;
 

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Send, Smile, BarChart3, Reply, X, ChevronDown, Image as ImageIcon, MoreVertical, Pencil, Trash2, Pin, PinOff } from "lucide-react";
 import type { Socket } from "socket.io-client";
 import type { ChatMessage, ChatEntry } from "../types";
-import { isPollMessage } from "../types";
+import { isPollMessage, MAX_CHAT_TEXT_LENGTH, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE } from "../types";
 import { formatMessage } from "../lib/messageFormatter";
 import { avatarTextColor } from "../lib/avatarColor";
 import FormattingToolbar, { applyFormat } from "./FormattingToolbar";
@@ -10,7 +10,7 @@ import EmojiPicker from "./EmojiPicker";
 import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
 import PollDisplay from "./PollDisplay";
-import { isImageFile, MAX_IMAGE_SIZE, MAX_IMAGES_PER_SEND, uploadImages } from "../lib/imageUpload";
+import { isImageFile, uploadImages } from "../lib/imageUpload";
 
 interface Props {
   socket: Socket | null;
@@ -105,9 +105,9 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
     const accepted: PendingImage[] = [];
     const errors: string[] = [];
     for (const file of Array.from(fileList)) {
-      if (pendingImages.length + accepted.length >= MAX_IMAGES_PER_SEND) { errors.push(`You can send up to ${MAX_IMAGES_PER_SEND} images at once.`); break; }
+      if (pendingImages.length + accepted.length >= MAX_IMAGES_PER_MESSAGE) { errors.push(`You can send up to ${MAX_IMAGES_PER_MESSAGE} images at once.`); break; }
       if (!isImageFile(file)) { errors.push(`${file.name} is not a supported image file.`); continue; }
-      if (file.size > MAX_IMAGE_SIZE) { errors.push(`${file.name} is larger than 8 MB.`); continue; }
+      if (file.size > MAX_IMAGE_SIZE) { errors.push(`${file.name} is larger than ${MAX_IMAGE_SIZE / (1024 * 1024)} MB.`); continue; }
       accepted.push({ id: `${file.name}-${file.lastModified}-${Math.random()}`, file, previewUrl: URL.createObjectURL(file) });
     }
     if (accepted.length) setPendingImages((current) => [...current, ...accepted]);
@@ -220,6 +220,13 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
 
   async function doSend() {
     if ((!text.trim() && !pendingImages.length) || !socket || !socket.id) return;
+    // The textarea's maxLength only limits typing; emoji and formatting
+    // insertions can push past it. The server drops over-limit messages
+    // without a reply, so stop here before clearing (or uploading) anything.
+    if (text.trim().length > MAX_CHAT_TEXT_LENGTH) {
+      setUploadError(`Message is too long (max ${MAX_CHAT_TEXT_LENGTH} characters).`);
+      return;
+    }
     setUploadError(null);
     let imageUrls: string[] = [];
     try {
@@ -373,8 +380,10 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
   }
 
   function submitEdit() {
-    if (!editingMessageId || !socket || !editText.trim()) return;
-    socket.emit("chat-edit", { messageId: editingMessageId, text: editText.trim() });
+    // Over-limit edits would be dropped by the server; keep the editor open.
+    const trimmed = editText.trim();
+    if (!editingMessageId || !socket || !trimmed || trimmed.length > MAX_CHAT_TEXT_LENGTH) return;
+    socket.emit("chat-edit", { messageId: editingMessageId, text: trimmed });
     setEditingMessageId(null);
     setEditText("");
   }
@@ -408,6 +417,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
     const reactions = msg.reactions || {};
     const reactionEntries = Object.entries(reactions).filter(([, names]) => names.length > 0);
     const isEditing = editingMessageId === msg.id;
+    const editTooLong = isEditing && editText.trim().length > MAX_CHAT_TEXT_LENGTH;
 
     return (
       <div
@@ -497,11 +507,13 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
               </div>
             ) : null}
             {isEditing ? (
+              <>
               <div className="mt-1 flex items-center gap-1.5">
                 <textarea
                   ref={editTextareaRef}
                   value={editText}
                   onChange={(e) => setEditText(e.target.value)}
+                  maxLength={MAX_CHAT_TEXT_LENGTH}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(); }
                     if (e.key === "Escape") { setEditingMessageId(null); setEditText(""); }
@@ -510,9 +522,13 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
                   className="flex-1 px-2 py-1 rounded bg-gray-800 border border-indigo-500 text-sm text-white focus:outline-none resize-none"
                   autoFocus
                 />
-                <button type="button" onClick={submitEdit} className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs text-white cursor-pointer transition-colors">Save</button>
+                <button type="button" onClick={submitEdit} disabled={editTooLong} className="disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs text-white cursor-pointer transition-colors">Save</button>
                 <button type="button" onClick={() => { setEditingMessageId(null); setEditText(""); }} className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 cursor-pointer transition-colors">Cancel</button>
               </div>
+              {editTooLong && (
+                <p role="alert" className="mt-1 text-xs text-red-400">Message is too long (max {MAX_CHAT_TEXT_LENGTH} characters).</p>
+              )}
+              </>
             ) : (
               msg.text && (
                 <div className="text-sm text-gray-300 leading-relaxed">
@@ -817,7 +833,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
           event.target.value = "";
         }} />
         {pendingImages.length > 0 && <div className="mb-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-2">
-          <div className="mb-1 text-[11px] font-medium text-indigo-300">Images ready to send ({pendingImages.length}/{MAX_IMAGES_PER_SEND})</div>
+          <div className="mb-1 text-[11px] font-medium text-indigo-300">Images ready to send ({pendingImages.length}/{MAX_IMAGES_PER_MESSAGE})</div>
           <div className="flex gap-2 overflow-x-auto">
             {pendingImages.map((image) => <div key={image.id} className="relative shrink-0 rounded-md border border-gray-600 bg-gray-900/70 p-1">
               <img src={image.previewUrl} alt={image.file.name} className="h-16 w-16 rounded object-cover" />
@@ -872,6 +888,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
               ref={textareaRef}
               value={text}
               onChange={(e) => { setText(e.target.value); handleTyping(); }}
+              maxLength={MAX_CHAT_TEXT_LENGTH}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder="Type a message..."

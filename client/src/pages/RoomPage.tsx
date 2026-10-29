@@ -17,6 +17,7 @@ import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS } from "../types";
 import { huddleLog } from "../lib/huddleLog";
+import { stopStreams } from "../lib/micStreams";
 import { playMuteSound, playUnmuteSound } from "../lib/notificationSounds";
 
 export default function RoomPage() {
@@ -75,6 +76,11 @@ export default function RoomPage() {
   } = useAudioSettings();
   const { processStream, localAnalyser, needsAudioGesture, resumeAudio, cleanup } = useCaptureAudio();
   const rawStreamRef = useRef<MediaStream | null>(null);
+  // The outbound clone is independent of the raw track and must be stopped
+  // separately; refs keep acquireMic and the unmount cleanup off stale state.
+  const outboundStreamRef = useRef<MediaStream | null>(null);
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
   // Generation guard: only the newest acquisition may install its stream.
   // Stale getUserMedia completions (e.g. from a superseded device switch)
   // are stopped instead of overwriting the active capture.
@@ -130,13 +136,13 @@ export default function RoomPage() {
         });
         // A newer acquisition superseded this one; discard the stale stream.
         if (gen !== acquireGenRef.current) {
-          raw.getTracks().forEach((t) => t.stop());
+          stopStreams(raw);
           return;
         }
         // Stop the previously active raw tracks before replacing, now that
         // the new stream is confirmed good.
         if (rawStreamRef.current && rawStreamRef.current !== raw) {
-          rawStreamRef.current.getTracks().forEach((t) => t.stop());
+          stopStreams(rawStreamRef.current);
         }
         rawStreamRef.current = raw;
 
@@ -173,13 +179,14 @@ export default function RoomPage() {
 
         const outboundAudioTrack = outboundStream.getAudioTracks()[0];
         if (outboundAudioTrack) {
-          outboundAudioTrack.enabled = !isMuted;
+          outboundAudioTrack.enabled = !isMutedRef.current;
         }
 
         // Clean up previously active outbound tracks
-        if (localStream && localStream !== raw) {
-          localStream.getAudioTracks().forEach((t) => t.stop());
+        if (outboundStreamRef.current && outboundStreamRef.current !== raw) {
+          stopStreams(outboundStreamRef.current);
         }
+        outboundStreamRef.current = outboundStream;
 
         setLocalStream(outboundStream);
         huddleLog("capture", {
@@ -191,16 +198,18 @@ export default function RoomPage() {
         huddleLog("capture", { event: "getUserMedia-failed", error: String(err) });
       }
     },
-    [processStream, buildAudioConstraints, isMuted, localStream],
+    [processStream, buildAudioConstraints],
   );
 
   useEffect(() => {
     acquireMic();
     return () => {
-      rawStreamRef.current?.getTracks().forEach((t) => t.stop());
-      if (localStream && localStream !== rawStreamRef.current) {
-        localStream.getTracks().forEach((t) => t.stop());
-      }
+      // Invalidate any in-flight acquisition so a late getUserMedia resolve
+      // stops its own stream instead of reopening the mic after leaving.
+      acquireGenRef.current++;
+      stopStreams(rawStreamRef.current, outboundStreamRef.current);
+      rawStreamRef.current = null;
+      outboundStreamRef.current = null;
       cleanup();
     };
   }, []);

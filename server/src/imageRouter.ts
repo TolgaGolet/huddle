@@ -3,29 +3,37 @@ import multer from "multer";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import { getRoom } from "./roomManager.js";
-import { socketRoomMap } from "./signaling.js";
-import { decryptFile, encryptFile } from "./imageCrypto.js";
+import { resolveParticipant } from "./roomManager.js";
+import { decryptFile, encryptFile, roomImageKey } from "./imageCrypto.js";
+import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE } from "./limits.js";
+import { errorSummary } from "./errorLog.js";
 
 export const uploadsDir = path.resolve(process.cwd(), "uploads");
-const MAX_SIZE = 8 * 1024 * 1024;
 const EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif", "heic", "heif"]);
 // nanoid filenames may contain letters, digits, `_`, and `-`. Keep the
 // complete filename constrained to this allowlist so path traversal remains
 // impossible while every generated filename can be served.
 const filenamePattern = /^[a-z0-9_-]{10}\.(jpg|jpeg|png|gif|webp|bmp|avif|heic|heif)$/;
 
+/** True if `url` is the served path of an image uploaded to this room. */
+export function isRoomImageUrl(roomId: string, url: string): boolean {
+  const prefix = `/api/rooms/${roomId}/images/`;
+  return url.startsWith(prefix) && filenamePattern.test(url.slice(prefix.length));
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_SIZE, files: 10 },
+  limits: { fileSize: MAX_IMAGE_SIZE, files: MAX_IMAGES_PER_MESSAGE },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).slice(1).toLowerCase();
     cb(null, EXTENSIONS.has(ext) && (!file.mimetype || file.mimetype.startsWith("image/") || file.mimetype === "application/octet-stream"));
   },
 });
 
-function authorized(roomId: string, socketId: string | undefined): boolean {
-  return !!socketId && socketRoomMap.get(socketId) === roomId && !!getRoom(roomId)?.participants.has(socketId);
+/** The requester's room, if their socket is a participant of `roomId`. */
+function authorizedRoom(roomId: string, socketId: string | undefined) {
+  const ctx = socketId ? resolveParticipant(socketId) : null;
+  return ctx?.roomId === roomId ? ctx.room : undefined;
 }
 
 function socketId(req: { headers: Record<string, string | string[] | undefined>; query: Record<string, unknown> }): string | undefined {
@@ -35,10 +43,10 @@ function socketId(req: { headers: Record<string, string | string[] | undefined>;
 
 export const imageRouter = Router();
 
-imageRouter.post("/rooms/:id/images", upload.array("images", 10), async (req, res) => {
+imageRouter.post("/rooms/:id/images", upload.array("images", MAX_IMAGES_PER_MESSAGE), async (req, res) => {
   const roomId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const room = getRoom(roomId);
-  if (!room || !authorized(roomId, socketId(req))) {
+  const room = authorizedRoom(roomId, socketId(req));
+  if (!room) {
     res.status(403).json({ error: "Not authorized for this room" });
     return;
   }
@@ -50,14 +58,13 @@ imageRouter.post("/rooms/:id/images", upload.array("images", 10), async (req, re
   try {
     const roomDir = path.join(uploadsDir, roomId);
     await mkdir(roomDir, { recursive: true });
+    const key = await roomImageKey(room);
     const urls: string[] = [];
     for (const file of files) {
       const ext = path.extname(file.originalname).slice(1).toLowerCase();
       if (!EXTENSIONS.has(ext)) continue;
       const filename = `${nanoid(10).toLowerCase()}.${ext}`;
-      const body = room.password && room.encryptionSalt
-        ? encryptFile(file.buffer, room.password, room.encryptionSalt)
-        : file.buffer;
+      const body = key ? encryptFile(file.buffer, key) : file.buffer;
       await writeFile(path.join(roomDir, filename), body, { flag: "wx" });
       urls.push(`/api/rooms/${roomId}/images/${filename}`);
     }
@@ -70,8 +77,8 @@ imageRouter.post("/rooms/:id/images", upload.array("images", 10), async (req, re
 imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
   const roomId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const filename = Array.isArray(req.params.filename) ? req.params.filename[0] : req.params.filename;
-  const room = getRoom(roomId);
-  if (!room || !filenamePattern.test(filename) || !authorized(roomId, socketId(req))) {
+  const room = authorizedRoom(roomId, socketId(req));
+  if (!room || !filenamePattern.test(filename)) {
     res.status(404).end();
     return;
   }
@@ -82,7 +89,8 @@ imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
   }
   try {
     let body = await readFile(filePath);
-    if (room.password && room.encryptionSalt) body = decryptFile(body, room.password, room.encryptionSalt);
+    const key = await roomImageKey(room);
+    if (key) body = decryptFile(body, key);
     const ext = path.extname(filename).slice(1);
     const contentType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "heic" || ext === "heif" ? "image/heic" : `image/${ext}`;
     res.setHeader("Content-Type", contentType);
@@ -93,8 +101,13 @@ imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
   }
 });
 
+/** Best-effort cleanup: never rejects (callers fire and forget it). */
 export async function deleteRoomImages(roomId: string): Promise<void> {
-  await rm(path.join(uploadsDir, roomId), { recursive: true, force: true });
+  try {
+    await rm(path.join(uploadsDir, roomId), { recursive: true, force: true });
+  } catch (err) {
+    console.error("[images] cleanup failed", errorSummary(err));
+  }
 }
 
 export async function clearStaleImages(): Promise<void> {
