@@ -29,8 +29,13 @@ export function isAllowedImage(extension: string, mimeType: string): boolean {
   return IMAGE_EXTENSIONS.has(extension) && (!mimeType || mimeType.startsWith("image/") || mimeType === "application/octet-stream");
 }
 export const MAX_ROOM_IMAGE_BYTES = 200 * 1024 * 1024;
-/** Upload bodies held in memory at once across all rooms; multer buffers them. */
-export const MAX_INFLIGHT_UPLOAD_BYTES = 512 * 1024 * 1024;
+/**
+ * Image bytes held in memory at once across all rooms: upload bodies, which
+ * multer buffers, plus decrypting reads. Must fit one maximum upload.
+ */
+export const MAX_INFLIGHT_IMAGE_BYTES = 128 * 1024 * 1024;
+/** One room's share of that for decrypting reads, so it can't starve other rooms. */
+export const MAX_ROOM_INFLIGHT_READ_BYTES = MAX_INFLIGHT_IMAGE_BYTES / 2;
 export const MAX_PASSWORD_LENGTH = 128;
 /** Format of the secret key a client proves its identity with (see identity.ts). */
 export const CLIENT_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;

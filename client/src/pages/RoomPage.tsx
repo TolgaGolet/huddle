@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
-import { Settings, LogOut, Copy, Check, AlertTriangle, Volume2, ChevronDown, Link, X } from "lucide-react";
+import { Settings, LogOut, Copy, Check, AlertTriangle, Volume2, ChevronDown, Link, MicOff, X, type LucideIcon } from "lucide-react";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import { useSocket } from "../hooks/useSocket";
 import { useWebRTC } from "../hooks/useWebRTC";
@@ -20,28 +20,59 @@ import { MAX_PARTICIPANTS } from "../types";
 import { errorName, huddleLog } from "../lib/huddleLog";
 import { ImageSessionContext } from "../lib/imageSessionContext";
 import { resyncCallStateWhenLimited } from "../lib/callStateResync";
-import { stopStreams } from "../lib/micStreams";
+import { classifyMicError, micErrorAfterTrackEnded, micErrorMessage, type MicError } from "../lib/micError";
+import { applyNoiseSuppression, stopStreams } from "../lib/micStreams";
 import { playMuteSound, playUnmuteSound } from "../lib/notificationSounds";
 
+/**
+ * A shared link arrives with no name, so it redirects to the join form. RoomCall
+ * only mounts once there is one: its hooks open the socket and ask for the mic.
+ */
 export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
   const state = location.state as { name?: string; password?: string } | null;
-  const name = state?.name || "Anonymous";
-  const password = state?.password;
-
-  const { socket, userId, imageSession, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
-    roomId: roomId || "",
-    name,
-    password,
-  });
+  const name = state?.name;
 
   useEffect(() => {
-    if (!state?.name) {
-      navigate("/", { replace: true, state: { roomId } });
-    }
-  }, [state, navigate, roomId]);
+    if (!name) navigate("/", { replace: true, state: { roomId } });
+  }, [name, navigate, roomId]);
+
+  if (!roomId || !name) return null;
+  return <RoomCall roomId={roomId} name={name} password={state?.password} />;
+}
+
+const BANNER_ACTION = "px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer";
+
+function RoomBanner({ icon: Icon, role, message, children }: { icon: LucideIcon; role?: "alert"; message: string; children: ReactNode }) {
+  return (
+    <div role={role} className="flex items-center justify-between gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs">
+      <span className="flex items-center gap-2">
+        <Icon size={14} className="shrink-0" />
+        {message}
+      </span>
+      <span className="flex items-center gap-2 shrink-0">{children}</span>
+    </div>
+  );
+}
+
+function RoomCall({ roomId, name, password }: { roomId: string; name: string; password?: string }) {
+  const navigate = useNavigate();
+
+  const [isMuted, setIsMuted] = useState(false);
+  const [micError, setMicError] = useState<MicError | null>(null);
+  const micUnavailable = !!micError && micError !== "switch-failed";
+  // What the room is told: without a mic the user can't be heard, whatever their
+  // own mute choice (which is kept, and applies again once the mic is back).
+  const announcedMuted = isMuted || micUnavailable;
+
+  const { socket, userId, httpToken, imageSession, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
+    roomId,
+    name,
+    password,
+    isMuted: announcedMuted,
+  });
 
   useEffect(() => {
     if (joinError) {
@@ -53,7 +84,7 @@ export default function RoomPage() {
   }, [joinError, navigate, roomId, name, password]);
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [isMuted, setIsMuted] = useState(false);
+  const [micRetrying, setMicRetrying] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [peerVolumes, setPeerVolumes] = useState<Map<string, number>>(new Map());
@@ -85,16 +116,26 @@ export default function RoomPage() {
   const outboundStreamRef = useRef<MediaStream | null>(null);
   const isMutedRef = useRef(isMuted);
   isMutedRef.current = isMuted;
+  const announcedMutedRef = useRef(announcedMuted);
+  announcedMutedRef.current = announcedMuted;
+  // The device Retry asks for: the one that failed, unless it has gone away.
+  const micRetryDeviceRef = useRef<string | undefined>(undefined);
   const isScreenSharingRef = useRef(isScreenSharing);
   isScreenSharingRef.current = isScreenSharing;
 
   useEffect(() => {
     if (!socket) return;
     return resyncCallStateWhenLimited(socket, () => ({
-      isMuted: isMutedRef.current,
+      isMuted: announcedMutedRef.current,
       isScreenSharing: isScreenSharingRef.current,
     }));
   }, [socket]);
+
+  // Only while connected: Socket.IO would flush this before the rejoin, where
+  // the server ignores it. The join itself carries the current state.
+  useEffect(() => {
+    if (socket?.connected) socket.emit("mute-toggle", { isMuted: announcedMuted });
+  }, [socket, announcedMuted]);
 
   // Generation guard: only the newest acquisition may install its stream.
   // Stale getUserMedia completions (e.g. from a superseded device switch)
@@ -135,8 +176,9 @@ export default function RoomPage() {
     [settings.noiseCancellationEnabled],
   );
 
+  /** Resolves true only if this acquisition became the active capture. */
   const acquireMic = useCallback(
-    async (deviceId?: string, noiseCancellation?: boolean) => {
+    async (deviceId?: string, noiseCancellation?: boolean): Promise<boolean> => {
       const gen = ++acquireGenRef.current;
       const startedAt = performance.now();
       try {
@@ -152,7 +194,7 @@ export default function RoomPage() {
         // A newer acquisition superseded this one; discard the stale stream.
         if (gen !== acquireGenRef.current) {
           stopStreams(raw);
-          return;
+          return false;
         }
         // Stop the previously active raw tracks before replacing, now that
         // the new stream is confirmed good.
@@ -182,7 +224,7 @@ export default function RoomPage() {
         }
 
         const processed = await processStream(raw);
-        if (gen !== acquireGenRef.current) return;
+        if (gen !== acquireGenRef.current) return false;
 
         // Clone the native capture track specifically for the outbound WebRTC stream.
         // This decouples outbound transmission gating (track.enabled) from the localAnalyser
@@ -204,17 +246,48 @@ export default function RoomPage() {
         outboundStreamRef.current = outboundStream;
 
         setLocalStream(outboundStream);
+        setMicError(null);
+        micRetryDeviceRef.current = undefined;
+        // Set here, not when the user picks, so the picker only ever shows the
+        // device in use, including after a fallback to the default one.
+        const activeDeviceId = rawAudioTrack?.getSettings().deviceId;
+        if (activeDeviceId) setSelectedDeviceId(activeDeviceId);
+        // Unplugged, or revoked by the browser. stop() doesn't fire this, so our
+        // own device switches and leaving don't reach it.
+        rawAudioTrack?.addEventListener("ended", () => {
+          if (rawStreamRef.current !== raw) return;
+          huddleLog("capture", { event: "track-ended" });
+          void acquireMicRef.current?.().then((recovered) => {
+            if (!recovered && rawStreamRef.current === raw) setMicError(micErrorAfterTrackEnded);
+          });
+        });
         huddleLog("capture", {
           event: "localStream-committed",
           gen,
           elapsedMs: Math.round(performance.now() - startedAt),
         });
+        return true;
       } catch (err) {
         huddleLog("capture", { event: "getUserMedia-failed", error: errorName(err) });
+        if (gen !== acquireGenRef.current) return false;
+        const error = classifyMicError(err);
+        const stillCapturing = outboundStreamRef.current?.getAudioTracks()[0]?.readyState === "live";
+        setMicError(stillCapturing ? "switch-failed" : error);
+        micRetryDeviceRef.current = error === "not-found" ? undefined : deviceId;
+        return false;
       }
     },
-    [processStream, buildAudioConstraints],
+    [processStream, buildAudioConstraints, setSelectedDeviceId],
   );
+  const acquireMicRef = useRef(acquireMic);
+  acquireMicRef.current = acquireMic;
+
+  const retryMic = useCallback(async () => {
+    if (micRetrying) return;
+    setMicRetrying(true);
+    await acquireMic(micRetryDeviceRef.current);
+    setMicRetrying(false);
+  }, [micRetrying, acquireMic]);
 
   useEffect(() => {
     acquireMic();
@@ -235,39 +308,40 @@ export default function RoomPage() {
 
   const handleDeviceChange = useCallback(
     (deviceId: string) => {
-      setSelectedDeviceId(deviceId);
       // acquireMic stops the old raw tracks only after the new stream is
       // confirmed, avoiding a window with no active capture.
-      acquireMic(deviceId);
+      void acquireMic(deviceId);
     },
-    [acquireMic, setSelectedDeviceId],
+    [acquireMic],
   );
 
   const handleNoiseCancellationChange = useCallback(
     async (enabled: boolean) => {
       setNoiseCancellationEnabled(enabled);
 
-      const track = rawStreamRef.current?.getAudioTracks()[0];
-      if (track && typeof track.applyConstraints === "function") {
-        try {
-          await track.applyConstraints({
-            noiseSuppression: enabled,
-          });
+      // Peers receive the outbound clone, and constraints apply per track.
+      const tracks = [rawStreamRef.current, outboundStreamRef.current].flatMap((stream) => stream?.getAudioTracks() ?? []);
+      try {
+        if (await applyNoiseSuppression(tracks, enabled)) {
           huddleLog("capture", {
             event: "applyConstraints-noiseSuppression-success",
             enabled,
           });
           return;
-        } catch (err) {
-          huddleLog("capture", {
-            event: "applyConstraints-failed-fallback-reacquire",
-            error: errorName(err),
-          });
         }
+        huddleLog("capture", { event: "applyConstraints-not-applied-fallback-reacquire" });
+      } catch (err) {
+        huddleLog("capture", {
+          event: "applyConstraints-failed-fallback-reacquire",
+          error: errorName(err),
+        });
       }
 
-      // Fallback: reacquire mic with new constraints
-      acquireMic(selectedDeviceId, enabled);
+      // Fallback: reacquire mic with new constraints. Chromium accepts the call
+      // above without changing anything, and hands a new capture of an open device
+      // that device's old processing, so the current capture must close first.
+      stopStreams(rawStreamRef.current, outboundStreamRef.current);
+      void acquireMic(selectedDeviceId, enabled);
     },
     [setNoiseCancellationEnabled, acquireMic, selectedDeviceId],
   );
@@ -314,10 +388,9 @@ export default function RoomPage() {
       const nextMuted = !prev;
       if (nextMuted) playMuteSound();
       else playUnmuteSound();
-      socket?.emit("mute-toggle", { isMuted: nextMuted });
       return nextMuted;
     });
-  }, [socket]);
+  }, []);
 
   const someoneElseSharing = !!currentScreenSharer && currentScreenSharer !== socket?.id;
 
@@ -341,7 +414,7 @@ export default function RoomPage() {
   );
 
   const handleCopyRoomId = useCallback(() => {
-    if (roomId) void copyRoomId(roomId);
+    void copyRoomId(roomId);
   }, [roomId, copyRoomId]);
 
   const handleCopyLink = useCallback(() => {
@@ -352,7 +425,7 @@ export default function RoomPage() {
     id: localId,
     userId: userId ?? "",
     name,
-    isMuted,
+    isMuted: announcedMuted,
   };
 
   const allParticipants = [localParticipant, ...participants];
@@ -375,55 +448,55 @@ export default function RoomPage() {
   const screenSharerName =
     firstScreenStream && allParticipants.find((p) => p.id === firstScreenStream[0])?.name;
 
-  if (!roomId || !state?.name) {
-    return null;
-  }
-
   const linkLabel = linkCopy === "failed" ? "Couldn't copy room link" : "Copy room link";
 
   const voiceControlsProps = {
-    isMuted,
+    isMuted: announcedMuted,
+    micUnavailable,
     isScreenSharing,
     screenShareDisabled: someoneElseSharing,
-    onToggleMute: handleToggleMute,
+    onToggleMute: micUnavailable ? retryMic : handleToggleMute,
     onToggleScreenShare: handleToggleScreenShare,
   };
 
   return (
     <div className="h-dvh flex flex-col bg-gray-950 text-gray-100">
+      {micError && (
+        <RoomBanner icon={MicOff} role="alert" message={micErrorMessage(micError)}>
+          <button onClick={retryMic} disabled={micRetrying} className={`${BANNER_ACTION} disabled:opacity-60 disabled:cursor-wait`}>
+            {micRetrying ? "Retrying..." : "Retry"}
+          </button>
+          {micError === "switch-failed" && (
+            <button
+              onClick={() => setMicError(null)}
+              className="touch-target p-1 rounded-md hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </RoomBanner>
+      )}
       {/* Audio enable banner: shown when the browser blocked AudioContext
           resume / autoplay (notably Safari/iOS after backgrounding). The
           action must be triggered by a user gesture. */}
       {needsAudioGesture && (
-        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs">
-          <span className="flex items-center gap-2">
-            <Volume2 size={14} />
-            Audio was paused by your browser. Click to re-enable voice.
-          </span>
-          <button
-            onClick={resumeAudio}
-            className="shrink-0 px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
-          >
+        <RoomBanner icon={Volume2} message="Audio was paused by your browser. Click to re-enable voice.">
+          <button onClick={resumeAudio} className={BANNER_ACTION}>
             Enable audio
           </button>
-        </div>
+        </RoomBanner>
       )}
       {/* Remote playback blocked: the AudioContext that plays OTHER users'
           voices is suspended (autoplay block / OS interruption). Without this
           banner there was no recovery path — the user heard nobody. */}
       {remotePlaybackBlocked && (
-        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs">
-          <span className="flex items-center gap-2">
-            <Volume2 size={14} />
-            Incoming audio was paused by your browser. Click to hear others.
-          </span>
-          <button
-            onClick={resumeRemotePlayback}
-            className="shrink-0 px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
-          >
+        <RoomBanner icon={Volume2} message="Incoming audio was paused by your browser. Click to hear others.">
+          <button onClick={resumeRemotePlayback} className={BANNER_ACTION}>
             Enable audio
           </button>
-        </div>
+        </RoomBanner>
       )}
       {/* Top bar */}
       <header className="flex items-center justify-between gap-2 px-4 py-2 border-b border-gray-800 bg-gray-900/50 shrink-0">
@@ -534,6 +607,7 @@ export default function RoomPage() {
             <ImageSessionContext value={imageSession}>
               <ChatPanel
                 socket={socket}
+                httpToken={httpToken}
                 chatHistory={chatHistory}
                 pinnedMessageId={pinnedMessageId}
                 localUserId={userId ?? ""}

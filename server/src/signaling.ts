@@ -3,6 +3,7 @@ import {
   removeParticipant,
   getRoom,
   getParticipantsArray,
+  httpTokenFor,
   setMuted,
   verifyPassword,
   isNameTaken,
@@ -48,7 +49,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       // images are deleted via onRoomDestroyed once it is truly gone.
     };
 
-    on(socket, "join-room", parseJoinRoom, ({ roomId, name, password, clientKey }) => {
+    on(socket, "join-room", parseJoinRoom, ({ roomId, name, password, clientKey, isMuted }) => {
       // A repeated join for the room this socket is already in (double emit
       // or retry) is a no-op: re-adding it would make peers tear down working
       // connections, and the earlier join already answered with room-joined.
@@ -106,7 +107,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       // Only now that the new join is certain to succeed, leave the previous
       // room; a failed join must not drop the socket from the room it is in.
       leaveCurrentRoom();
-      const participant = addParticipant(roomId, socket.id, name, userId);
+      const participant = addParticipant(roomId, socket.id, name, userId, isMuted);
       if (!participant) return;
 
       socket.join(roomId);
@@ -116,6 +117,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       );
       socket.emit("room-joined", {
         userId: participant.userId,
+        httpToken: httpTokenFor(socket.id)!,
         participants: existingParticipants,
         chatHistory: room.chatHistory,
         pinnedMessageId: room.pinnedMessageId,

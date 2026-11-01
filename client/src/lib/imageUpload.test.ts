@@ -28,12 +28,12 @@ describe("isImageFile", () => {
 });
 
 describe("openImageSession", () => {
-  it("identifies the socket and rejects a failed response", async () => {
+  it("sends the token and rejects a failed response", async () => {
     const fetchMock = respondWith(403, {});
-    await expect(openImageSession("r", "sock")).rejects.toThrow("Failed to open image session");
+    await expect(openImageSession("r", "tok")).rejects.toThrow("Failed to open image session");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/rooms/r/image-session");
-    expect(init.headers).toEqual({ "X-Socket-Id": "sock" });
+    expect(init.headers).toEqual({ "X-Participant-Token": "tok" });
   });
 });
 
@@ -49,7 +49,7 @@ describe("keepImageSessionOpen", () => {
   it("renews the session before it expires", async () => {
     const fetchMock = stubStatuses(204, 204);
     const onSettled = vi.fn();
-    const stop = keepImageSessionOpen("r", "sock", onSettled);
+    const stop = keepImageSessionOpen("r", "tok", onSettled);
     await vi.advanceTimersByTimeAsync(0);
     expect(onSettled).toHaveBeenCalledTimes(1);
 
@@ -62,7 +62,7 @@ describe("keepImageSessionOpen", () => {
   it("settles after a failed first attempt, then retries until it opens", async () => {
     const fetchMock = stubStatuses(429, 429, 204);
     const onSettled = vi.fn();
-    const stop = keepImageSessionOpen("r", "sock", onSettled);
+    const stop = keepImageSessionOpen("r", "tok", onSettled);
     await vi.advanceTimersByTimeAsync(0);
     expect(onSettled).toHaveBeenCalledTimes(1);
 
@@ -78,7 +78,7 @@ describe("keepImageSessionOpen", () => {
   it("ignores a response that arrives after it was stopped", async () => {
     const fetchMock = stubStatuses(204);
     const onSettled = vi.fn();
-    const stop = keepImageSessionOpen("r", "sock", onSettled);
+    const stop = keepImageSessionOpen("r", "tok", onSettled);
     stop();
     await vi.advanceTimersByTimeAsync(IMAGE_SESSION_RENEW_MS);
     expect(onSettled).not.toHaveBeenCalled();
@@ -87,28 +87,28 @@ describe("keepImageSessionOpen", () => {
 });
 
 describe("uploadImages", () => {
-  it("returns the URLs and identifies the sender's socket", async () => {
+  it("returns the URLs and sends the sender's token", async () => {
     const fetchMock = respondWith(200, { urls: ["/api/rooms/r/images/a.png"] });
 
-    await expect(uploadImages("r", "sock", [png()])).resolves.toEqual(["/api/rooms/r/images/a.png"]);
+    await expect(uploadImages("r", "tok", [png()])).resolves.toEqual(["/api/rooms/r/images/a.png"]);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/rooms/r/images");
-    expect(init.headers).toEqual({ "X-Socket-Id": "sock" });
+    expect(init.headers).toEqual({ "X-Participant-Token": "tok" });
   });
 
   it("rejects a response whose urls are not all strings", async () => {
     respondWith(200, { urls: ["/ok", 1] });
-    await expect(uploadImages("r", "sock", [png()])).rejects.toThrow("Invalid image upload response");
+    await expect(uploadImages("r", "tok", [png()])).rejects.toThrow("Invalid image upload response");
 
     respondWith(200, {});
-    await expect(uploadImages("r", "sock", [png()])).rejects.toThrow("Invalid image upload response");
+    await expect(uploadImages("r", "tok", [png()])).rejects.toThrow("Invalid image upload response");
   });
 
   it("surfaces the server's error text, with a fallback", async () => {
     respondWith(413, { error: "This room has reached its image storage limit" });
-    await expect(uploadImages("r", "sock", [png()])).rejects.toThrow("storage limit");
+    await expect(uploadImages("r", "tok", [png()])).rejects.toThrow("storage limit");
 
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not json", { status: 500 })));
-    await expect(uploadImages("r", "sock", [png()])).rejects.toThrow("Failed to upload images");
+    await expect(uploadImages("r", "tok", [png()])).rejects.toThrow("Failed to upload images");
   });
 });

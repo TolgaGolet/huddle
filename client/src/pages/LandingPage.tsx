@@ -6,6 +6,9 @@ import { lookupRoom } from "../lib/roomLookup";
 
 type Mode = "idle" | "join" | "create";
 
+const INPUT_BASE = "px-4 py-3 rounded-lg bg-gray-800 border text-white placeholder-gray-400 focus:outline-none transition-colors";
+const INPUT = `${INPUT_BASE} border-gray-700 focus:border-indigo-500`;
+
 interface RedirectState {
   error?: string;
   roomId?: string;
@@ -136,7 +139,7 @@ export default function LandingPage() {
               onChange={(e) => setName(e.target.value)}
               maxLength={MAX_NAME_LENGTH}
               autoFocus
-              className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+              className={`w-full ${INPUT}`}
             />
             <input
               aria-label="Room ID"
@@ -148,7 +151,7 @@ export default function LandingPage() {
                 setRoomNeedsPassword(false);
                 setPassword("");
               }}
-              className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+              className={`w-full ${INPUT}`}
             />
             {roomNeedsPassword && (
               <div className="flex items-center gap-2">
@@ -161,11 +164,11 @@ export default function LandingPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   maxLength={MAX_PASSWORD_LENGTH}
                   autoFocus
-                  className="flex-1 px-4 py-3 rounded-lg bg-gray-800 border border-amber-600/50 text-white placeholder-gray-500 focus:outline-none focus:border-amber-500 transition-colors"
+                  className={`flex-1 ${INPUT_BASE} border-amber-600/50 focus:border-amber-500`}
                 />
               </div>
             )}
-            {error && <p className="text-red-400 text-sm">{error}</p>}
+            {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
             <div className="flex gap-3">
               <button
                 type="button"
@@ -195,10 +198,10 @@ export default function LandingPage() {
               onChange={(e) => setName(e.target.value)}
               maxLength={MAX_NAME_LENGTH}
               autoFocus
-              className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+              className={`w-full ${INPUT}`}
             />
             <div className="flex items-center gap-2">
-              <Lock size={16} className="text-gray-500 flex-shrink-0" />
+              <Lock size={16} className="text-gray-400 flex-shrink-0" />
               <input
                 aria-label="Password (optional)"
                 type="password"
@@ -206,10 +209,10 @@ export default function LandingPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 maxLength={MAX_PASSWORD_LENGTH}
-                className="flex-1 px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+                className={`flex-1 ${INPUT}`}
               />
             </div>
-            {error && <p className="text-red-400 text-sm">{error}</p>}
+            {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
             <div className="flex gap-3">
               <button
                 type="button"

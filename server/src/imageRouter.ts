@@ -1,13 +1,13 @@
-import { Router, type Request, type RequestHandler, type Response } from "express";
+import { Router, type ErrorRequestHandler, type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import { isPollMessage } from "./protocol.js";
-import { getRoom, resolveParticipant, type ChatEntry, type Room } from "./roomManager.js";
+import { getRoom, resolveParticipantByHttpToken, type ChatEntry, type Room } from "./roomManager.js";
 import { decryptFile, encryptFile, roomImageKey } from "./imageCrypto.js";
-import { IMAGE_EXTENSIONS, isAllowedImage, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_UPLOAD_BYTES, MAX_ROOM_IMAGE_BYTES } from "./limits.js";
+import { IMAGE_EXTENSIONS, isAllowedImage, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_IMAGE_BYTES, MAX_ROOM_IMAGE_BYTES, MAX_ROOM_INFLIGHT_READ_BYTES } from "./limits.js";
 import { errorSummary } from "./errorLog.js";
 
 export const uploadsDir = path.resolve(process.cwd(), "uploads");
@@ -41,8 +41,9 @@ function param(value: string | string[]): string {
 
 /** The requester's participant context in the route's room, or undefined after sending the 403. */
 function requireParticipant(req: Request, res: Response) {
-  const socketId = req.get("x-socket-id");
-  const ctx = socketId ? resolveParticipant(socketId) : null;
+  // Not the socket id: every room member can see that (see httpTokenFor).
+  const token = req.get("x-participant-token");
+  const ctx = token ? resolveParticipantByHttpToken(token) : null;
   if (ctx?.roomId === param(req.params.id)) return ctx;
   res.status(403).json({ error: "Not authorized for this room" });
   return undefined;
@@ -79,13 +80,28 @@ const QUOTA_ERROR = "This room has reached its image storage limit";
 const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
 const MAX_UPLOAD_BYTES = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE + MULTIPART_OVERHEAD_BYTES;
 
-let inFlightUploadBytes = 0;
+/** Longer than an 8 MB image takes on a slow mobile link. */
+export const IMAGE_READ_TIMEOUT_MS = 2 * 60 * 1000;
+
+let inFlightImageBytes = 0;
+
+/** Holds `bytes` of the shared budget until the response closes, if they fit. */
+function tryReserveImageMemory(res: Response, bytes: number): boolean {
+  // Already closed: the release below would never run, leaking the bytes for good.
+  if (res.closed || inFlightImageBytes + bytes > MAX_INFLIGHT_IMAGE_BYTES) return false;
+  inFlightImageBytes += bytes;
+  res.once("close", () => {
+    inFlightImageBytes -= bytes;
+  });
+  return true;
+}
 
 /**
  * Rejects before multer reads the body, so a request that will be refused never
  * gets buffered. Node stops reading at Content-Length, so reserving it bounds
  * what concurrent uploads can buffer and exceeds what they can store. When the
- * response closes, however it ended, only the bytes actually stored stay counted.
+ * response closes, however it ended, only the bytes actually stored stay counted,
+ * which is known only once any store still running has finished.
  */
 const rejectEarly: RequestHandler = (req, res, next) => {
   const room = requireParticipant(req, res)?.room;
@@ -103,39 +119,43 @@ const rejectEarly: RequestHandler = (req, res, next) => {
     res.status(413).json({ error: QUOTA_ERROR });
     return;
   }
-  if (inFlightUploadBytes + declaredBytes > MAX_INFLIGHT_UPLOAD_BYTES) {
+  if (!tryReserveImageMemory(res, declaredBytes)) {
     res.status(503).json({ error: "The server is busy, please try again" });
     return;
   }
   room.imageBytes += declaredBytes;
-  inFlightUploadBytes += declaredBytes;
   res.locals.storedBytes = 0;
   res.once("close", () => {
-    room.imageBytes -= declaredBytes - (res.locals.storedBytes as number);
-    inFlightUploadBytes -= declaredBytes;
+    void Promise.resolve(res.locals.storing).then(() => {
+      room.imageBytes -= declaredBytes - (res.locals.storedBytes as number);
+    });
   });
   next();
 };
 
-export const imageRouter = Router();
-
-imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IMAGES_PER_MESSAGE), async (req, res) => {
-  // Checked again: a slow upload can outlast the sender's membership or the
-  // room itself, and writing then would leave files no cleanup will remove.
-  const room = requireParticipant(req, res)?.room;
-  if (!room) return;
-  const roomId = param(req.params.id);
-  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-  if (!files.length) {
-    res.status(400).json({ error: "No valid image files supplied" });
+/** Multer's errors: its limits, or a client that abandoned the upload (nobody to answer). */
+const onUploadError: ErrorRequestHandler = (err, req, res, next) => {
+  if (req.socket.destroyed) return;
+  if (!(err instanceof multer.MulterError)) {
+    next(err);
     return;
   }
+  if (err.code === "LIMIT_FILE_SIZE") res.status(413).json({ error: "Image is too large" });
+  else res.status(400).json({ error: "Request failed" });
+};
+
+export const imageRouter = Router();
+
+/** Never rejects: the reservation's release waits for it (see rejectEarly). */
+async function storeImages(room: Room, roomId: string, files: Express.Multer.File[], res: Response): Promise<void> {
   try {
     const roomDir = path.join(uploadsDir, roomId);
     await mkdir(roomDir, { recursive: true });
     const key = await roomImageKey(room);
     const urls: string[] = [];
     for (const file of files) {
+      // Nobody will receive the URLs, so nothing could ever reference the rest.
+      if (res.closed) break;
       const ext = path.extname(file.originalname).slice(1).toLowerCase();
       if (!IMAGE_EXTENSIONS.has(ext)) continue;
       const filename = `${nanoid(10).toLowerCase()}.${ext}`;
@@ -149,7 +169,24 @@ imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IM
   } catch {
     res.status(500).json({ error: "Failed to store images" });
   }
-});
+}
+
+imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IMAGES_PER_MESSAGE), async (req: Request, res: Response) => {
+  // The client left as the body finished: the reservation is already released.
+  if (res.closed) return;
+  // Checked again: a slow upload can outlast the sender's membership or the
+  // room itself, and writing then would leave files no cleanup will remove.
+  const room = requireParticipant(req, res)?.room;
+  if (!room) return;
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  if (!files.length) {
+    res.status(400).json({ error: "No valid image files supplied" });
+    return;
+  }
+  const storing = storeImages(room, param(req.params.id), files, res);
+  res.locals.storing = storing;
+  await storing;
+}, onUploadError);
 
 imageRouter.post("/rooms/:id/image-session", (req, res) => {
   const ctx = requireParticipant(req, res);
@@ -176,24 +213,49 @@ imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
     res.status(404).end();
     return;
   }
-  const filePath = path.join(uploadsDir, roomId, filename);
-  if (path.dirname(filePath) !== path.join(uploadsDir, roomId)) {
+  const roomDir = path.join(uploadsDir, roomId);
+  const filePath = path.join(roomDir, filename);
+  if (path.dirname(filePath) !== roomDir) {
     res.status(404).end();
     return;
   }
+  const ext = path.extname(filename).slice(1);
+  const contentType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "heic" || ext === "heif" ? "image/heic" : `image/${ext}`;
   try {
-    let body = await readFile(filePath);
     const key = await roomImageKey(room);
-    if (key) body = decryptFile(body, key);
-    const ext = path.extname(filename).slice(1);
-    const contentType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "heic" || ext === "heif" ? "image/heic" : `image/${ext}`;
+    if (!key) {
+      // Streamed, with ETag and 304 from the file's metadata, so reads take no
+      // memory budget. Revalidated rather than cached outright, so that leaving
+      // the room or deleting the message also ends access to a cached copy.
+      const headers = { "Content-Type": contentType, "Cache-Control": "private, no-cache" };
+      res.sendFile(filename, { root: roomDir, cacheControl: false, headers }, (err) => {
+        if (err && !res.headersSent) res.status(404).end();
+      });
+      return;
+    }
+    // The encrypted and decrypted copies are in memory together.
+    const reservedBytes = (await stat(filePath)).size * 2;
+    if (room.inFlightReadBytes + reservedBytes > MAX_ROOM_INFLIGHT_READ_BYTES || !tryReserveImageMemory(res, reservedBytes)) {
+      res.setHeader("Retry-After", "1");
+      res.status(503).end();
+      return;
+    }
+    room.inFlightReadBytes += reservedBytes;
+    // The reservation lasts until the client has it all, so one that stops
+    // reading must not be able to hold it forever.
+    const deadline = setTimeout(() => res.destroy(), IMAGE_READ_TIMEOUT_MS);
+    res.once("close", () => {
+      clearTimeout(deadline);
+      room.inFlightReadBytes -= reservedBytes;
+    });
+    const body = decryptFile(await readFile(filePath), key);
     res.setHeader("Content-Type", contentType);
-    // Revalidated rather than cached outright, so that leaving the room or
-    // deleting the message also ends access to a cached copy. A password room's
-    // images stay out of the browser's disk cache, where they would be stored
-    // decrypted.
-    res.setHeader("Cache-Control", key ? "private, no-store" : "private, no-cache");
-    res.send(body);
+    // These images stay out of the browser's disk cache, where they would be
+    // stored decrypted.
+    res.setHeader("Cache-Control", "private, no-store");
+    // Not res.send: it would hash the whole image for an ETag no-store never uses.
+    res.setHeader("Content-Length", body.length);
+    res.end(body);
   } catch {
     res.status(404).end();
   }

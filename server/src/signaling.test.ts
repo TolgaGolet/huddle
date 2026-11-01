@@ -72,6 +72,49 @@ describe("password guessing", () => {
   });
 });
 
+// Regression (F05): a rejoin always created the participant unmuted.
+describe("mute state on join", () => {
+  it("announces a muted joiner as muted, and lists them as muted for later joiners", async () => {
+    const room = createRoom();
+    const [ana, bo, cy] = [1, 2, 3].map(() => connect(url, { transports: ["websocket"] }));
+    try {
+      await joined(ana, { roomId: room.id, name: "Ana" });
+      const announced = new Promise<{ isMuted: boolean }>((resolve) => ana.once("participant-joined", resolve));
+      await joined(bo, { roomId: room.id, name: "Bo", isMuted: true });
+      expect((await announced).isMuted).toBe(true);
+
+      const { participants } = await joined<{ participants: { name: string; isMuted: boolean }[] }>(cy, { roomId: room.id, name: "Cy" });
+      expect(participants.find((p) => p.name === "Bo")?.isMuted).toBe(true);
+      expect(participants.find((p) => p.name === "Ana")?.isMuted).toBe(false);
+    } finally {
+      for (const client of [ana, bo, cy]) client.disconnect();
+    }
+  });
+});
+
+// Regression (F02): HTTP routes trusted the socket id, which the room can see.
+describe("HTTP token", () => {
+  it("goes only to its owner, and never appears in a participant", async () => {
+    const room = createRoom();
+    const ana = connect(url, { transports: ["websocket"] });
+    const bo = connect(url, { transports: ["websocket"] });
+    try {
+      const anaJoin = await joined<{ httpToken: string }>(ana, { roomId: room.id, name: "Ana" });
+      const announced = new Promise<object>((resolve) => ana.once("participant-joined", resolve));
+      const boJoin = await joined<{ httpToken: string; participants: object[] }>(bo, { roomId: room.id, name: "Bo" });
+
+      expect(anaJoin.httpToken).toBeTruthy();
+      expect(boJoin.httpToken).toBeTruthy();
+      expect(boJoin.httpToken).not.toBe(anaJoin.httpToken);
+      expect(JSON.stringify(boJoin.participants)).not.toContain(anaJoin.httpToken);
+      expect(JSON.stringify(await announced)).not.toContain(boJoin.httpToken);
+    } finally {
+      ana.disconnect();
+      bo.disconnect();
+    }
+  });
+});
+
 describe("screen sharer", () => {
   it("is told to a later joiner, and cleared when the sharer leaves", async () => {
     const room = createRoom();

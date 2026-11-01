@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
-import type { AppSocket, Participant, ChatMessage, ChatEntry, PollMessage, JoinErrorCode, ReactionUser } from "../types";
+import type { AppSocket, Participant, ChatMessage, ChatEntry, PollMessage, JoinErrorCode, ReactionUser, ServerToClientEvents } from "../types";
 import { isPollMessage, MAX_CHAT_HISTORY } from "../types";
-import { appendCapped } from "../lib/chatHistory";
+import { appendCapped, applyMessageDelete, applyMessageEdit } from "../lib/chatHistory";
 import { claimClientKey } from "../lib/clientKey";
 import { keepImageSessionOpen } from "../lib/imageUpload";
 import { playJoinSound, playLeaveSound, playMessageSound, playDisconnectedSound } from "../lib/notificationSounds";
@@ -13,12 +13,16 @@ interface UseSocketOptions {
   roomId: string;
   name: string;
   password?: string;
+  /** Sent with each join, so a rejoin is announced with the current state. */
+  isMuted: boolean;
 }
 
 export interface UseSocketReturn {
   socket: AppSocket | null;
   /** Our stable identity in this room (see message senderId); null until joined. */
   userId: string | null;
+  /** Authorizes image requests for this connection; null until joined. */
+  httpToken: string | null;
   /** See ImageSessionContext. */
   imageSession: number;
   participants: Participant[];
@@ -32,10 +36,11 @@ export interface UseSocketReturn {
   joinRoom: () => void;
 }
 
-export function useSocket({ roomId, name, password }: UseSocketOptions): UseSocketReturn {
+export function useSocket({ roomId, name, password, isMuted }: UseSocketOptions): UseSocketReturn {
   const socketRef = useRef<AppSocket | null>(null);
   const [socket, setSocket] = useState<AppSocket | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [httpToken, setHttpToken] = useState<string | null>(null);
   const [imageSession, setImageSession] = useState(0);
   // Read by listener closures defined inside the connection effect.
   const userIdRef = useRef<string | null>(null);
@@ -57,8 +62,8 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
   // emit `room-joined`/`offer`/`ice-candidate` before this client is ready to
   // handle them. We also re-join automatically after a transport reconnect so
   // a dropped socket does not leave the user stranded in the room.
-  const joinArgsRef = useRef({ roomId, name, password });
-  joinArgsRef.current = { roomId, name, password };
+  const joinArgsRef = useRef({ roomId, name, password, isMuted });
+  joinArgsRef.current = { roomId, name, password, isMuted };
   const joinedRef = useRef(false);
   const wantsJoinRef = useRef(false);
   const hasJoinedRef = useRef(false);
@@ -74,9 +79,9 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     void claimClientKey().then((clientKey) => {
       // The socket may have dropped during the claim; onConnect joins again.
       if (socketRef.current !== sock || !sock.connected || !joinedRef.current) return;
-      const { roomId: rid, name: nm, password: pw } = joinArgsRef.current;
-      huddleLog("socket", { event: "join-room-emit", roomId: rid });
-      sock.emit("join-room", { roomId: rid, name: nm, password: pw, clientKey });
+      const args = joinArgsRef.current;
+      huddleLog("socket", { event: "join-room-emit", roomId: args.roomId });
+      sock.emit("join-room", { ...args, clientKey });
     });
   }, []);
 
@@ -128,6 +133,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
 
       const onDisconnect = (reason: string) => {
         setConnected(false);
+        setHttpToken(null);
         stopImageSession?.();
         // Allow `joinRoom` to rejoin on the next connect once the caller
         // reinstalls signaling listeners.
@@ -169,7 +175,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         socket!.disconnect();
       };
 
-      const onRoomJoined = (data: { userId: string; participants: Participant[]; chatHistory: ChatEntry[]; pinnedMessageId: string | null; screenSharer: string | null }) => {
+      const onRoomJoined = (data: Parameters<ServerToClientEvents["room-joined"]>[0]) => {
         huddleLog("socket", { event: "room-joined-received", participantCount: data.participants.length });
         hasJoinedRef.current = true;
         joinRetryRef.current = 0;
@@ -179,9 +185,10 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         }
         userIdRef.current = data.userId;
         setUserId(data.userId);
+        setHttpToken(data.httpToken);
         // Re-opened on every join: the session belongs to the room's membership.
         stopImageSession?.();
-        stopImageSession = keepImageSessionOpen(roomId, socket!.id ?? "", () => setImageSession((n) => n + 1));
+        stopImageSession = keepImageSessionOpen(roomId, data.httpToken, () => setImageSession((n) => n + 1));
         setParticipants(data.participants);
         setChatHistory(data.chatHistory.slice(-MAX_CHAT_HISTORY));
         setPinnedMessageId(data.pinnedMessageId);
@@ -279,17 +286,11 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       };
 
       const onChatMessageEdit = ({ messageId, text }: { messageId: string; text: string }) => {
-        setChatHistory((prev) =>
-          prev.map((entry) =>
-            entry.id === messageId && !isPollMessage(entry)
-              ? { ...entry, text, edited: true }
-              : entry,
-          ),
-        );
+        setChatHistory((prev) => applyMessageEdit(prev, messageId, text));
       };
 
       const onChatMessageDelete = ({ messageId }: { messageId: string }) => {
-        setChatHistory((prev) => prev.filter((entry) => entry.id !== messageId));
+        setChatHistory((prev) => applyMessageDelete(prev, messageId));
         // The server clears the pin on delete without sending a pin update.
         setPinnedMessageId((prev) => (prev === messageId ? null : prev));
       };
@@ -330,6 +331,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       typingState.clear();
       setTypingUsers([]);
       stopImageSession?.();
+      setHttpToken(null);
       setImageSession(0);
       if (socket) {
         socket.removeAllListeners();
@@ -340,5 +342,5 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     };
   }, [roomId, name, password, joinRoom, scheduleJoinRetry]);
 
-  return { socket, userId, imageSession, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
+  return { socket, userId, httpToken, imageSession, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
 }

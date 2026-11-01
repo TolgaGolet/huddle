@@ -73,7 +73,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
           onChange={(e) => setQuestion(e.target.value)}
           placeholder="Ask a question..."
           aria-label="Poll question"
-          className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+          className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500"
           autoFocus
           maxLength={MAX_POLL_QUESTION_LENGTH}
         />
@@ -87,7 +87,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
                 onChange={(e) => updateOption(i, e.target.value)}
                 placeholder={`Option ${i + 1}`}
                 aria-label={`Option ${i + 1}`}
-                className="flex-1 px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+                className="flex-1 px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500"
                 maxLength={MAX_POLL_OPTION_LENGTH}
               />
               {options.length > 2 && (
@@ -95,7 +95,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
                   type="button"
                   onClick={() => removeOption(i)}
                   aria-label={`Remove option ${i + 1}`}
-                  className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-gray-700 transition-colors cursor-pointer"
+                  className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-gray-700 transition-colors cursor-pointer"
                 >
                   <Trash2 size={14} />
                 </button>

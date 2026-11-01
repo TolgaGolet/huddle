@@ -2,7 +2,7 @@ import { Router } from "express";
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
 import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS, MAX_PASSWORD_LENGTH } from "./limits.js";
-import type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry } from "./protocol.js";
+import { isPollMessage, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry } from "./protocol.js";
 import { parseCreateRoom } from "./validation.js";
 
 export type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry };
@@ -19,6 +19,8 @@ export interface Room {
   imageBytes: number;
   /** Size of each stored image by filename, released when its message goes. */
   imageSizes: Map<string, number>;
+  /** Bytes reserved by this room's decrypting reads, checked against MAX_ROOM_INFLIGHT_READ_BYTES. */
+  inFlightReadBytes: number;
   pinnedMessageId: string | null;
   /** socket.id of the participant sharing their screen. */
   screenSharerId: string | null;
@@ -40,6 +42,24 @@ const rooms = new Map<string, Room>();
 /** socket.id -> id of the room that socket has joined. Maintained by add/removeParticipant. */
 export const socketRoomMap = new Map<string, string>();
 
+// Kept apart from Participant, which is broadcast to the whole room.
+const httpTokenSockets = new Map<string, string>();
+const socketHttpTokens = new Map<string, string>();
+
+/**
+ * The secret proving an HTTP request comes from this socket's owner, sent only
+ * to them. It ends with their membership. Never broadcast or log it.
+ */
+export function httpTokenFor(socketId: string): string | undefined {
+  return socketHttpTokens.get(socketId);
+}
+
+function revokeHttpToken(socketId: string): void {
+  const token = socketHttpTokens.get(socketId);
+  if (token) httpTokenSockets.delete(token);
+  socketHttpTokens.delete(socketId);
+}
+
 export interface RoomCtx {
   roomId: string;
   room: Room;
@@ -54,6 +74,11 @@ export function resolveParticipant(socketId: string): RoomCtx | null {
   const participant = room?.participants.get(socketId);
   if (!room || !participant) return null;
   return { roomId, room, participant };
+}
+
+export function resolveParticipantByHttpToken(token: string): RoomCtx | null {
+  const socketId = httpTokenSockets.get(token);
+  return socketId ? resolveParticipant(socketId) : null;
 }
 
 /**
@@ -77,6 +102,7 @@ export function createRoom(password?: string): Room {
     encryptionSalt: password ? randomBytes(16).toString("base64url") : null,
     imageBytes: 0,
     imageSizes: new Map(),
+    inFlightReadBytes: 0,
     imageKey: null,
     // A new room is empty: if nobody ever joins, it expires like any other.
     emptySince: Date.now(),
@@ -158,18 +184,23 @@ export function getParticipantCount(roomId: string): number {
 }
 
 /** Without a `userId` the identity lasts only as long as this connection. */
-export function addParticipant(roomId: string, socketId: string, name: string, userId = socketId): Participant | null {
+export function addParticipant(roomId: string, socketId: string, name: string, userId = socketId, isMuted = false): Participant | null {
   const room = rooms.get(roomId);
   if (!room) return null;
   room.emptySince = null;
-  const participant: Participant = { id: socketId, userId, name, isMuted: false };
+  const participant: Participant = { id: socketId, userId, name, isMuted };
   room.participants.set(socketId, participant);
   socketRoomMap.set(socketId, roomId);
+  revokeHttpToken(socketId);
+  const token = randomBytes(32).toString("base64url");
+  httpTokenSockets.set(token, socketId);
+  socketHttpTokens.set(socketId, token);
   return participant;
 }
 
 export function removeParticipant(roomId: string, socketId: string): void {
   socketRoomMap.delete(socketId);
+  revokeHttpToken(socketId);
   const room = rooms.get(roomId);
   if (!room) return;
   room.participants.delete(socketId);
@@ -214,6 +245,10 @@ export function removeMessage(roomId: string, messageId: string): void {
   if (index < 0) return;
   const [entry] = room.chatHistory.splice(index, 1);
   if (room.pinnedMessageId === messageId) room.pinnedMessageId = null;
+  // A quote must not outlive its original, or deleted words reach later joiners.
+  for (const m of room.chatHistory) {
+    if (!isPollMessage(m) && m.replyTo?.id === messageId) delete m.replyTo;
+  }
   messageRemovedListeners.forEach((fn) => fn(room, entry));
 }
 

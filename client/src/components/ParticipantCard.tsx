@@ -36,7 +36,7 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, isCo
       </div>
       <span className="flex-1 text-sm truncate text-gray-200">
         {participant.name}
-        {isLocal && <span className="text-gray-500 ml-1">(you)</span>}
+        {isLocal && <span className="text-gray-400 ml-1">(you)</span>}
         {isConnecting && (
           <span className="ml-1.5 text-[11px] italic text-amber-400" title="Still establishing the audio connection">
             Connecting…
@@ -52,7 +52,7 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, isCo
         <button
           onClick={onMenuClick}
           aria-label={`Options for ${participant.name}`}
-          className="touch-target flex-shrink-0 p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors cursor-pointer"
+          className="touch-target flex-shrink-0 p-0.5 rounded text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
         >
           <EllipsisVertical size={16} />
         </button>

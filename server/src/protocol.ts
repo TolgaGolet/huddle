@@ -37,6 +37,15 @@ export interface ChatMessage {
   edited?: boolean;
 }
 
+// Keeps a quote from doubling a message's weight in the room-joined history.
+const MAX_REPLY_QUOTE_LENGTH = 200;
+
+/** A reply's quote of `text`. Shared, so an edit changes every copy the same way. */
+export function quoteText(text: string): string {
+  // By code point, so a cut can't split an emoji.
+  return [...text].slice(0, MAX_REPLY_QUOTE_LENGTH).join("");
+}
+
 export interface PollOption {
   id: string;
   text: string;
@@ -76,7 +85,7 @@ export interface IceCandidate {
 }
 
 export interface ClientToServerEvents {
-  "join-room": (data: { roomId: string; name: string; password?: string; clientKey?: string }) => void;
+  "join-room": (data: { roomId: string; name: string; password?: string; clientKey?: string; isMuted?: boolean }) => void;
   offer: (data: { to: string; offer: SessionDescription }) => void;
   answer: (data: { to: string; answer: SessionDescription }) => void;
   "ice-candidate": (data: { to: string; candidate: IceCandidate }) => void;
@@ -84,7 +93,8 @@ export interface ClientToServerEvents {
   "screen-share-started": () => void;
   "screen-share-stopped": () => void;
   typing: () => void;
-  "chat-message": (data: Pick<ChatMessage, "text" | "replyTo" | "gifUrl" | "imageUrls">) => void;
+  /** `replyToId` only: the server builds the quote, so it can't be forged. */
+  "chat-message": (data: Pick<ChatMessage, "text" | "gifUrl" | "imageUrls"> & { replyToId?: string }) => void;
   "chat-reaction": (data: { messageId: string; emoji: string }) => void;
   "chat-edit": (data: { messageId: string; text: string }) => void;
   "chat-delete": (data: { messageId: string }) => void;
@@ -98,6 +108,8 @@ export interface ServerToClientEvents {
   "rate-limited": (data: { event: string }) => void;
   "room-joined": (data: {
     userId: string;
+    /** Authorizes this client's image requests. Sent only to its owner. */
+    httpToken: string;
     participants: Participant[];
     chatHistory: ChatEntry[];
     pinnedMessageId: string | null;

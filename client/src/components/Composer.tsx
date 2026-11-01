@@ -8,8 +8,7 @@ import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
 import RoomImage from "./RoomImage";
 import { isImageFile, uploadImages } from "../lib/imageUpload";
-import { buildReplyTo } from "../lib/chatReply";
-import { createSendLock, isSameConnection, replyToSend } from "../lib/sendLock";
+import { CONNECTION_LOST_ERROR, createSendLock, isSameConnection, replyToSend, uploadErrorMessage } from "../lib/sendLock";
 
 export interface ComposerHandle {
   addImages: (fileList: FileList | File[]) => void;
@@ -19,6 +18,7 @@ export interface ComposerHandle {
 interface Props {
   ref: React.Ref<ComposerHandle>;
   socket: AppSocket | null;
+  httpToken: string | null;
   roomId: string;
   typingUsers: string[];
   notifyTyping: () => void;
@@ -53,12 +53,11 @@ function extractClipboardImages(clipboardData: DataTransfer | null): File[] {
     .filter((file): file is File => !!file && isImageFile(file) && file.size > 0);
 }
 
-const CONNECTION_LOST_ERROR = "Connection lost, please try again.";
 const SENDING_TOO_FAST_ERROR = "You're sending messages too fast.";
 const SERVER_LIMIT_ERROR = "You're doing that too fast.";
 const SERVER_LIMIT_ERROR_MS = 4000;
 
-export default function Composer({ ref, socket, roomId, typingUsers, notifyTyping, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
+export default function Composer({ ref, socket, httpToken, roomId, typingUsers, notifyTyping, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
   const [text, setText] = useState("");
   const [openPopover, setOpenPopover] = useState<Popover | null>(null);
   // Read after an upload, when the `replyingTo` a send captured may be outdated.
@@ -165,6 +164,11 @@ export default function Composer({ ref, socket, roomId, typingUsers, notifyTypin
       setUploadError(`Message is too long (max ${MAX_CHAT_TEXT_LENGTH} characters).`);
       return;
     }
+    // No token between a reconnect and the rejoin; uploading would be refused.
+    if (pendingImages.length && !httpToken) {
+      setUploadError(CONNECTION_LOST_ERROR);
+      return;
+    }
     const socketId = socket.id;
     const activeSocket = socket;
     await sendLock.run(async () => {
@@ -183,9 +187,9 @@ export default function Composer({ ref, socket, roomId, typingUsers, notifyTypin
   async function sendDraft(activeSocket: AppSocket, socketId: string) {
     let imageUrls: string[] = [];
     try {
-      if (pendingImages.length) imageUrls = await uploadImages(roomId, socketId, pendingImages.map((image) => image.file));
+      if (pendingImages.length) imageUrls = await uploadImages(roomId, httpToken!, pendingImages.map((image) => image.file));
     } catch (error) {
-      setUploadError(error instanceof Error ? error.message : "Failed to upload images");
+      setUploadError(uploadErrorMessage(error, isSameConnection(activeSocket, socketId)));
       return;
     }
     if (!isSameConnection(activeSocket, socketId)) {
@@ -197,7 +201,7 @@ export default function Composer({ ref, socket, roomId, typingUsers, notifyTypin
     };
     if (imageUrls.length) payload.imageUrls = imageUrls;
     const reply = replyToSend(replyingTo, replyingToRef.current);
-    if (reply) payload.replyTo = buildReplyTo(reply);
+    if (reply) payload.replyToId = reply.id;
     onBeforeSend();
     activeSocket.emit("chat-message", payload);
     pendingImages.forEach((image) => URL.revokeObjectURL(image.previewUrl));
@@ -236,7 +240,7 @@ export default function Composer({ ref, socket, roomId, typingUsers, notifyTypin
       gifUrl,
     };
     if (replyingTo) {
-      payload.replyTo = buildReplyTo(replyingTo);
+      payload.replyToId = replyingTo.id;
       onReplyingToChange(null);
     }
     onBeforeSend();
@@ -290,11 +294,10 @@ export default function Composer({ ref, socket, roomId, typingUsers, notifyTypin
   return (
     <div className="px-4 pb-4 relative">
       {/* Typing indicator */}
-      {typingLabel && (
-        <p className="mb-1 h-4 text-[11px] text-indigo-400 italic truncate" aria-live="polite">
-          {typingLabel}
-        </p>
-      )}
+      {/* Always mounted: screen readers often miss a live region added with its content. */}
+      <p className={`${typingLabel ? "mb-1 h-4" : ""} text-[11px] text-indigo-400 italic truncate`} aria-live="polite">
+        {typingLabel}
+      </p>
 
       {/* Reply preview */}
       {replyingTo && (
@@ -310,14 +313,14 @@ export default function Composer({ ref, socket, roomId, typingUsers, notifyTypin
                 skeletonClassName="mt-1 h-8 w-8 rounded"
               />
             ) : (
-              <p className="text-xs text-gray-500 truncate">{replyingTo.text || "[Image]"}</p>
+              <p className="text-xs text-gray-400 truncate">{replyingTo.text || "[Image]"}</p>
             )}
           </div>
           <button
             type="button"
             onClick={() => onReplyingToChange(null)}
             aria-label="Cancel reply"
-            className="touch-target p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+            className="touch-target p-1 rounded hover:bg-gray-700 text-gray-400 hover:text-gray-300 transition-colors cursor-pointer"
           >
             <X size={12} />
           </button>
@@ -366,8 +369,8 @@ export default function Composer({ ref, socket, roomId, typingUsers, notifyTypin
           </div>)}
         </div>
       </div>}
-      {uploadError && <p className="mb-1 text-xs text-red-400">{uploadError}</p>}
-      {pendingImages.length > 0 && <p className="mb-1 text-[10px] text-gray-600">Images are temporarily stored and deleted when the room ends. Password-protected rooms encrypt uploaded images at rest; chat messages are not encrypted.</p>}
+      {uploadError && <p role="alert" className="mb-1 text-xs text-red-400">{uploadError}</p>}
+      {pendingImages.length > 0 && <p className="mb-1 text-[10px] text-gray-400">Images are temporarily stored and deleted when the room ends. Password-protected rooms encrypt uploaded images at rest; chat messages are not encrypted.</p>}
       <form onSubmit={send} className="space-y-1">
         {/* Formatting toolbar row */}
         <fieldset disabled={sending} className="min-w-0 disabled:opacity-50">
@@ -430,7 +433,7 @@ export default function Composer({ ref, socket, roomId, typingUsers, notifyTypin
             placeholder="Type a message..."
             aria-label="Message"
             rows={1}
-            className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-base md:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors resize-none min-h-[36px] max-h-28 overflow-y-auto"
+            className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-base md:text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500 transition-colors resize-none min-h-[36px] max-h-28 overflow-y-auto"
             style={{ height: "auto" }}
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;

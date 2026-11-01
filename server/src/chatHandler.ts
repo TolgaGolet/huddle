@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { addChatMessage, emptyReactions, removeMessage, type ChatMessage } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
-import { isPollMessage } from "./protocol.js";
+import { isPollMessage, quoteText } from "./protocol.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
 import {
   noPayload,
@@ -28,6 +28,11 @@ function isGiphyUrl(url: string): boolean {
   }
 }
 
+/** Built from the server's own history, so nobody can attribute words to someone else. */
+function quoteOf(quoted: ChatMessage): NonNullable<ChatMessage["replyTo"]> {
+  return { id: quoted.id, senderName: quoted.senderName, text: quoteText(quoted.text) || "[Image]", imageUrl: quoted.imageUrls?.[0] };
+}
+
 export function setupChat(io: AppServer): void {
   io.on("connection", (socket) => {
     // Typing indicator relay: broadcast to the others so they can show
@@ -39,7 +44,7 @@ export function setupChat(io: AppServer): void {
       });
     });
 
-    onRoom(socket, "chat-message", parseChatMessage, ({ roomId, participant }, { text, replyTo, gifUrl, imageUrls }) => {
+    onRoom(socket, "chat-message", parseChatMessage, ({ roomId, room, participant }, { text, replyToId, gifUrl, imageUrls }) => {
       // Validate gifUrl is a GIPHY CDN URL to prevent abuse
       const safeGifUrl = gifUrl && isGiphyUrl(gifUrl) ? gifUrl : undefined;
       // Shape and count are enforced by the parser; each URL must also point
@@ -65,16 +70,9 @@ export function setupChat(io: AppServer): void {
         msg.imageUrls = safeImageUrls;
       }
 
-      const replyImageUrl =
-        replyTo?.imageUrl && isRoomImageUrl(roomId, replyTo.imageUrl) ? replyTo.imageUrl : undefined;
-      if (replyTo && (replyTo.text || replyImageUrl)) {
-        msg.replyTo = {
-          id: replyTo.id,
-          senderName: replyTo.senderName,
-          text: replyTo.text || "[Image]",
-        };
-        if (replyImageUrl) msg.replyTo.imageUrl = replyImageUrl;
-      }
+      // If the original is gone, the message still goes, without a quote.
+      const quoted = replyToId ? room.chatHistory.find((m) => m.id === replyToId) : undefined;
+      if (quoted && !isPollMessage(quoted)) msg.replyTo = quoteOf(quoted);
 
       addChatMessage(roomId, msg);
       io.to(roomId).emit("chat-message", msg);
@@ -115,6 +113,9 @@ export function setupChat(io: AppServer): void {
 
       msg.text = text;
       msg.edited = true;
+      for (const m of room.chatHistory) {
+        if (!isPollMessage(m) && m.replyTo?.id === messageId) m.replyTo.text = quoteText(text);
+      }
       io.to(roomId).emit("chat-message-edit", { messageId, text });
     });
 

@@ -1,11 +1,23 @@
 import { describe, it, expect, vi } from "vitest";
-import { createSendLock, isSameConnection, replyToSend } from "./sendLock";
+import { CONNECTION_LOST_ERROR, createSendLock, isSameConnection, replyToSend, uploadErrorMessage } from "./sendLock";
 
 describe("isSameConnection", () => {
   it("accepts only the connected socket the upload started on", () => {
     expect(isSameConnection({ connected: true, id: "a" }, "a")).toBe(true);
     expect(isSameConnection({ connected: false }, "a")).toBe(false);
     expect(isSameConnection({ connected: true, id: "b" }, "a")).toBe(false);
+  });
+});
+
+describe("uploadErrorMessage", () => {
+  // Regression: a token revoked by a drop showed "Not authorized for this room".
+  it("blames the lost connection, whatever the upload failed with", () => {
+    expect(uploadErrorMessage(new Error("Not authorized for this room"), false)).toBe(CONNECTION_LOST_ERROR);
+  });
+
+  it("shows the server's reason while still connected", () => {
+    expect(uploadErrorMessage(new Error("Image is too large"), true)).toBe("Image is too large");
+    expect(uploadErrorMessage("odd", true)).toBe("Failed to upload images");
   });
 });
 

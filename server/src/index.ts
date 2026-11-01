@@ -11,6 +11,7 @@ import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
 import { clearStaleImages, deleteRoomImages, imageRouter, releaseMessageImages } from "./imageRouter.js";
 import { errorSummary } from "./errorLog.js";
+import { apiNotFound, httpErrorHandler } from "./httpErrors.js";
 import { connectionRateLimit, httpRateLimit, IP_LIMITS, proxyHopsFor } from "./ipRateLimit.js";
 import type { AppServer } from "./socketRoute.js";
 
@@ -50,8 +51,8 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
-// Image downloads stay unlimited: a chat can load many at once, and they
-// already require room membership.
+// Image downloads have no rate limit: a chat can load many at once, they require
+// room membership, and imageRouter.ts bounds the memory they use.
 app.post("/api/rooms", httpRateLimit(IP_LIMITS.createRoom, proxyHops));
 app.get("/api/rooms/:id", httpRateLimit(IP_LIMITS.lookupRoom, proxyHops));
 app.post("/api/rooms/:id/images", httpRateLimit(IP_LIMITS.uploadImages, proxyHops));
@@ -61,6 +62,7 @@ app.use("/api/giphy", httpRateLimit(IP_LIMITS.giphy, proxyHops));
 app.use("/api", roomRouter);
 app.use("/api/giphy", giphyRouter);
 app.use("/api", imageRouter);
+app.use("/api", apiNotFound);
 
 setupSignaling(io, proxyHops);
 setupChat(io);
@@ -71,6 +73,7 @@ app.use(express.static(clientDist));
 app.get("/{*splat}", (_req, res) => {
   res.sendFile(path.join(clientDist, "index.html"));
 });
+app.use(httpErrorHandler);
 
 // Close to the limit of a 512 MB Render instance; below this the line is noise.
 const MEM_LOG_RSS_BYTES = 400 * 1024 * 1024;

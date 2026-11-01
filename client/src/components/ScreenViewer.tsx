@@ -62,7 +62,7 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
           {document.fullscreenEnabled && (
             <button
               onClick={toggleFullscreen}
-              className="touch-target p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
+              className="touch-target p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
               title={isFullscreen ? "Exit fullscreen (F / Esc)" : "Fullscreen (F)"}
               aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
             >
@@ -73,7 +73,7 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
             <button
               onClick={onClose}
               aria-label="Close screen share"
-              className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
+              className="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
             >
               <X size={14} />
             </button>

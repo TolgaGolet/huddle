@@ -42,6 +42,13 @@ describe.each([
 });
 
 describe("parseJoinRoom", () => {
+  it("accepts an optional boolean mute state, and rejects anything else", () => {
+    expect(parseJoinRoom({ roomId: "abc123", name: "Ana", isMuted: true })?.isMuted).toBe(true);
+    expect(parseJoinRoom({ roomId: "abc123", name: "Ana", isMuted: false })?.isMuted).toBe(false);
+    expect(parseJoinRoom({ roomId: "abc123", name: "Ana" })?.isMuted).toBeUndefined();
+    expect(parseJoinRoom({ roomId: "abc123", name: "Ana", isMuted: "yes" })).toBeNull();
+  });
+
   it("trims the name and keeps an optional password", () => {
     expect(parseJoinRoom({ roomId: "abc123", name: "  Ana ", password: "pw" })).toEqual({
       roomId: "abc123",
@@ -117,12 +124,12 @@ describe("parseChatMessage", () => {
     expect(
       parseChatMessage({
         text: " hi ",
-        replyTo: { id: "m1", senderName: "Ana", text: "earlier" },
+        replyToId: "m1",
         imageUrls: ["/api/rooms/r/images/abc.png"],
       }),
     ).toEqual({
       text: "hi",
-      replyTo: { id: "m1", senderName: "Ana", text: "earlier" },
+      replyToId: "m1",
       imageUrls: ["/api/rooms/r/images/abc.png"],
     });
   });
@@ -141,17 +148,18 @@ describe("parseChatMessage", () => {
   });
 
   it("drops a malformed optional field but still delivers the message", () => {
-    const hi = { text: "hi", replyTo: undefined, gifUrl: undefined, imageUrls: undefined };
+    const hi = { text: "hi", replyToId: undefined, gifUrl: undefined, imageUrls: undefined };
     for (const extra of [
       { gifUrl: 1 },
       { gifUrl: null },
       { imageUrls: "x" },
       { imageUrls: [1] },
       { imageUrls: Array(MAX_IMAGES_PER_MESSAGE + 1).fill("/a") },
-      { replyTo: "m1" },
-      { replyTo: { id: "m1", senderName: "Ana", text: 3 } },
-      { replyTo: { id: "m1", senderName: "", text: "x" } },
-      { replyTo: { id: "m1", senderName: "Ana", text: "x", imageUrl: null } },
+      { replyToId: 1 },
+      { replyToId: "" },
+      { replyToId: "a".repeat(33) },
+      // The old client-built quote is not part of the protocol any more.
+      { replyTo: { id: "m1", senderName: "Ana", text: "forged" } },
     ]) {
       expect(parseChatMessage({ text: "hi", ...extra })).toStrictEqual(hi);
     }

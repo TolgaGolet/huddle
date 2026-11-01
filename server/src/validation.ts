@@ -57,16 +57,19 @@ const password = (v: unknown) => str(v, MAX_PASSWORD_LENGTH);
 
 const clientKey = (v: unknown) => (typeof v === "string" && CLIENT_KEY_PATTERN.test(v) ? v : null);
 
+const bool = (v: unknown) => (typeof v === "boolean" ? v : null);
+
 export function parseJoinRoom(
   raw: unknown,
-): { roomId: string; name: string; password?: string; clientKey?: string } | null {
+): { roomId: string; name: string; password?: string; clientKey?: string; isMuted?: boolean } | null {
   if (!isRecord(raw)) return null;
   const roomId = id(raw.roomId);
   const name = trimmedStr(raw.name, MAX_NAME_LENGTH);
   const pw = optional(raw.password, password);
   const key = optional(raw.clientKey, clientKey);
-  if (!roomId || !name || pw === null || key === null) return null;
-  return { roomId, name, password: pw, clientKey: key };
+  const isMuted = optional(raw.isMuted, bool);
+  if (!roomId || !name || pw === null || key === null || isMuted === null) return null;
+  return { roomId, name, password: pw, clientKey: key, isMuted };
 }
 
 /**
@@ -98,22 +101,11 @@ export function parseRelay(
 }
 
 export function parseMute(raw: unknown): { isMuted: boolean } | null {
-  if (!isRecord(raw) || typeof raw.isMuted !== "boolean") return null;
-  return { isMuted: raw.isMuted };
+  const isMuted = isRecord(raw) ? bool(raw.isMuted) : null;
+  return isMuted === null ? null : { isMuted };
 }
 
-type ParsedReplyTo = NonNullable<ChatMessage["replyTo"]>;
-type ParsedChatMessage = Pick<ChatMessage, "text" | "replyTo" | "gifUrl" | "imageUrls">;
-
-function parseReplyTo(raw: unknown): ParsedReplyTo | null {
-  if (!isRecord(raw)) return null;
-  const replyId = id(raw.id);
-  const senderName = trimmedStr(raw.senderName, MAX_NAME_LENGTH);
-  const text = str(raw.text ?? "", MAX_CHAT_TEXT_LENGTH);
-  const imageUrl = optional(raw.imageUrl, url);
-  if (!replyId || !senderName || text === null || imageUrl === null) return null;
-  return { id: replyId, senderName, text, imageUrl };
-}
+type ParsedChatMessage = Pick<ChatMessage, "text" | "gifUrl" | "imageUrls"> & { replyToId?: string };
 
 function parseImageUrls(v: unknown): string[] | null {
   if (!Array.isArray(v) || v.length > MAX_IMAGES_PER_MESSAGE) return null;
@@ -123,7 +115,7 @@ function parseImageUrls(v: unknown): string[] | null {
 /**
  * Shape and size only. Content rules (non-empty message, GIPHY CDN prefix,
  * room-scoped image URLs) stay in chatHandler.ts. Only the text is required:
- * a malformed optional field (gifUrl, replyTo, imageUrls) is dropped rather
+ * a malformed optional field (gifUrl, replyToId, imageUrls) is dropped rather
  * than failing the whole message, which the sender has already cleared.
  */
 export function parseChatMessage(raw: unknown): ParsedChatMessage | null {
@@ -132,7 +124,7 @@ export function parseChatMessage(raw: unknown): ParsedChatMessage | null {
   if (text === null) return null;
   return {
     text: text.trim(),
-    replyTo: parseReplyTo(raw.replyTo) ?? undefined,
+    replyToId: id(raw.replyToId) ?? undefined,
     gifUrl: url(raw.gifUrl) ?? undefined,
     imageUrls: parseImageUrls(raw.imageUrls) ?? undefined,
   };

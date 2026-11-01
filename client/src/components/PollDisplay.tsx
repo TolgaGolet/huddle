@@ -31,8 +31,8 @@ function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Pro
       )}
       <div className="flex items-baseline gap-2">
         <span className="text-sm font-semibold text-indigo-400">{poll.senderName}</span>
-        <span className="text-[10px] text-gray-600">{formatTime(poll.timestamp)}</span>
-        <span className="text-[10px] text-gray-600 bg-gray-700/60 px-1.5 py-0.5 rounded">Poll</span>
+        <span className="text-[10px] text-gray-400">{formatTime(poll.timestamp)}</span>
+        <span className="text-[10px] text-gray-400 bg-gray-700/60 px-1.5 py-0.5 rounded">Poll</span>
       </div>
       {onContextMenu && (
         <button
@@ -77,9 +77,9 @@ function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Pro
                   <span className="text-xs text-gray-300 truncate">{option.text}</span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <span className="text-[10px] text-gray-500">{count}</span>
+                  <span className="text-[10px] text-gray-400">{count}</span>
                   {totalVotes > 0 && (
-                    <span className="text-[10px] text-gray-500 w-7 text-right">{pct}%</span>
+                    <span className="text-[10px] text-gray-400 w-7 text-right">{pct}%</span>
                   )}
                 </div>
               </div>
@@ -88,7 +88,7 @@ function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Pro
         })}
       </div>
 
-      <p className="text-[10px] text-gray-600">
+      <p className="text-[10px] text-gray-400">
         {totalVotes} {totalVotes === 1 ? "vote" : "votes"}
         {poll.allowMultiple && " · Multiple selections allowed"}
       </p>

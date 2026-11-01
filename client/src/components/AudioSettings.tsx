@@ -105,7 +105,7 @@ export default function AudioSettings({
               onChange={(e) => onManualThresholdDbChange(Number(e.target.value))}
               className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
             />
-            <div className="flex justify-between text-[10px] text-gray-500">
+            <div className="flex justify-between text-[10px] text-gray-400">
               <span>More sensitive ({MANUAL_THRESHOLD_MIN_DB} dB)</span>
               <span>Stricter rejection ({MANUAL_THRESHOLD_MAX_DB} dB)</span>
             </div>

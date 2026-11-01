@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { appendCapped } from "./chatHistory";
-import { MAX_CHAT_HISTORY, type ChatEntry } from "../types";
+import { appendCapped, applyMessageDelete, applyMessageEdit } from "./chatHistory";
+import { MAX_CHAT_HISTORY, type ChatEntry, type ChatMessage } from "../types";
 
 const entry = (id: string): ChatEntry => ({
   id,
@@ -9,6 +9,30 @@ const entry = (id: string): ChatEntry => ({
   text: "",
   timestamp: 0,
   reactions: {},
+});
+
+describe("quotes of a changed message", () => {
+  const reply: ChatEntry = { ...entry("r"), replyTo: { id: "a", senderName: "Ana", text: "old" } };
+
+  // Regression: a quote kept the original's words after an edit or a delete.
+  it("updates a reply's quote on edit", () => {
+    const [edited, quoting] = applyMessageEdit([entry("a"), reply], "a", "new") as ChatMessage[];
+    expect(edited).toMatchObject({ text: "new", edited: true });
+    expect(quoting.replyTo?.text).toBe("new");
+    expect(quoting.edited).toBeUndefined();
+  });
+
+  it("removes a reply's quote on delete, keeping the reply", () => {
+    const [remaining, ...rest] = applyMessageDelete([entry("a"), reply], "a") as ChatMessage[];
+    expect(rest).toEqual([]);
+    expect(remaining.id).toBe("r");
+    expect(remaining.replyTo).toBeUndefined();
+  });
+
+  it("leaves a quote of another message alone", () => {
+    expect(applyMessageDelete([reply], "b")).toEqual([reply]);
+    expect(applyMessageEdit([reply], "b", "new")).toEqual([reply]);
+  });
 });
 
 describe("appendCapped", () => {

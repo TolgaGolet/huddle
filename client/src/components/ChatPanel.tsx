@@ -6,6 +6,7 @@ import Composer, { type ComposerHandle } from "./Composer";
 
 interface Props {
   socket: AppSocket | null;
+  httpToken: string | null;
   chatHistory: ChatEntry[];
   pinnedMessageId: string | null;
   /** Stable identity, for "is this mine?" checks. */
@@ -15,7 +16,7 @@ interface Props {
   notifyTyping: () => void;
 }
 
-export default function ChatPanel({ socket, chatHistory, pinnedMessageId, localUserId, roomId, typingUsers, notifyTyping }: Props) {
+export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId, typingUsers, notifyTyping }: Props) {
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -61,6 +62,7 @@ export default function ChatPanel({ socket, chatHistory, pinnedMessageId, localU
       <Composer
         ref={composerRef}
         socket={socket}
+        httpToken={httpToken}
         roomId={roomId}
         typingUsers={typingUsers}
         notifyTyping={notifyTyping}

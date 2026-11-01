@@ -62,14 +62,14 @@ export default function GifPicker({ onSelect, onClose }: Props) {
       {/* Header */}
       <div className="flex items-center gap-2 p-2 border-b border-gray-700">
         <div className="flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-900 border border-gray-600 focus-within:border-indigo-500 transition-colors">
-          <Search size={13} className="text-gray-500 shrink-0" />
+          <Search size={13} className="text-gray-400 shrink-0" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search GIFs..."
             aria-label="Search GIFs"
-            className="flex-1 bg-transparent text-base md:text-sm text-white placeholder-gray-500 focus:outline-none"
+            className="flex-1 bg-transparent text-base md:text-sm text-white placeholder-gray-400 focus:outline-none"
             autoFocus
           />
           {search && (
@@ -77,7 +77,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
               type="button"
               onClick={() => setSearch("")}
               aria-label="Clear search"
-              className="text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+              className="text-gray-400 hover:text-gray-300 transition-colors cursor-pointer"
             >
               <X size={12} />
             </button>
@@ -87,7 +87,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
 
       {/* Section label */}
       <div className="px-3 pt-2 pb-1">
-        <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">
+        <span className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">
           {query ? `Results for "${query}"` : "Trending"}
         </span>
       </div>
@@ -102,9 +102,9 @@ export default function GifPicker({ onSelect, onClose }: Props) {
 
         {!loading && error && (
           <div className="flex flex-col items-center justify-center h-24 gap-1">
-            <p className="text-xs text-red-400">{error}</p>
+            <p role="alert" className="text-xs text-red-400">{error}</p>
             {error.includes("GIPHY_API_KEY") && (
-              <p className="text-[10px] text-gray-500 text-center px-4">
+              <p className="text-[10px] text-gray-400 text-center px-4">
                 Add <code className="text-pink-300">GIPHY_API_KEY</code> to your server's environment variables.
               </p>
             )}
@@ -113,7 +113,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
 
         {!loading && !error && gifs.length === 0 && (
           <div className="flex items-center justify-center h-24">
-            <p className="text-xs text-gray-500">No GIFs found</p>
+            <p className="text-xs text-gray-400">No GIFs found</p>
           </div>
         )}
 
@@ -148,7 +148,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
           href="https://giphy.com"
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors tracking-wider uppercase font-semibold"
+          className="text-[10px] text-gray-400 hover:text-gray-300 transition-colors tracking-wider uppercase font-semibold"
         >
           Powered by GIPHY
         </a>

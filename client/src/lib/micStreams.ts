@@ -8,3 +8,18 @@ export function stopStreams(...streams: (MediaStream | null | undefined)[]): voi
   }
   tracks.forEach((t) => t.stop());
 }
+
+/**
+ * Sets noise suppression on every track. Resolves true only if it took effect
+ * on all of them, since a browser can accept the call and change nothing; one
+ * that doesn't report the setting gets the benefit of the doubt. Rejects if the
+ * browser refuses the constraint.
+ */
+export async function applyNoiseSuppression(tracks: MediaStreamTrack[], enabled: boolean): Promise<boolean> {
+  if (!tracks.length || tracks.some((t) => typeof t.applyConstraints !== "function")) return false;
+  await Promise.all(tracks.map((t) => t.applyConstraints({ noiseSuppression: enabled })));
+  return tracks.every((t) => {
+    const actual = t.getSettings().noiseSuppression;
+    return actual === undefined || actual === enabled;
+  });
+}

@@ -57,7 +57,7 @@ export default function ParticipantsList({
 
   return (
     <div className="flex-1 overflow-y-auto py-2 px-1">
-      <h3 className={`text-[11px] uppercase tracking-wider font-semibold px-3 mb-1 ${isFull ? "text-amber-400" : "text-gray-500"}`}>
+      <h3 className={`text-[11px] uppercase tracking-wider font-semibold px-3 mb-1 ${isFull ? "text-amber-400" : "text-gray-400"}`}>
         Participants — {countLabel}{isFull ? " (full)" : ""}
       </h3>
       {participants.map((p) => (

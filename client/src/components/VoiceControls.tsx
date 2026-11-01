@@ -2,6 +2,8 @@ import { Mic, MicOff, MonitorUp, MonitorOff } from "lucide-react";
 
 interface Props {
   isMuted: boolean;
+  /** No working mic: the button retries instead of toggling mute. */
+  micUnavailable: boolean;
   isScreenSharing: boolean;
   screenShareDisabled?: boolean;
   onToggleMute: () => void;
@@ -12,6 +14,7 @@ interface Props {
 
 export default function VoiceControls({
   isMuted,
+  micUnavailable,
   isScreenSharing,
   screenShareDisabled,
   onToggleMute,
@@ -22,19 +25,21 @@ export default function VoiceControls({
   const canShareScreen = !!navigator.mediaDevices?.getDisplayMedia;
   const size = compact ? "p-2.5" : "p-3";
   const screenDisabled = screenShareDisabled && !isScreenSharing;
+  let micLabel = isMuted ? "Unmute" : "Mute";
+  let micColors = isMuted ? "bg-red-500/20 text-red-400 hover:bg-red-500/30" : "bg-gray-800 text-gray-300 hover:bg-gray-700";
+  if (micUnavailable) {
+    micLabel = "Microphone unavailable, retry";
+    micColors = "bg-amber-500/20 text-amber-300 hover:bg-amber-500/30";
+  }
   const screenLabel = screenDisabled ? "Someone is already sharing" : isScreenSharing ? "Stop sharing" : "Share screen";
 
   return (
     <div className={compact ? "flex items-center gap-2 shrink-0" : "flex items-center justify-center gap-3 px-4 py-3 border-t border-gray-800"}>
       <button
         onClick={onToggleMute}
-        className={`${size} rounded-full transition-colors cursor-pointer ${
-          isMuted
-            ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-            : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-        }`}
-        title={isMuted ? "Unmute" : "Mute"}
-        aria-label={isMuted ? "Unmute" : "Mute"}
+        className={`${size} rounded-full transition-colors cursor-pointer ${micColors}`}
+        title={micLabel}
+        aria-label={micLabel}
       >
         {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
       </button>

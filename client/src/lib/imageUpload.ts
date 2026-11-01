@@ -10,10 +10,10 @@ export function isImageFile(file: File): boolean {
 }
 
 /** Sets the cookie that authorizes this room's image requests. Call after joining. */
-export async function openImageSession(roomId: string, socketId: string): Promise<void> {
+export async function openImageSession(roomId: string, httpToken: string): Promise<void> {
   const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/image-session`, {
     method: "POST",
-    headers: { "X-Socket-Id": socketId },
+    headers: { "X-Participant-Token": httpToken },
   });
   if (!response.ok) throw new Error("Failed to open image session");
 }
@@ -23,14 +23,14 @@ export async function openImageSession(roomId: string, socketId: string): Promis
  * called, after which `onSettled` never fires. `onSettled` fires on each success
  * and after a failed first attempt, so images show as broken instead of loading.
  */
-export function keepImageSessionOpen(roomId: string, socketId: string, onSettled: () => void): () => void {
+export function keepImageSessionOpen(roomId: string, httpToken: string, onSettled: () => void): () => void {
   let stopped = false;
   let firstAttempt = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const open = async () => {
     let opened = true;
     try {
-      await openImageSession(roomId, socketId);
+      await openImageSession(roomId, httpToken);
     } catch (err) {
       opened = false;
       huddleWarn("socket", { event: "image-session-failed", error: errorName(err) });
@@ -78,7 +78,7 @@ async function compressImage(file: File): Promise<Blob> {
   }
 }
 
-export async function uploadImages(roomId: string, socketId: string, files: File[]): Promise<string[]> {
+export async function uploadImages(roomId: string, httpToken: string, files: File[]): Promise<string[]> {
   const form = new FormData();
   for (const file of files) {
     const compressed = await compressImage(file);
@@ -87,7 +87,7 @@ export async function uploadImages(roomId: string, socketId: string, files: File
   }
   const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/images`, {
     method: "POST",
-    headers: { "X-Socket-Id": socketId },
+    headers: { "X-Participant-Token": httpToken },
     body: form,
   });
   if (!response.ok) {

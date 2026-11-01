@@ -11,7 +11,7 @@ function getStatusDisplay(
   isTransmitting: boolean,
   thresholdDb: number | null,
 ): { text: string; color: string } {
-  if (!hasInput) return { text: "No microphone input detected", color: "text-zinc-500" };
+  if (!hasInput) return { text: "No microphone input detected", color: "text-zinc-400" };
   if (isMuted) return { text: "Microphone is muted", color: "text-amber-400" };
   if (isTransmitting) return { text: "Voice transmitting", color: "text-emerald-400 font-medium" };
   if (thresholdDb !== null) return { text: "Noise suppressed (below threshold)", color: "text-blue-400" };
@@ -72,7 +72,7 @@ export function MicLevelPreview({ telemetry }: MicLevelPreviewProps) {
       </div>
 
       {/* Footer stats */}
-      <div className="flex items-center justify-between text-[11px] text-zinc-500">
+      <div className="flex items-center justify-between text-[11px] text-zinc-400">
         <span>Level: {hasInput && !isMuted ? `${Math.round(levelDb)} dB` : "--"}</span>
         {thresholdDb !== null ? (
           <span className="text-yellow-500/80">Threshold: {thresholdDb} dB</span>

@@ -1,13 +1,44 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { createServer, request, type ClientRequest, type Server } from "node:http";
+import { createServer, request, type ClientRequest, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import express from "express";
-import { deleteRoomImages, imageRouter, releaseMessageImages, uploadsDir } from "./imageRouter.js";
-import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_UPLOAD_BYTES, MAX_ROOM_IMAGE_BYTES } from "./limits.js";
-import { addParticipant, createRoom, emptyReactions, removeParticipant, type ChatMessage, type Room } from "./roomManager.js";
+import { httpErrorHandler } from "./httpErrors.js";
+import { deleteRoomImages, IMAGE_READ_TIMEOUT_MS, imageRouter, releaseMessageImages, uploadsDir } from "./imageRouter.js";
+import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_IMAGE_BYTES, MAX_ROOM_IMAGE_BYTES, MAX_ROOM_INFLIGHT_READ_BYTES } from "./limits.js";
+import { addParticipant, createRoom, emptyReactions, httpTokenFor, removeParticipant, type ChatMessage, type Room } from "./roomManager.js";
+
+// Lets a test hold a route at one of its file operations.
+const fsHooks = vi.hoisted(() => ({
+  stat: null as Promise<unknown> | null,
+  statSize: null as number | null,
+  readFile: null as Promise<unknown> | null,
+  writeFile: null as Promise<unknown> | null,
+  writeReached: () => {},
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    stat: async (...args: Parameters<typeof actual.stat>) => {
+      await fsHooks.stat;
+      const stats = await actual.stat(...args);
+      return fsHooks.statSize === null ? stats : { ...stats, size: fsHooks.statSize };
+    },
+    readFile: async (...args: Parameters<typeof actual.readFile>) => {
+      await fsHooks.readFile;
+      return actual.readFile(...args);
+    },
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      fsHooks.writeReached();
+      await fsHooks.writeFile;
+      return actual.writeFile(...args);
+    },
+  };
+});
 
 const BOUNDARY = "huddletestboundary";
 const SOCKET_ID = "test-socket";
@@ -20,6 +51,7 @@ const openRequests: ClientRequest[] = [];
 beforeAll(async () => {
   const app = express();
   app.use("/api", imageRouter);
+  app.use(httpErrorHandler);
   server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
   port = (server.address() as AddressInfo).port;
@@ -53,7 +85,7 @@ function openUpload(socketId: string, headers: Record<string, string | number> =
         port,
         method: "POST",
         path: `/api/rooms/${room.id}/images`,
-        headers: { "Content-Type": `multipart/form-data; boundary=${BOUNDARY}`, "X-Socket-Id": socketId, ...headers },
+        headers: { "Content-Type": `multipart/form-data; boundary=${BOUNDARY}`, "X-Participant-Token": httpTokenFor(socketId) ?? socketId, ...headers },
       },
       (res) => {
         let body = "";
@@ -130,14 +162,18 @@ describe("POST /rooms/:id/images", () => {
     req.write(multipartBody(16).subarray(0, 20));
     await vi.waitFor(() => expect(room.imageBytes).toBe(900));
 
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
     req.destroy();
 
     await vi.waitFor(() => expect(room.imageBytes).toBe(0));
+    // Leaving mid-upload is normal, not a server error.
+    expect(log).not.toHaveBeenCalled();
+    log.mockRestore();
   });
 
   it("caps upload bytes held in memory across all rooms", async () => {
     const declared = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE;
-    const fits = Math.floor(MAX_INFLIGHT_UPLOAD_BYTES / declared);
+    const fits = Math.floor(MAX_INFLIGHT_IMAGE_BYTES / declared);
     for (let i = 0; i < fits; i++) {
       joinRoom();
       const { req, response } = openUpload(SOCKET_ID, { "Content-Length": declared });
@@ -166,6 +202,18 @@ describe("POST /rooms/:id/images", () => {
     await vi.waitFor(() => expect(room.imageBytes).toBe(100));
   });
 
+  // Regression (F08): this was a 500 with an HTML body, so the user saw a generic failure.
+  it("answers an image over the size limit with a message the client can show", async () => {
+    joinRoom();
+    const { req, response } = openUpload(SOCKET_ID);
+    req.end(multipartBody(MAX_IMAGE_SIZE + 1));
+
+    const { status, body } = await response;
+    expect(status).toBe(413);
+    expect(JSON.parse(body)).toEqual({ error: "Image is too large" });
+    await vi.waitFor(() => expect(room.imageBytes).toBe(0));
+  });
+
   it("releases the reservation when storing fails", async () => {
     joinRoom();
     // A plain file at the room's folder path makes creating the folder fail.
@@ -176,6 +224,32 @@ describe("POST /rooms/:id/images", () => {
 
     expect((await response).status).toBe(500);
     await vi.waitFor(() => expect(room.imageBytes).toBe(0));
+  });
+
+  // Regression: the close refunded bytes the store was still about to count, so
+  // disconnecting right after sending bypassed the quota.
+  it("still counts an image whose client disconnects while it is being stored", async () => {
+    joinRoom();
+    let releaseWrite!: () => void;
+    fsHooks.writeFile = new Promise<void>((resolve) => (releaseWrite = resolve));
+    const writing = new Promise<void>((resolve) => (fsHooks.writeReached = resolve));
+    try {
+      const { req, response } = openUpload(SOCKET_ID);
+      response.catch(() => {});
+      req.end(multipartBody(100));
+      await writing;
+
+      req.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      releaseWrite();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(room.imageBytes).toBe(100);
+      expect(room.imageSizes.size).toBe(1);
+    } finally {
+      fsHooks.writeFile = null;
+      fsHooks.writeReached = () => {};
+    }
   });
 
   it("stores nothing if the sender leaves the room during the upload", async () => {
@@ -247,7 +321,7 @@ describe("GET /rooms/:id/images/:filename", () => {
   const openSession = (roomId = room.id, socketId = SOCKET_ID) =>
     fetch(`http://localhost:${port}/api/rooms/${roomId}/image-session`, {
       method: "POST",
-      headers: { "X-Socket-Id": socketId },
+      headers: { "X-Participant-Token": httpTokenFor(socketId) ?? socketId },
     });
 
   /** The session cookie as a browser would send it back. */
@@ -303,11 +377,207 @@ describe("GET /rooms/:id/images/:filename", () => {
     expect((await get(filename, undefined, `?socketId=${SOCKET_ID}`)).status).toBe(404);
   });
 
+  // Regression (F02): a former member reused another member's broadcast socket
+  // id to open a session, read images and upload.
+  it("refuses another member's socket id on every route that needs a token", async () => {
+    joinRoom();
+    const asSocketId = { "X-Socket-Id": SOCKET_ID, "X-Participant-Token": SOCKET_ID };
+
+    const session = await fetch(`http://localhost:${port}/api/rooms/${room.id}/image-session`, { method: "POST", headers: asSocketId });
+    expect(session.status).toBe(403);
+
+    const { req, response } = openUpload(SOCKET_ID, asSocketId);
+    req.end(multipartBody(100));
+    expect((await response).status).toBe(403);
+  });
+
+  it("stops accepting the token once its owner leaves", async () => {
+    joinRoom();
+    const token = httpTokenFor(SOCKET_ID)!;
+    removeParticipant(room.id, SOCKET_ID);
+
+    const session = await fetch(`http://localhost:${port}/api/rooms/${room.id}/image-session`, {
+      method: "POST",
+      headers: { "X-Participant-Token": token },
+    });
+    expect(session.status).toBe(403);
+  });
+
+  it("revalidates an open room's image from its metadata, for members only", async () => {
+    joinRoom();
+    const filename = await upload();
+    const cookie = await sessionCookie();
+    const etag = (await get(filename, cookie)).headers.get("etag");
+    expect(etag).toBeTruthy();
+
+    // Not fetch: with If-None-Match it adds Cache-Control: no-cache, which forces a 200.
+    const revalidate = () =>
+      new Promise<IncomingMessage>((resolve, reject) => {
+        request(
+          { port, path: `/api/rooms/${room.id}/images/${filename}`, headers: { Cookie: cookie, "If-None-Match": etag! } },
+          (res) => {
+            res.resume();
+            resolve(res);
+          },
+        ).on("error", reject).end();
+      });
+    const fresh = await revalidate();
+    expect(fresh.statusCode).toBe(304);
+    expect(fresh.headers["cache-control"]).toBe("private, no-cache");
+
+    removeParticipant(room.id, SOCKET_ID);
+    expect((await revalidate()).statusCode).toBe(404);
+  });
+
+  it("refuses a decrypting read while image memory is full, then serves it", async () => {
+    room = createRoom("secret");
+    addParticipant(room.id, SOCKET_ID, "Ana");
+    const filename = await upload();
+    const cookie = await sessionCookie();
+    const imageRoom = room;
+
+    // Two unfinished uploads, from other rooms, reserve the whole budget.
+    const declared = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE;
+    const holds = [];
+    for (const size of [declared, MAX_INFLIGHT_IMAGE_BYTES - declared]) {
+      joinRoom();
+      const hold = openUpload(SOCKET_ID, { "Content-Length": size });
+      hold.response.catch(() => {});
+      hold.req.write(multipartBody(16).subarray(0, 20));
+      await vi.waitFor(() => expect(room.imageBytes).toBe(size));
+      holds.push(hold);
+    }
+    room = imageRoom;
+    addParticipant(room.id, SOCKET_ID, "Ana");
+
+    const busy = await get(filename, cookie);
+    expect(busy.status).toBe(503);
+    expect(busy.headers.get("retry-after")).toBe("1");
+
+    for (const hold of holds) hold.req.destroy();
+    await vi.waitFor(async () => expect((await get(filename, cookie)).status).toBe(200));
+  });
+
+  /** Holds the whole image budget with unfinished uploads from other rooms. */
+  async function holdWholeBudget() {
+    const imageRoom = room;
+    const declared = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE;
+    const holds = [];
+    for (const size of [declared, MAX_INFLIGHT_IMAGE_BYTES - declared]) {
+      joinRoom();
+      const hold = openUpload(SOCKET_ID, { "Content-Length": size });
+      hold.response.catch(() => {});
+      hold.req.write(multipartBody(16).subarray(0, 20));
+      await vi.waitFor(() => expect(room.imageBytes).toBe(size));
+      holds.push(hold);
+    }
+    room = imageRoom;
+    addParticipant(room.id, SOCKET_ID, "Ana");
+    return holds;
+  }
+
+  /** A read that may never be answered, for the caller to abandon. */
+  function openRead(filename: string, cookie: string, onClose?: () => void): ClientRequest {
+    const req = request({ port, path: `/api/rooms/${room.id}/images/${filename}`, headers: { Cookie: cookie } }, (res) => res.resume());
+    req.on("error", () => {});
+    if (onClose) req.on("close", onClose);
+    req.end();
+    openRequests.push(req);
+    return req;
+  }
+
+  // Regression: the release was registered after `close` had already fired, so
+  // about eight abandoned reads took every upload and decrypting read down for good.
+  it("doesn't reserve image memory for a read abandoned before the reservation", async () => {
+    room = createRoom("secret");
+    addParticipant(room.id, SOCKET_ID, "Ana");
+    const filename = await upload();
+    const cookie = await sessionCookie();
+    let releaseStat!: () => void;
+    fsHooks.stat = new Promise<void>((resolve) => (releaseStat = resolve));
+    try {
+      const read = openRead(filename, cookie);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      read.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      releaseStat();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally {
+      fsHooks.stat = null;
+    }
+
+    // Exactly the whole budget still fits, so not one byte was left reserved.
+    const holds = await holdWholeBudget();
+    for (const hold of holds) hold.req.destroy();
+  });
+
+  describe("while a decrypting read is held", () => {
+    let releaseRead: () => void;
+
+    const passwordRoomFile = async () => {
+      room = createRoom("secret");
+      addParticipant(room.id, SOCKET_ID, "Ana");
+      const filename = await upload();
+      return { filename, cookie: await sessionCookie() };
+    };
+
+    const holdReads = () => {
+      fsHooks.statSize = MAX_ROOM_INFLIGHT_READ_BYTES / 2;
+      fsHooks.readFile = new Promise<void>((resolve) => (releaseRead = resolve));
+    };
+
+    afterEach(() => {
+      releaseRead?.();
+      fsHooks.readFile = null;
+      fsHooks.statSize = null;
+    });
+
+    // Regression: one member not reading their responses starved every other room.
+    it("caps one room's reads, leaving budget for other rooms", async () => {
+      const other = await passwordRoomFile();
+      const otherRoom = room;
+      const { filename, cookie } = await passwordRoomFile();
+      holdReads();
+
+      openRead(filename, cookie);
+      await vi.waitFor(() => expect(room.inFlightReadBytes).toBe(MAX_ROOM_INFLIGHT_READ_BYTES));
+
+      expect((await get(filename, cookie)).status).toBe(503);
+
+      const imageRoom = room;
+      room = otherRoom;
+      openRead(other.filename, other.cookie);
+      await vi.waitFor(() => expect(otherRoom.inFlightReadBytes).toBe(MAX_ROOM_INFLIGHT_READ_BYTES));
+      removeParticipant(otherRoom.id, SOCKET_ID);
+      room = imageRoom;
+    });
+
+    it("ends a read that outlasts its deadline, releasing its reservation", async () => {
+      const { filename, cookie } = await passwordRoomFile();
+      holdReads();
+      const timers = vi.spyOn(globalThis, "setTimeout");
+
+      const closed = new Promise<void>((resolve) => openRead(filename, cookie, resolve));
+      await vi.waitFor(() => expect(room.inFlightReadBytes).toBe(MAX_ROOM_INFLIGHT_READ_BYTES));
+      const deadline = timers.mock.calls.find(([, ms]) => ms === IMAGE_READ_TIMEOUT_MS);
+      timers.mockRestore();
+      expect(deadline).toBeDefined();
+
+      (deadline![0] as () => void)();
+
+      await closed;
+      await vi.waitFor(() => expect(room.inFlightReadBytes).toBe(0));
+    });
+  });
+
   it("refuses a tampered cookie", async () => {
     joinRoom();
     const filename = await upload();
     const cookie = await sessionCookie();
-    const flipped = cookie.endsWith("A") ? `${cookie.slice(0, -1)}B` : `${cookie.slice(0, -1)}A`;
+    // Not the last character: its low bits are ignored when decoding base64url,
+    // so changing it may not change the signature.
+    const at = cookie.length - 10;
+    const flipped = `${cookie.slice(0, at)}${cookie[at] === "A" ? "B" : "A"}${cookie.slice(at + 1)}`;
 
     expect((await get(filename, flipped)).status).toBe(404);
   });

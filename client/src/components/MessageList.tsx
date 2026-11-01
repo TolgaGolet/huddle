@@ -226,7 +226,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
           <button
             type="button"
             onClick={() => handlePinMessage(pinnedMessage.id)}
-            className="touch-target p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer shrink-0"
+            className="touch-target p-1 rounded text-gray-400 hover:text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer shrink-0"
             title="Unpin message"
             aria-label="Unpin message"
           >
@@ -241,7 +241,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
       >
         <div ref={messagesContentRef} className="space-y-3">
           {chatHistory.length === 0 && (
-            <p className="text-gray-600 text-sm text-center mt-8">No messages yet. Say something!</p>
+            <p className="text-gray-400 text-sm text-center mt-8">No messages yet. Say something!</p>
           )}
           {chatHistory.map((entry) =>
             isPollMessage(entry) ? (

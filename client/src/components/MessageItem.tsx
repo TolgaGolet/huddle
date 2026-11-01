@@ -62,10 +62,10 @@ function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) 
             aria-label={`Go to the message from ${msg.replyTo.senderName} this replies to`}
             className="flex items-center gap-1.5 min-w-0 cursor-pointer hover:bg-gray-800/60 rounded transition-colors"
           >
-            <Reply size={10} className="text-gray-500 shrink-0" />
+            <Reply size={10} className="text-gray-400 shrink-0" />
             <span className="text-[11px] text-indigo-400 font-medium shrink-0">{msg.replyTo.senderName}</span>
             {!msg.replyTo.imageUrl && (
-              <span className="text-[11px] text-gray-500 truncate max-w-48">{msg.replyTo.text || "[Image]"}</span>
+              <span className="text-[11px] text-gray-400 truncate max-w-48">{msg.replyTo.text}</span>
             )}
           </button>
           {msg.replyTo.imageUrl && (
@@ -94,7 +94,7 @@ function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) 
         <span className={`text-sm font-semibold ${avatarTextColor(msg.senderName)}`}>
           {msg.senderName}
         </span>
-        <span className="text-[10px] text-gray-600">{formatTime(msg.timestamp)}</span>
+        <span className="text-[10px] text-gray-400">{formatTime(msg.timestamp)}</span>
       </div>
 
       {msg.gifUrl ? (
@@ -109,9 +109,9 @@ function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) 
               onLoad={actions.imageLoaded}
             />
           </a>
-          <p className="text-[10px] text-gray-600 mt-0.5">
+          <p className="text-[10px] text-gray-400 mt-0.5">
             via{" "}
-            <a href="https://giphy.com" target="_blank" rel="noopener noreferrer" className="hover:text-gray-400 transition-colors">
+            <a href="https://giphy.com" target="_blank" rel="noopener noreferrer" className="hover:text-gray-200 transition-colors">
               GIPHY
             </a>
           </p>
@@ -150,7 +150,7 @@ function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) 
             msg.text && (
               <div className="text-sm text-gray-300 leading-relaxed">
                 {formattedText}
-                {msg.edited && <span className="text-[10px] text-gray-500 ml-1.5">(edited)</span>}
+                {msg.edited && <span className="text-[10px] text-gray-400 ml-1.5">(edited)</span>}
               </div>
             )
           )}

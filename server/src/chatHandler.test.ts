@@ -35,11 +35,11 @@ function joined<T = unknown>(socket: ClientSocket, payload: object): Promise<T> 
   });
 }
 
-async function joinNewRoom(): Promise<ClientSocket> {
+async function joinNewRoom() {
   const room = createRoom();
   client = connect(url, { transports: ["websocket"] });
   await joined(client, { roomId: room.id, name: "Ana" });
-  return client;
+  return room;
 }
 
 function send<T>(event: string, payload: object, reply: string): Promise<T> {
@@ -63,6 +63,78 @@ describe("chat-message gifUrl", () => {
       const msg = await send<{ gifUrl?: string }>("chat-message", { text: "b", gifUrl }, "chat-message");
       expect(msg.gifUrl).toBeUndefined();
     }
+  });
+});
+
+// Regression (F06): the server stored whatever quote the client sent, so anyone
+// could attribute words to another member.
+describe("chat-message reply quotes", () => {
+  const message = (payload: object) => send<ChatMessage>("chat-message", payload, "chat-message");
+
+  it("builds the quote from history, whatever else the client sends", async () => {
+    await joinNewRoom();
+    const original = await message({ text: "the real words" });
+
+    const reply = await message({
+      text: "answer",
+      replyToId: original.id,
+      replyTo: { id: original.id, senderName: "alice", text: "I agree to pay carol $500" },
+    });
+
+    expect(reply.replyTo).toEqual({ id: original.id, senderName: "Ana", text: "the real words" });
+  });
+
+  // Regression: deleted or replaced words stayed quoted, and reached later joiners.
+  it("keeps stored quotes in step with an edit or a delete of the original", async () => {
+    const room = await joinNewRoom();
+    const original = await message({ text: "the real words" });
+    const reply = await message({ text: "answer", replyToId: original.id });
+    const stored = () => room.chatHistory.find((m) => m.id === reply.id) as ChatMessage;
+
+    await send("chat-edit", { messageId: original.id, text: "new words" }, "chat-message-edit");
+    expect(stored().replyTo?.text).toBe("new words");
+
+    await send("chat-delete", { messageId: original.id }, "chat-message-delete");
+    expect(stored().replyTo).toBeUndefined();
+  });
+
+  it("ignores a forged quote sent on its own", async () => {
+    await joinNewRoom();
+    const msg = await message({ text: "hi", replyTo: { id: "does-not-exist", senderName: "alice", text: "forged" } });
+    expect(msg.replyTo).toBeUndefined();
+  });
+
+  it("sends the message without a quote when the original is gone", async () => {
+    await joinNewRoom();
+    const msg = await message({ text: "hi", replyToId: "does-not-exist" });
+    expect(msg.text).toBe("hi");
+    expect(msg.replyTo).toBeUndefined();
+  });
+
+  it("doesn't quote a poll", async () => {
+    const room = await joinNewRoom();
+    room.chatHistory.push({ id: "poll1", type: "poll", senderId: "u", senderName: "Bob", question: "q", options: [], allowMultiple: false, timestamp: 0 });
+
+    expect((await message({ text: "hi", replyToId: "poll1" })).replyTo).toBeUndefined();
+  });
+
+  it("truncates a long original without splitting an emoji", async () => {
+    await joinNewRoom();
+    const original = await message({ text: "😀".repeat(300) });
+
+    const { replyTo } = await message({ text: "hi", replyToId: original.id });
+
+    expect(replyTo?.text).toBe("😀".repeat(200));
+  });
+
+  it("quotes an image-only original by its first image", async () => {
+    const room = await joinNewRoom();
+    const imageUrls =[`/api/rooms/${room.id}/images/aaaaaaaaaa.png`, `/api/rooms/${room.id}/images/bbbbbbbbbb.png`];
+    const original = await message({ text: "", imageUrls });
+
+    const { replyTo } = await message({ text: "nice", replyToId: original.id });
+
+    expect(replyTo).toEqual({ id: original.id, senderName: "Ana", text: "[Image]", imageUrl: imageUrls[0] });
   });
 });
 

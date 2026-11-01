@@ -55,7 +55,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search emojis..."
           aria-label="Search emojis"
-          className="w-full px-2 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+          className="w-full px-2 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500"
           autoFocus
         />
       </div>
@@ -63,7 +63,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
       {/* Recent emojis */}
       {!query && recentEmojis.length > 0 && (
         <div className="px-2 pt-2">
-          <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1 px-1">
+          <p className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold mb-1 px-1">
             Recent
           </p>
           <div className="flex gap-0.5">
@@ -107,7 +107,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
       {/* Emoji grid */}
       <div className="grid grid-cols-8 gap-0.5 p-2 max-h-48 overflow-y-auto">
         {filteredEmojis.length === 0 ? (
-          <p className="col-span-8 text-center text-xs text-gray-500 py-4">
+          <p className="col-span-8 text-center text-xs text-gray-400 py-4">
             No emojis found
           </p>
         ) : (
@@ -134,7 +134,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
             <span className="text-xs text-gray-400">{tooltipText ?? ""}</span>
           </>
         ) : (
-          <span className="text-[10px] text-gray-600">
+          <span className="text-[10px] text-gray-400">
             {query ? `${filteredEmojis.length} result${filteredEmojis.length !== 1 ? "s" : ""}` : CATEGORIES[activeCategory]?.name}
           </span>
         )}
