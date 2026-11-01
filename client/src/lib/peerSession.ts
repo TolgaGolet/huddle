@@ -8,6 +8,16 @@ const MAX_AUDIO_RECOVERIES = 2;
 const IGNORED_OFFER_RECOVERY_MS = 5000;
 const DISCONNECT_ESCALATION_MS = 8000;
 
+// Structured stats log, development only.
+//
+// Firefox: `console.debug` output is shown by default in the console (unlike
+// Chrome, which hides debug-level messages unless "Verbose" is selected), so the
+// 5s sampler floods the Firefox console. Skip the periodic stats log entirely in
+// Firefox; the event-driven watchdog / negotiation logs remain active everywhere.
+const LOG_PERIODIC_STATS =
+  (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true &&
+  !(typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent));
+
 /** What a session needs from its owner; React state and socket wiring stay in `useWebRTC`. */
 export interface PeerSessionHost {
   /** Bound to the socket that created the session. */
@@ -460,6 +470,7 @@ export class PeerSession {
           /* negotiation may be in flight */
         }
         setTimeout(() => {
+          if (this.disposed) return;
           this.iceRestarting = false;
         }, 2000);
       }
@@ -578,18 +589,7 @@ export class PeerSession {
       inLost,
     };
 
-    // Structured diagnostic log, development only.
-    //
-    // Firefox: `console.debug` output is shown by default in the console
-    // (unlike Chrome, which hides debug-level messages unless "Verbose" is
-    // selected), so the 5s sampler floods the Firefox console. Skip the
-    // periodic stats log entirely in Firefox; the event-driven watchdog /
-    // negotiation logs remain active everywhere.
-    const isDev =
-      (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
-    const isFirefox =
-      typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent);
-    if (isDev && !isFirefox) {
+    if (LOG_PERIODIC_STATS) {
       console.debug("[huddle:webrtc-stats]", diag);
     }
   }

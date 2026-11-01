@@ -66,6 +66,28 @@ describe("chat-message gifUrl", () => {
   });
 });
 
+describe("typing", () => {
+  it("reaches the other participants but not the sender", async () => {
+    const room = createRoom();
+    client = connect(url, { transports: ["websocket"] });
+    const peer = connect(url, { transports: ["websocket"] });
+    try {
+      await joined(client, { roomId: room.id, name: "Ana" });
+      await joined(peer, { roomId: room.id, name: "Bo" });
+      const echoed = vi.fn();
+      client.on("typing", echoed);
+      const received = new Promise((resolve) => peer.once("typing", resolve));
+
+      client.emit("typing");
+
+      await expect(received).resolves.toEqual({ senderId: client.id, senderName: "Ana" });
+      expect(echoed).not.toHaveBeenCalled();
+    } finally {
+      peer.disconnect();
+    }
+  });
+});
+
 describe("chat-pin", () => {
   it("broadcasts only the pinned id, not the chat history", async () => {
     await joinNewRoom();

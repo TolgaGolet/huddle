@@ -12,17 +12,6 @@
  */
 
 /**
- * Whether extended/verbose logging is enabled. Defaults to ON per product
- * request so logs are captured during the bug's occurrence. Set
- * `VITE_HUDDLE_DEBUG=false` at build time to silence the noisiest categories
- * (currently: the periodic audio-stats sampler).
- */
-export function huddleDebugEnabled(): boolean {
-  const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-  return env?.VITE_HUDDLE_DEBUG !== "false";
-}
-
-/**
  * Emit an always-on event log line under the `[huddle:<scope>]` namespace.
  * Safe to call with arbitrary values; values are serialized by the console.
  */

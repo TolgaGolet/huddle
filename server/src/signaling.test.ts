@@ -26,9 +26,9 @@ afterAll(async () => {
   await io.close();
 });
 
-function joined(client: ClientSocket, payload: object): Promise<void> {
+function joined<T = unknown>(client: ClientSocket, payload: object): Promise<T> {
   return new Promise((resolve, reject) => {
-    client.once("room-joined", () => resolve());
+    client.once("room-joined", resolve);
     client.once("error", (e: { message: string }) => reject(new Error(e.message)));
     client.emit("join-room", payload);
   });
@@ -68,6 +68,40 @@ describe("password guessing", () => {
     const room = createRoom("secret");
     for (let i = 0; i < IP_LIMITS.passwordGuesses.burst + 1; i++) {
       expect(await attempt(room.id, "secret")).toBe("joined");
+    }
+  });
+});
+
+describe("screen sharer", () => {
+  it("is told to a later joiner, and cleared when the sharer leaves", async () => {
+    const room = createRoom();
+    const sharer = connect(url, { transports: ["websocket"] });
+    const peer = connect(url, { transports: ["websocket"] });
+    const late = connect(url, { transports: ["websocket"] });
+    const later = connect(url, { transports: ["websocket"] });
+    const joinedWith = async (client: ClientSocket, name: string) =>
+      (await joined<{ screenSharer: string | null }>(client, { roomId: room.id, name })).screenSharer;
+    try {
+      await joined(sharer, { roomId: room.id, name: "Ana" });
+      await joined(peer, { roomId: room.id, name: "Bo" });
+      const started = new Promise((resolve) => peer.once("screen-share-started", resolve));
+      sharer.emit("screen-share-started");
+      await started;
+      const sharerId = sharer.id;
+
+      await expect(joinedWith(late, "Cy")).resolves.toBe(sharerId);
+      expect(getRoom(room.id)?.screenSharerId).toBe(sharerId);
+
+      const stopped = new Promise((resolve) => peer.once("screen-share-stopped", resolve));
+      sharer.disconnect();
+      await expect(stopped).resolves.toEqual({ id: sharerId });
+
+      await expect(joinedWith(later, "Di")).resolves.toBeNull();
+    } finally {
+      sharer.disconnect();
+      peer.disconnect();
+      late.disconnect();
+      later.disconnect();
     }
   });
 });

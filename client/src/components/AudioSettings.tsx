@@ -1,5 +1,6 @@
 import { Mic, ShieldCheck, Sparkles, Sliders } from "lucide-react";
 import type { MicTelemetry, VoiceTransmissionThreshold } from "../types";
+import { MANUAL_THRESHOLD_MAX_DB, MANUAL_THRESHOLD_MIN_DB } from "../lib/audioLevels";
 import { MicLevelPreview } from "./MicLevelPreview";
 
 interface Props {
@@ -97,16 +98,16 @@ export default function AudioSettings({
             <input
               type="range"
               aria-label="Custom threshold in decibels"
-              min={-60}
-              max={-10}
+              min={MANUAL_THRESHOLD_MIN_DB}
+              max={MANUAL_THRESHOLD_MAX_DB}
               step={1}
               value={manualThresholdDb}
               onChange={(e) => onManualThresholdDbChange(Number(e.target.value))}
               className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
             />
             <div className="flex justify-between text-[10px] text-gray-500">
-              <span>More sensitive (-60 dB)</span>
-              <span>Stricter rejection (-10 dB)</span>
+              <span>More sensitive ({MANUAL_THRESHOLD_MIN_DB} dB)</span>
+              <span>Stricter rejection ({MANUAL_THRESHOLD_MAX_DB} dB)</span>
             </div>
           </div>
         )}

@@ -31,7 +31,6 @@ In dev, Vite proxies `/api` and `/socket.io` (websocket) to `localhost:3001`, so
 - Deployed on Render: `proxyHopsFor` (`ipRateLimit.ts`) detects Render's automatic `RENDER` env var and uses a hard-coded proxy count. **On any other host behind a proxy, update it**, or every user shares the proxy's IP and one set of per-IP rate limits.
 - Client env is **baked in at build time** (changing server runtime env does not affect a built client):
   - `VITE_ICE_SERVERS` — JSON `RTCIceServer[]`; defaults to Google STUN only. TURN is needed for symmetric NAT/CGNAT/strict firewalls (symptom: stuck "Connecting…" / `ICE failed`).
-  - `VITE_HUDDLE_DEBUG=false` — intended to silence noisy diagnostics, but **currently has no effect**: `huddleDebugEnabled()` in `lib/huddleLog.ts` is never called (CQ-17).
 
 ## Architecture
 
@@ -45,6 +44,7 @@ In dev, Vite proxies `/api` and `/socket.io` (websocket) to `localhost:3001`, so
 - Join failures emit `error` with a stable `code` from `joinErrors.ts` (import-free, shared like `limits.ts`). The client's rejoin retry matches on the code, never the text, so messages can be reworded.
 - Server error logs go through `errorSummary` (`errorLog.ts`): error name + stack frames only, since messages can quote user input. Anything reaching `uncaughtException`/`unhandledRejection` is logged and the process exits (so a supervisor restarts it), so fire-and-forget promises must not reject.
 - Images are uploaded over HTTP (`imageRouter.ts`, multer) to `uploads/<roomId>/` relative to the process cwd; the directory is wiped on startup. For password-protected rooms, files are AES-256-GCM encrypted at rest with a key derived from the room password + per-room salt (`imageCrypto.ts`). `rejectEarly` requires a `Content-Length` and reserves it against the per-room quota and a process-wide in-flight cap before multer buffers the body; the handler re-checks membership, since a slow upload can outlast it or the room. Remove messages only through `removeMessage()`, which clears the pin and frees their images' files and quota.
+- Image reads are authorized by an HttpOnly cookie from `POST /rooms/:id/image-session`, opened on every join and renewed by `keepImageSessionOpen`, never by a token in the URL, which would reach access logs. Render room images with `RoomImage`, which waits for the session and retries failed loads when it reopens. Open rooms' images are `no-cache` so leaving still ends access; password rooms stay `no-store` so decrypted files never reach the browser's disk cache.
 - `giphyRouter.ts` proxies Giphy so the API key stays server-side, with a 5s upstream timeout and a bounded in-memory cache (`ttlCache.ts`) to protect the rate-limited key. Upstream URLs contain the key, so never log them.
 - In production the server also serves `client/dist` with an SPA fallback route.
 
@@ -61,4 +61,4 @@ In dev, Vite proxies `/api` and `/socket.io` (websocket) to `localhost:3001`, so
 - Socket events and payload types live once in `server/src/protocol.ts` (import-free apart from other shared files, like `limits.ts`), which the client re-exports from `types/index.ts`. Add a new event there and `tsc` checks both sides; use `AppSocket`/`AppServer`, not bare `Socket`/`Server`. No `shared/` workspace: `npm start` runs plain `node` on `tsc` output, which can't load a source-only package.
 
 ### Diagnostics
-`lib/huddleLog.ts` emits always-on structured logs prefixed `[huddle:<scope>]` (`socket`, `peer`, `negotiate`, `connection`, `audio`, `watchdog`, `capture`) in dev and prod. They must never contain SDP, media, IPs, or credentials — keep it that way when adding logs. Log caught errors through `errorName`, since browser error messages can quote SDP lines. For watchdog logs, `dir: "in"` = not receiving the remote's audio, `dir: "out"` = our audio isn't reaching them.
+`lib/huddleLog.ts` emits always-on structured logs prefixed `[huddle:<scope>]` (`socket`, `peer`, `negotiate`, `connection`, `audio`, `watchdog`, `capture`, `clipboard`) in dev and prod. They must never contain SDP, media, IPs, or credentials — keep it that way when adding logs. Log caught errors through `errorName`, since browser error messages can quote SDP lines. For watchdog logs, `dir: "in"` = not receiving the remote's audio, `dir: "out"` = our audio isn't reaching them.

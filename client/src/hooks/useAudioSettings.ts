@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AudioSettingsState, VoiceTransmissionThreshold } from "../types";
+import { normalizeManualThresholdDb, THRESHOLD_MEDIUM_OPEN_DB } from "../lib/audioLevels";
 
 const STORAGE_KEY = "huddle.audioSettings.v1";
 
 const DEFAULT_SETTINGS: AudioSettingsState = {
   noiseCancellationEnabled: true,
   transmissionThreshold: "medium",
-  manualThresholdDb: -36,
+  manualThresholdDb: THRESHOLD_MEDIUM_OPEN_DB,
 };
 
 function loadSettings(): AudioSettingsState {
@@ -37,7 +38,7 @@ function loadSettings(): AudioSettingsState {
 
     const manualThresholdDb =
       typeof parsed.manualThresholdDb === "number" && !Number.isNaN(parsed.manualThresholdDb)
-        ? Math.max(-60, Math.min(-10, Math.round(parsed.manualThresholdDb)))
+        ? normalizeManualThresholdDb(parsed.manualThresholdDb)
         : DEFAULT_SETTINGS.manualThresholdDb;
 
     return {
@@ -80,10 +81,10 @@ export function useAudioSettings() {
   }, []);
 
   const setManualThresholdDb = useCallback((db: number) => {
-    const clamped = Math.max(-60, Math.min(-10, Math.round(db)));
+    const normalized = normalizeManualThresholdDb(db);
     setSettings((prev) => {
-      if (prev.manualThresholdDb === clamped) return prev;
-      return { ...prev, manualThresholdDb: clamped };
+      if (prev.manualThresholdDb === normalized) return prev;
+      return { ...prev, manualThresholdDb: normalized };
     });
   }, []);
 

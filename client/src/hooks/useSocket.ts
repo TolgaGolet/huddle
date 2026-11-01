@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 import type { AppSocket, Participant, ChatMessage, ChatEntry, PollMessage, JoinErrorCode, ReactionUser } from "../types";
+import { isPollMessage, MAX_CHAT_HISTORY } from "../types";
+import { appendCapped } from "../lib/chatHistory";
 import { claimClientKey } from "../lib/clientKey";
+import { keepImageSessionOpen } from "../lib/imageUpload";
 import { playJoinSound, playLeaveSound, playMessageSound, playDisconnectedSound } from "../lib/notificationSounds";
 import { errorName, huddleLog, huddleWarn } from "../lib/huddleLog";
 import { joinRetryDelay, shouldRetryJoin } from "../lib/joinRetry";
@@ -16,8 +19,8 @@ export interface UseSocketReturn {
   socket: AppSocket | null;
   /** Our stable identity in this room (see message senderId); null until joined. */
   userId: string | null;
-  /** The socket id the server last accepted into the room, which authorizes image requests. */
-  joinedSocketId: string | null;
+  /** See ImageSessionContext. */
+  imageSession: number;
   participants: Participant[];
   chatHistory: ChatEntry[];
   pinnedMessageId: string | null;
@@ -29,13 +32,11 @@ export interface UseSocketReturn {
   joinRoom: () => void;
 }
 
-const MAX_CLIENT_CHAT = 200;
-
 export function useSocket({ roomId, name, password }: UseSocketOptions): UseSocketReturn {
   const socketRef = useRef<AppSocket | null>(null);
   const [socket, setSocket] = useState<AppSocket | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
-  const [joinedSocketId, setJoinedSocketId] = useState<string | null>(null);
+  const [imageSession, setImageSession] = useState(0);
   // Read by listener closures defined inside the connection effect.
   const userIdRef = useRef<string | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -105,6 +106,8 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     if (!roomId || !name) return;
 
     let socket: AppSocket | null = null;
+    let stopImageSession: (() => void) | undefined;
+    const typingState = typingMapRef.current;
 
     // Defer socket creation by one macrotask so React StrictMode cleanup
     // can cancel before a WebSocket is actually opened.
@@ -125,6 +128,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
 
       const onDisconnect = (reason: string) => {
         setConnected(false);
+        stopImageSession?.();
         // Allow `joinRoom` to rejoin on the next connect once the caller
         // reinstalls signaling listeners.
         joinedRef.current = false;
@@ -175,9 +179,11 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         }
         userIdRef.current = data.userId;
         setUserId(data.userId);
-        setJoinedSocketId(socket!.id ?? null);
+        // Re-opened on every join: the session belongs to the room's membership.
+        stopImageSession?.();
+        stopImageSession = keepImageSessionOpen(roomId, socket!.id ?? "", () => setImageSession((n) => n + 1));
         setParticipants(data.participants);
-        setChatHistory(data.chatHistory.slice(-MAX_CLIENT_CHAT));
+        setChatHistory(data.chatHistory.slice(-MAX_CHAT_HISTORY));
         setPinnedMessageId(data.pinnedMessageId);
         setCurrentScreenSharer(data.screenSharer);
       };
@@ -191,7 +197,6 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         setParticipants((prev) => prev.filter((p) => p.id !== id));
         setCurrentScreenSharer((prev) => (prev === id ? null : prev));
         playLeaveSound();
-        const typingState = typingMapRef.current;
         const t = typingState.get(id);
         if (t) {
           clearTimeout(t.timer);
@@ -225,15 +230,11 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       };
 
       const onChatMessage = (msg: ChatMessage) => {
-        setChatHistory((prev) => {
-          const next = [...prev, msg];
-          return next.length > MAX_CLIENT_CHAT ? next.slice(-MAX_CLIENT_CHAT) : next;
-        });
+        setChatHistory((prev) => appendCapped(prev, msg));
         // Clear this sender's typing indicator and play a cue only for
         // messages from other participants (server broadcasts to all).
         // The typing map is keyed by socket id and messages carry the userId,
         // so match on the name, which is unique among live participants.
-        const typingState = typingMapRef.current;
         for (const [id, typing] of typingState) {
           if (typing.name === msg.senderName) {
             clearTimeout(typing.timer);
@@ -245,12 +246,10 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       };
 
       const onTyping = ({ senderId, senderName }: { senderId: string; senderName: string }) => {
-        if (senderId === socket!.id) return;
-        const typingState = typingMapRef.current;
         const existing = typingState.get(senderId);
         if (existing) clearTimeout(existing.timer);
         // Auto-expire if the user stops typing without sending (e.g. closes
-        // the tab) — matches the server's timeout plus a small grace period.
+        // the tab). The server only relays, so this is the only timeout.
         const timer = setTimeout(() => {
           typingState.delete(senderId);
           setTypingFromMap(typingState);
@@ -262,7 +261,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       const onChatReactionUpdate = ({ messageId, reactions }: { messageId: string; reactions: Record<string, ReactionUser[]> }) => {
         setChatHistory((prev) =>
           prev.map((entry) =>
-            entry.id === messageId && !("type" in entry)
+            entry.id === messageId && !isPollMessage(entry)
               ? { ...entry, reactions }
               : entry,
           ),
@@ -270,10 +269,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       };
 
       const onPollCreate = (poll: PollMessage) => {
-        setChatHistory((prev) => {
-          const next = [...prev, poll];
-          return next.length > MAX_CLIENT_CHAT ? next.slice(-MAX_CLIENT_CHAT) : next;
-        });
+        setChatHistory((prev) => appendCapped(prev, poll));
       };
 
       const onPollUpdate = (poll: PollMessage) => {
@@ -285,7 +281,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       const onChatMessageEdit = ({ messageId, text }: { messageId: string; text: string }) => {
         setChatHistory((prev) =>
           prev.map((entry) =>
-            entry.id === messageId && !("type" in entry)
+            entry.id === messageId && !isPollMessage(entry)
               ? { ...entry, text, edited: true }
               : entry,
           ),
@@ -330,6 +326,11 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         clearTimeout(joinRetryTimerRef.current);
         joinRetryTimerRef.current = null;
       }
+      for (const { timer: typingTimer } of typingState.values()) clearTimeout(typingTimer);
+      typingState.clear();
+      setTypingUsers([]);
+      stopImageSession?.();
+      setImageSession(0);
       if (socket) {
         socket.removeAllListeners();
         socket.disconnect();
@@ -339,5 +340,5 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     };
   }, [roomId, name, password, joinRoom, scheduleJoinRetry]);
 
-  return { socket, userId, joinedSocketId, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
+  return { socket, userId, imageSession, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
 }

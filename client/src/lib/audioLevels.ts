@@ -3,6 +3,8 @@
  * machine. Shared by useTransmissionGate, useMicTelemetry and useVoiceActivity.
  */
 
+import type { VoiceTransmissionThreshold } from "../types";
+
 export const NOISE_FLOOR_LEARN_RATE = 0.02;
 export const NOISE_FLOOR_MIN_DB = -70;
 export const NOISE_FLOOR_MAX_DB = -35;
@@ -24,9 +26,17 @@ export const THRESHOLD_HIGH_CLOSE_DB = -35;
 export const THRESHOLD_VERY_HIGH_OPEN_DB = -24;
 export const THRESHOLD_VERY_HIGH_CLOSE_DB = -29;
 
+export const MANUAL_THRESHOLD_MIN_DB = -60;
+export const MANUAL_THRESHOLD_MAX_DB = -10;
+
+/** A valid manual threshold: whole dB within the slider's range. */
+export function normalizeManualThresholdDb(db: number): number {
+  return Math.max(MANUAL_THRESHOLD_MIN_DB, Math.min(MANUAL_THRESHOLD_MAX_DB, Math.round(db)));
+}
+
 export function getThresholdDb(
-  threshold: "off" | "low" | "medium" | "high" | "very-high" | "manual",
-  manualDb = -36,
+  threshold: VoiceTransmissionThreshold,
+  manualDb: number,
 ): { openDb: number; closeDb: number } | null {
   if (threshold === "off") return null;
   if (threshold === "low") {
@@ -42,8 +52,7 @@ export function getThresholdDb(
     return { openDb: THRESHOLD_VERY_HIGH_OPEN_DB, closeDb: THRESHOLD_VERY_HIGH_CLOSE_DB };
   }
   if (threshold === "manual") {
-    const clamped = Math.max(-60, Math.min(-10, manualDb));
-    return { openDb: clamped, closeDb: clamped - 5 };
+    return { openDb: manualDb, closeDb: manualDb - 5 };
   }
   return { openDb: THRESHOLD_MEDIUM_OPEN_DB, closeDb: THRESHOLD_MEDIUM_CLOSE_DB };
 }

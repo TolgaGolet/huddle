@@ -1,5 +1,5 @@
-import { useRef, useCallback, useState, useEffect } from "react";
-import { AudioEngine, type AudioHealthListener } from "../lib/audioEngine";
+import { useRef, useCallback, useState } from "react";
+import { AudioEngine } from "../lib/audioEngine";
 
 /**
  * Capture-audio hook.
@@ -22,22 +22,13 @@ export function useCaptureAudio() {
   const getEngine = useCallback(() => {
     if (!engineRef.current) {
       engineRef.current = new AudioEngine();
+      // Forward health updates so the UI can prompt the user to re-enable audio
+      // after an autoplay/interruption block. Subscribed before first use, since
+      // the first resume can already fail. destroy() drops the listener.
+      engineRef.current.onHealth(setNeedsAudioGesture);
     }
     return engineRef.current;
   }, []);
-
-  // Forward engine health updates to React state so the UI can prompt the
-  // user to re-enable audio after an autoplay/interruption block. Subscribing
-  // on every render is cheap because the engine deduplicates listeners and
-  // the returned unsubscribe is stable per call; this also guarantees we
-  // attach after the engine is created by processStream().
-  useEffect(() => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    const listener: AudioHealthListener = (needsGesture) => setNeedsAudioGesture(needsGesture);
-    const off = engine.onHealth(listener);
-    return off;
-  });
 
   /**
    * Attach the analyser to the native microphone stream and return the stream
@@ -60,10 +51,7 @@ export function useCaptureAudio() {
    * outgoing native microphone track.
    */
   const resumeAudio = useCallback(async () => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    await engine.resume();
-    setNeedsAudioGesture(false);
+    await engineRef.current?.resume();
   }, []);
 
   const cleanup = useCallback(() => {

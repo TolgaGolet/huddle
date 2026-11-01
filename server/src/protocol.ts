@@ -1,8 +1,7 @@
 // The wire protocol, shared by both builds like limits.ts (client/src/types/index.ts
-// re-exports it). Types only, so it erases from the server's tsc output. Import
-// nothing here except other shared files, so the client can compile it. These
-// types are compile-time claims: any client can send anything, so server input
-// still goes through the parsers in validation.ts.
+// re-exports it). Import nothing here except other shared files, so the client
+// can compile it. These types are compile-time claims: any client can send
+// anything, so server input still goes through the parsers in validation.ts.
 
 import type { JoinErrorCode } from "./joinErrors.js";
 
@@ -57,6 +56,10 @@ export interface PollMessage {
 }
 
 export type ChatEntry = ChatMessage | PollMessage;
+
+export function isPollMessage(entry: ChatEntry): entry is PollMessage {
+  return "type" in entry && entry.type === "poll";
+}
 
 // Structural copies of RTCSessionDescriptionInit and RTCIceCandidateInit: the
 // server has no DOM lib. The server relays these without reading them.

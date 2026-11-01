@@ -55,6 +55,7 @@ app.get("/health", (_req, res) => {
 app.post("/api/rooms", httpRateLimit(IP_LIMITS.createRoom, proxyHops));
 app.get("/api/rooms/:id", httpRateLimit(IP_LIMITS.lookupRoom, proxyHops));
 app.post("/api/rooms/:id/images", httpRateLimit(IP_LIMITS.uploadImages, proxyHops));
+app.post("/api/rooms/:id/image-session", httpRateLimit(IP_LIMITS.imageSession, proxyHops));
 app.use("/api/giphy", httpRateLimit(IP_LIMITS.giphy, proxyHops));
 
 app.use("/api", roomRouter);
@@ -71,8 +72,12 @@ app.get("/{*splat}", (_req, res) => {
   res.sendFile(path.join(clientDist, "index.html"));
 });
 
+// Close to the limit of a 512 MB Render instance; below this the line is noise.
+const MEM_LOG_RSS_BYTES = 400 * 1024 * 1024;
+
 setInterval(() => {
   const mem = process.memoryUsage();
+  if (mem.rss < MEM_LOG_RSS_BYTES) return;
   const rss = (mem.rss / 1024 / 1024).toFixed(1);
   const heapUsed = (mem.heapUsed / 1024 / 1024).toFixed(1);
   const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(1);

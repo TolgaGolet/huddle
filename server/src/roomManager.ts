@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
-import { MAX_PARTICIPANTS, MAX_PASSWORD_LENGTH } from "./limits.js";
+import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS, MAX_PASSWORD_LENGTH } from "./limits.js";
 import type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry } from "./protocol.js";
 import { parseCreateRoom } from "./validation.js";
 
@@ -20,11 +20,11 @@ export interface Room {
   /** Size of each stored image by filename, released when its message goes. */
   imageSizes: Map<string, number>;
   pinnedMessageId: string | null;
+  /** socket.id of the participant sharing their screen. */
+  screenSharerId: string | null;
   /** Set at creation and when the last participant leaves; the room is deleted once this age exceeds ROOM_GRACE_MS. */
   emptySince: number | null;
 }
-
-const MAX_CHAT_HISTORY = 200;
 
 /**
  * Grace period before an empty room is deleted. When every participant's
@@ -73,6 +73,7 @@ export function createRoom(password?: string): Room {
     participants: new Map(),
     chatHistory: [],
     pinnedMessageId: null,
+    screenSharerId: null,
     encryptionSalt: password ? randomBytes(16).toString("base64url") : null,
     imageBytes: 0,
     imageSizes: new Map(),

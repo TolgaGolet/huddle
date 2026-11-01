@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import { addChatMessage, emptyReactions, removeMessage, type ChatMessage } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
+import { isPollMessage } from "./protocol.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
 import {
   noPayload,
@@ -29,10 +30,10 @@ function isGiphyUrl(url: string): boolean {
 
 export function setupChat(io: AppServer): void {
   io.on("connection", (socket) => {
-    // Typing indicator relay: broadcast to the room so others can show
+    // Typing indicator relay: broadcast to the others so they can show
     // "X is typing...". Clients auto-expire the indicator themselves.
     onRoom(socket, "typing", noPayload, ({ roomId, participant }) => {
-      io.to(roomId).emit("typing", {
+      socket.to(roomId).emit("typing", {
         senderId: socket.id,
         senderName: participant.name,
       });
@@ -80,10 +81,9 @@ export function setupChat(io: AppServer): void {
     });
 
     onRoom(socket, "chat-reaction", parseChatReaction, ({ roomId, room, participant }, { messageId, emoji }) => {
-      const entry = room.chatHistory.find((m) => m.id === messageId);
-      if (!entry || "type" in entry) return;
+      const msg = room.chatHistory.find((m) => m.id === messageId);
+      if (!msg || isPollMessage(msg)) return;
 
-      const msg = entry as ChatMessage;
       const list = msg.reactions[emoji] ?? [];
       const idx = list.findIndex((u) => u.userId === participant.userId);
       if (idx >= 0) {
@@ -105,9 +105,8 @@ export function setupChat(io: AppServer): void {
     });
 
     onRoom(socket, "chat-edit", parseChatEdit, ({ roomId, room, participant }, { messageId, text }) => {
-      const entry = room.chatHistory.find((m) => m.id === messageId);
-      if (!entry || "type" in entry) return;
-      const msg = entry as ChatMessage;
+      const msg = room.chatHistory.find((m) => m.id === messageId);
+      if (!msg || isPollMessage(msg)) return;
 
       // Only the sender can edit their own message. GIFs and image-only
       // messages cannot be edited to text.

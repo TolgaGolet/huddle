@@ -244,8 +244,23 @@ describe("GET /rooms/:id/images/:filename", () => {
   const IMAGE_BYTES = 100;
   const image = Buffer.alloc(IMAGE_BYTES, 1);
 
-  const get = (filename: string, socketId = SOCKET_ID) =>
-    fetch(`http://localhost:${port}/api/rooms/${room.id}/images/${filename}?socketId=${socketId}`);
+  const openSession = (roomId = room.id, socketId = SOCKET_ID) =>
+    fetch(`http://localhost:${port}/api/rooms/${roomId}/image-session`, {
+      method: "POST",
+      headers: { "X-Socket-Id": socketId },
+    });
+
+  /** The session cookie as a browser would send it back. */
+  async function sessionCookie(roomId = room.id, socketId = SOCKET_ID): Promise<string> {
+    const res = await openSession(roomId, socketId);
+    expect(res.status).toBe(204);
+    return res.headers.getSetCookie()[0].split(";")[0];
+  }
+
+  const get = (filename: string, cookie?: string, query = "") =>
+    fetch(`http://localhost:${port}/api/rooms/${room.id}/images/${filename}${query}`, {
+      headers: cookie ? { Cookie: cookie } : {},
+    });
 
   async function upload(): Promise<string> {
     const { req, response } = openUpload(SOCKET_ID);
@@ -254,16 +269,82 @@ describe("GET /rooms/:id/images/:filename", () => {
     return path.basename(urls[0]);
   }
 
-  it("serves an image to a member only", async () => {
+  it("serves an image to a member's session, cacheably in an open room", async () => {
     joinRoom();
     const filename = await upload();
 
-    const res = await get(filename);
+    const res = await get(filename, await sessionCookie());
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toBe("private, no-cache");
     expect(Buffer.from(await res.arrayBuffer()).equals(image)).toBe(true);
+  });
 
-    expect((await get(filename, "not-a-member")).status).toBe(404);
+  it("scopes the session cookie to the room's images and hides it from scripts", async () => {
+    joinRoom();
+    const header = (await openSession()).headers.getSetCookie()[0];
+    expect(header).toContain(`Path=/api/rooms/${room.id}/images`);
+    expect(header).toContain("HttpOnly");
+    expect(header).toContain("SameSite=Strict");
+  });
+
+  it("opens a session for a member only", async () => {
+    joinRoom();
+    expect((await openSession(room.id, "not-a-member")).status).toBe(403);
+    expect((await openSession(createRoom().id)).status).toBe(403);
+  });
+
+  // Regression: the socket id in the URL ended up in proxy and access logs.
+  it("no longer accepts the socket id in place of a session", async () => {
+    joinRoom();
+    const filename = await upload();
+
+    expect((await get(filename)).status).toBe(404);
+    expect((await get(filename, undefined, `?socketId=${SOCKET_ID}`)).status).toBe(404);
+  });
+
+  it("refuses a tampered cookie", async () => {
+    joinRoom();
+    const filename = await upload();
+    const cookie = await sessionCookie();
+    const flipped = cookie.endsWith("A") ? `${cookie.slice(0, -1)}B` : `${cookie.slice(0, -1)}A`;
+
+    expect((await get(filename, flipped)).status).toBe(404);
+  });
+
+  it("refuses another room's cookie", async () => {
+    joinRoom();
+    const filename = await upload();
+    const imageRoom = room;
+    joinRoom();
+    const otherCookie = await sessionCookie();
+    removeParticipant(room.id, SOCKET_ID);
+    room = imageRoom;
+    addParticipant(room.id, SOCKET_ID, "Ana");
+
+    expect((await get(filename, otherCookie)).status).toBe(404);
+  });
+
+  it("refuses an expired cookie", async () => {
+    joinRoom();
+    const filename = await upload();
+    const cookie = await sessionCookie();
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 13 * 60 * 60 * 1000);
+    try {
+      expect((await get(filename, cookie)).status).toBe(404);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("ends access when the user leaves the room", async () => {
+    joinRoom();
+    const filename = await upload();
+    const cookie = await sessionCookie();
+    removeParticipant(room.id, SOCKET_ID);
+
+    expect((await get(filename, cookie)).status).toBe(404);
   });
 
   it("refuses a filename outside the allowlist even if the file exists", async () => {
@@ -271,7 +352,7 @@ describe("GET /rooms/:id/images/:filename", () => {
     await mkdir(path.join(uploadsDir, room.id), { recursive: true });
     await writeFile(path.join(uploadsDir, room.id, "aaaaaaaaaa.html"), "<script></script>");
 
-    expect((await get("aaaaaaaaaa.html")).status).toBe(404);
+    expect((await get("aaaaaaaaaa.html", await sessionCookie())).status).toBe(404);
   });
 
   it("encrypts a password-protected room's image at rest and decrypts it on read", async () => {
@@ -282,8 +363,10 @@ describe("GET /rooms/:id/images/:filename", () => {
     const onDisk = await readFile(path.join(uploadsDir, room.id, filename));
     expect(onDisk.includes(image)).toBe(false);
 
-    const res = await get(filename);
+    const res = await get(filename, await sessionCookie());
     expect(res.status).toBe(200);
+    // Decrypted images must stay out of the browser's disk cache.
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
     expect(Buffer.from(await res.arrayBuffer()).equals(image)).toBe(true);
   });
 });

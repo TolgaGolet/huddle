@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { isPollMessage } from "./protocol.js";
 import { addChatMessage, type PollMessage } from "./roomManager.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
 import { parsePollCreate, parsePollVote } from "./validation.js";
@@ -31,10 +32,9 @@ export function setupPolls(io: AppServer): void {
     });
 
     onRoom(socket, "poll-vote", parsePollVote, ({ roomId, room, participant }, { pollId, optionId }) => {
-      const entry = room.chatHistory.find((m) => m.id === pollId);
-      if (!entry || !("type" in entry) || entry.type !== "poll") return;
+      const poll = room.chatHistory.find((m) => m.id === pollId);
+      if (!poll || !isPollMessage(poll)) return;
 
-      const poll = entry as PollMessage;
       const option = poll.options.find((o) => o.id === optionId);
       if (!option) return;
 

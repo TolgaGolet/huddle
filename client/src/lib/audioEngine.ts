@@ -23,7 +23,7 @@
 /** Neutral gain multiplier. 100% in the UI maps to 1.0 (no boost). */
 const UNITY_GAIN = 1.0;
 
-export type AudioHealthListener = (needsGesture: boolean) => void;
+type AudioHealthListener = (needsGesture: boolean) => void;
 
 /**
  * Local analyser engine.
@@ -100,9 +100,10 @@ export class AudioEngine {
       try {
         await ctx.resume();
       } catch {
-        this.notifyHealth(true);
+        // Reported below: the context is still not running.
       }
     }
+    this.notifyHealth(ctx.state !== "running");
   }
 
   destroy() {

@@ -5,8 +5,8 @@ import { formatMessage } from "../lib/messageFormatter";
 import { avatarTextColor } from "../lib/avatarColor";
 import { hasReacted } from "../lib/reactions";
 import { formatTime } from "../lib/formatTime";
-import { roomImageUrl } from "../lib/imageUpload";
 import MessageEditor from "./MessageEditor";
+import RoomImage from "./RoomImage";
 
 /** Must keep a stable identity, or every message re-renders along with the list. */
 export interface MessageActions {
@@ -25,8 +25,6 @@ interface Props {
   msg: ChatMessage;
   isPinned: boolean;
   isEditing: boolean;
-  /** socket id, for authorizing image requests. */
-  localId: string;
   /** Stable identity, for "is this mine?" checks. */
   localUserId: string;
   actions: MessageActions;
@@ -34,7 +32,7 @@ interface Props {
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "👌"];
 
-function MessageItem({ msg, isPinned, isEditing, localId, localUserId, actions }: Props) {
+function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) {
   const reactions = msg.reactions || {};
   const reactionEntries = Object.entries(reactions).filter(([, users]) => users.length > 0);
   const formattedText = useMemo(() => formatMessage(msg.text), [msg.text]);
@@ -73,17 +71,19 @@ function MessageItem({ msg, isPinned, isEditing, localId, localUserId, actions }
           {msg.replyTo.imageUrl && (
             <button
               type="button"
-              onClick={() => actions.viewImage(roomImageUrl(msg.replyTo!.imageUrl!, localId))}
+              onClick={() => actions.viewImage(msg.replyTo!.imageUrl!)}
               className="shrink-0 cursor-zoom-in"
               title="View image"
             >
-              <img
-                src={roomImageUrl(msg.replyTo.imageUrl, localId)}
+              <RoomImage
+                src={msg.replyTo.imageUrl}
                 alt={`Sent by ${msg.replyTo.senderName}`}
                 className="h-8 w-8 rounded object-cover"
+                skeletonClassName="h-8 w-8 rounded"
                 loading="lazy"
-                // The quoted image may have been deleted since.
+                // The quoted image may have been deleted since; a retry can still bring it back.
                 onError={(e) => e.currentTarget.parentElement?.classList.add("hidden")}
+                onLoad={(e) => e.currentTarget.parentElement?.classList.remove("hidden")}
               />
             </button>
           )}
@@ -120,20 +120,24 @@ function MessageItem({ msg, isPinned, isEditing, localId, localUserId, actions }
         <>
           {msg.imageUrls?.length ? (
             <div className="mt-1 grid grid-cols-2 gap-1.5 max-w-sm">
-              {msg.imageUrls.map((url) => {
-                const imageUrl = roomImageUrl(url, localId);
-                return (
-                  <button
-                    key={url}
-                    type="button"
-                    onClick={() => actions.viewImage(imageUrl)}
-                    className="cursor-zoom-in"
-                    title="View image"
-                  >
-                    <img src={imageUrl} alt={`Sent by ${msg.senderName}`} className="rounded-lg max-h-48 w-full object-cover hover:brightness-90 transition-all" loading="lazy" onLoad={actions.imageLoaded} />
-                  </button>
-                );
-              })}
+              {msg.imageUrls.map((url) => (
+                <button
+                  key={url}
+                  type="button"
+                  onClick={() => actions.viewImage(url)}
+                  className="cursor-zoom-in"
+                  title="View image"
+                >
+                  <RoomImage
+                    src={url}
+                    alt={`Sent by ${msg.senderName}`}
+                    className="rounded-lg max-h-48 w-full object-cover hover:brightness-90 transition-all"
+                    skeletonClassName="h-32 w-full rounded-lg"
+                    loading="lazy"
+                    onLoad={actions.imageLoaded}
+                  />
+                </button>
+              ))}
             </div>
           ) : null}
           {isEditing ? (

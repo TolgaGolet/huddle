@@ -14,8 +14,6 @@ interface Props {
   socket: AppSocket | null;
   chatHistory: ChatEntry[];
   pinnedMessageId: string | null;
-  /** socket id, for authorizing image requests. */
-  localId: string;
   /** Stable identity, for "is this mine?" checks. */
   localUserId: string;
   isAtBottomRef: React.RefObject<boolean>;
@@ -30,7 +28,7 @@ interface ContextMenuState {
   y: number;
 }
 
-function MessageList({ socket, chatHistory, pinnedMessageId, localId, localUserId, isAtBottomRef, onReply, onFocusComposer }: Props) {
+function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBottomRef, onReply, onFocusComposer }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
@@ -262,7 +260,6 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localId, localUserI
                 msg={entry}
                 isPinned={entry.id === pinnedMessageId}
                 isEditing={entry.id === editingMessageId}
-                localId={localId}
                 localUserId={localUserId}
                 actions={actions}
               />

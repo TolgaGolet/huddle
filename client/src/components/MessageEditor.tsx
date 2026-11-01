@@ -34,8 +34,21 @@ export default function MessageEditor({ initialText, onSubmit, onCancel }: Props
           className="flex-1 px-2 py-1 rounded bg-gray-800 border border-indigo-500 text-base md:text-sm text-white focus:outline-none resize-none"
           autoFocus
         />
-        <button type="button" onClick={submit} disabled={tooLong} className="disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs text-white cursor-pointer transition-colors">Save</button>
-        <button type="button" onClick={onCancel} className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 cursor-pointer transition-colors">Cancel</button>
+        <button
+          type="button"
+          onClick={submit}
+          disabled={tooLong}
+          className="disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs text-white cursor-pointer transition-colors"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 cursor-pointer transition-colors"
+        >
+          Cancel
+        </button>
       </div>
       {tooLong && (
         <p role="alert" className="mt-1 text-xs text-red-400">Message is too long (max {MAX_CHAT_TEXT_LENGTH} characters).</p>

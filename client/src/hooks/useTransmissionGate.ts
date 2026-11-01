@@ -20,7 +20,7 @@ interface UseTransmissionGateOptions {
   localAnalyser: AnalyserNode | null;
   outboundStream: MediaStream | null;
   threshold: VoiceTransmissionThreshold;
-  manualThresholdDb?: number;
+  manualThresholdDb: number;
   isMuted: boolean;
 }
 
@@ -44,7 +44,7 @@ export function useTransmissionGate({
   localAnalyser,
   outboundStream,
   threshold,
-  manualThresholdDb = -36,
+  manualThresholdDb,
   isMuted,
 }: UseTransmissionGateOptions): { isTransmitting: boolean; gateStateRef: RefObject<GateState> } {
   // If threshold is 'off', gate is always considered open

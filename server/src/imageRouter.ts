@@ -1,9 +1,11 @@
 import { Router, type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import { resolveParticipant, type ChatEntry, type Room } from "./roomManager.js";
+import { isPollMessage } from "./protocol.js";
+import { getRoom, resolveParticipant, type ChatEntry, type Room } from "./roomManager.js";
 import { decryptFile, encryptFile, roomImageKey } from "./imageCrypto.js";
 import { IMAGE_EXTENSIONS, isAllowedImage, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_UPLOAD_BYTES, MAX_ROOM_IMAGE_BYTES } from "./limits.js";
 import { errorSummary } from "./errorLog.js";
@@ -14,9 +16,13 @@ export const uploadsDir = path.resolve(process.cwd(), "uploads");
 // impossible while every generated filename can be served.
 const filenamePattern = /^[a-z0-9_-]{10}\.(jpg|jpeg|png|gif|webp|bmp|avif|heic|heif)$/;
 
+function roomImagesPath(roomId: string): string {
+  return `/api/rooms/${roomId}/images`;
+}
+
 /** True if `url` is the served path of an image uploaded to this room. */
 export function isRoomImageUrl(roomId: string, url: string): boolean {
-  const prefix = `/api/rooms/${roomId}/images/`;
+  const prefix = `${roomImagesPath(roomId)}/`;
   return url.startsWith(prefix) && filenamePattern.test(url.slice(prefix.length));
 }
 
@@ -29,26 +35,43 @@ const upload = multer({
   },
 });
 
-/** The requester's room, if their socket is a participant of `roomId`. */
-function authorizedRoom(roomId: string, socketId: string | undefined) {
-  const ctx = socketId ? resolveParticipant(socketId) : null;
-  return ctx?.roomId === roomId ? ctx.room : undefined;
-}
-
-function socketId(req: { headers: Record<string, string | string[] | undefined>; query: Record<string, unknown> }): string | undefined {
-  const header = req.headers["x-socket-id"];
-  return (Array.isArray(header) ? header[0] : header) || (typeof req.query.socketId === "string" ? req.query.socketId : undefined);
-}
-
 function param(value: string | string[]): string {
   return Array.isArray(value) ? value[0] : value;
 }
 
-/** The requester's room, or undefined after sending the 403. */
-function requireRoom(req: Request, res: Response) {
-  const room = authorizedRoom(param(req.params.id), socketId(req));
-  if (!room) res.status(403).json({ error: "Not authorized for this room" });
-  return room;
+/** The requester's participant context in the route's room, or undefined after sending the 403. */
+function requireParticipant(req: Request, res: Response) {
+  const socketId = req.get("x-socket-id");
+  const ctx = socketId ? resolveParticipant(socketId) : null;
+  if (ctx?.roomId === param(req.params.id)) return ctx;
+  res.status(403).json({ error: "Not authorized for this room" });
+  return undefined;
+}
+
+// An <img> can't send headers, and a token in its URL would end up in access
+// logs, so image reads are authorized by a cookie scoped to the room's images.
+const IMAGE_COOKIE = "huddle_images";
+const IMAGE_COOKIE_PATTERN = new RegExp(String.raw`(?:^|;\s*)${IMAGE_COOKIE}=([^;]+)`);
+const IMAGE_SESSION_MS = 12 * 60 * 60 * 1000;
+// Rooms don't survive a restart either, so neither need the sessions.
+const imageSessionSecret = randomBytes(32);
+
+function signImageSession(roomId: string, userId: string, expiry: string): Buffer {
+  return createHmac("sha256", imageSessionSecret).update(`${roomId}.${userId}.${expiry}`).digest();
+}
+
+/** The room, if the request's cookie is valid and its user is still a participant. */
+function roomFromImageCookie(req: Request, roomId: string): Room | undefined {
+  const value = req.headers.cookie?.match(IMAGE_COOKIE_PATTERN)?.[1];
+  const [userId, expiry, signature] = value?.split(".") ?? [];
+  if (!signature || !(Number(expiry) > Date.now())) return undefined;
+  const expected = signImageSession(roomId, userId, expiry);
+  const actual = Buffer.from(signature, "base64url");
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return undefined;
+  const room = getRoom(roomId);
+  if (!room) return undefined;
+  // Checked on every read so that leaving the room ends access.
+  return [...room.participants.values()].some((p) => p.userId === userId) ? room : undefined;
 }
 
 const QUOTA_ERROR = "This room has reached its image storage limit";
@@ -65,7 +88,7 @@ let inFlightUploadBytes = 0;
  * response closes, however it ended, only the bytes actually stored stay counted.
  */
 const rejectEarly: RequestHandler = (req, res, next) => {
-  const room = requireRoom(req, res);
+  const room = requireParticipant(req, res)?.room;
   if (!room) return;
   const declaredBytes = Number(req.headers["content-length"]);
   if (!Number.isSafeInteger(declaredBytes) || declaredBytes <= 0) {
@@ -99,7 +122,7 @@ export const imageRouter = Router();
 imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IMAGES_PER_MESSAGE), async (req, res) => {
   // Checked again: a slow upload can outlast the sender's membership or the
   // room itself, and writing then would leave files no cleanup will remove.
-  const room = requireRoom(req, res);
+  const room = requireParticipant(req, res)?.room;
   if (!room) return;
   const roomId = param(req.params.id);
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
@@ -120,7 +143,7 @@ imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IM
       await writeFile(path.join(roomDir, filename), body, { flag: "wx" });
       room.imageSizes.set(filename, file.size);
       res.locals.storedBytes += file.size;
-      urls.push(`/api/rooms/${roomId}/images/${filename}`);
+      urls.push(`${roomImagesPath(roomId)}/${filename}`);
     }
     res.json({ urls });
   } catch {
@@ -128,10 +151,27 @@ imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IM
   }
 });
 
+imageRouter.post("/rooms/:id/image-session", (req, res) => {
+  const ctx = requireParticipant(req, res);
+  if (!ctx) return;
+  const { roomId } = ctx;
+  const { userId } = ctx.participant;
+  const expiry = String(Date.now() + IMAGE_SESSION_MS);
+  const signature = signImageSession(roomId, userId, expiry).toString("base64url");
+  res.cookie(IMAGE_COOKIE, `${userId}.${expiry}.${signature}`, {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: process.env.NODE_ENV === "production",
+    path: roomImagesPath(roomId),
+    maxAge: IMAGE_SESSION_MS,
+  });
+  res.status(204).end();
+});
+
 imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
   const roomId = param(req.params.id);
   const filename = param(req.params.filename);
-  const room = authorizedRoom(roomId, socketId(req));
+  const room = roomFromImageCookie(req, roomId);
   if (!room || !filenamePattern.test(filename)) {
     res.status(404).end();
     return;
@@ -148,7 +188,11 @@ imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
     const ext = path.extname(filename).slice(1);
     const contentType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "heic" || ext === "heif" ? "image/heic" : `image/${ext}`;
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Cache-Control", "private, no-store");
+    // Revalidated rather than cached outright, so that leaving the room or
+    // deleting the message also ends access to a cached copy. A password room's
+    // images stay out of the browser's disk cache, where they would be stored
+    // decrypted.
+    res.setHeader("Cache-Control", key ? "private, no-store" : "private, no-cache");
     res.send(body);
   } catch {
     res.status(404).end();
@@ -160,8 +204,8 @@ imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
  * an existing room image URL, so one still used by another message stays.
  */
 export function releaseMessageImages(room: Room, entry: ChatEntry): void {
-  if ("type" in entry || !entry.imageUrls) return;
-  const stillUsed = new Set(room.chatHistory.flatMap((m) => ("type" in m ? [] : m.imageUrls ?? [])));
+  if (isPollMessage(entry) || !entry.imageUrls) return;
+  const stillUsed = new Set(room.chatHistory.flatMap((m) => (isPollMessage(m) ? [] : m.imageUrls ?? [])));
   for (const url of entry.imageUrls) {
     if (stillUsed.has(url)) continue;
     const filename = path.basename(url);

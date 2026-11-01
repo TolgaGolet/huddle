@@ -6,7 +6,8 @@ import FormattingToolbar, { formatForShortcut, formatSelection, restoreSelection
 import EmojiPicker from "./EmojiPicker";
 import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
-import { isImageFile, roomImageUrl, uploadImages } from "../lib/imageUpload";
+import RoomImage from "./RoomImage";
+import { isImageFile, uploadImages } from "../lib/imageUpload";
 import { buildReplyTo } from "../lib/chatReply";
 import { createSendLock, isSameConnection, replyToSend } from "../lib/sendLock";
 
@@ -18,8 +19,6 @@ export interface ComposerHandle {
 interface Props {
   ref: React.Ref<ComposerHandle>;
   socket: AppSocket | null;
-  /** socket id, for authorizing image requests. */
-  localId: string;
   roomId: string;
   typingUsers: string[];
   notifyTyping: () => void;
@@ -59,7 +58,7 @@ const SENDING_TOO_FAST_ERROR = "You're sending messages too fast.";
 const SERVER_LIMIT_ERROR = "You're doing that too fast.";
 const SERVER_LIMIT_ERROR_MS = 4000;
 
-export default function Composer({ ref, socket, localId, roomId, typingUsers, notifyTyping, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
+export default function Composer({ ref, socket, roomId, typingUsers, notifyTyping, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
   const [text, setText] = useState("");
   const [openPopover, setOpenPopover] = useState<Popover | null>(null);
   // Read after an upload, when the `replyingTo` a send captured may be outdated.
@@ -67,6 +66,12 @@ export default function Composer({ ref, socket, localId, roomId, typingUsers, no
   replyingToRef.current = replyingTo;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  // Read on unmount, when an unsent draft's preview URLs must still be released.
+  const pendingImagesRef = useRef(pendingImages);
+  pendingImagesRef.current = pendingImages;
+  useEffect(() => () => {
+    pendingImagesRef.current.forEach((image) => URL.revokeObjectURL(image.previewUrl));
+  }, []);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [sendLock] = useState(createSendLock);
   // Same limit as the server, checked first: the draft is cleared on send, so a
@@ -298,10 +303,11 @@ export default function Composer({ ref, socket, localId, roomId, typingUsers, no
           <div className="flex-1 min-w-0">
             <span className="text-xs text-indigo-400 font-medium">{replyingTo.senderName}</span>
             {replyingTo.imageUrls?.[0] ? (
-              <img
-                src={roomImageUrl(replyingTo.imageUrls[0], localId)}
+              <RoomImage
+                src={replyingTo.imageUrls[0]}
                 alt={`Sent by ${replyingTo.senderName}`}
                 className="mt-1 h-8 w-8 rounded object-cover"
+                skeletonClassName="mt-1 h-8 w-8 rounded"
               />
             ) : (
               <p className="text-xs text-gray-500 truncate">{replyingTo.text || "[Image]"}</p>
@@ -347,7 +353,16 @@ export default function Composer({ ref, socket, localId, roomId, typingUsers, no
         <div className="flex gap-2 overflow-x-auto">
           {pendingImages.map((image) => <div key={image.id} className="relative shrink-0 rounded-md border border-gray-600 bg-gray-900/70 p-1">
             <img src={image.previewUrl} alt={image.file.name} className="h-16 w-16 rounded object-cover" />
-            <button type="button" onClick={() => removeImage(image.id)} disabled={sending} className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-900 border border-gray-600 p-0.5 text-gray-300 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" title="Remove image" aria-label={`Remove ${image.file.name}`}><X size={11} /></button>
+            <button
+              type="button"
+              onClick={() => removeImage(image.id)}
+              disabled={sending}
+              className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-900 border border-gray-600 p-0.5 text-gray-300 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Remove image"
+              aria-label={`Remove ${image.file.name}`}
+            >
+              <X size={11} />
+            </button>
           </div>)}
         </div>
       </div>}
@@ -359,7 +374,13 @@ export default function Composer({ ref, socket, localId, roomId, typingUsers, no
         <div className="flex flex-wrap items-center justify-between">
           <FormattingToolbar textareaRef={textareaRef} text={text} setText={setText} />
           <div className="flex items-center gap-0.5 pointer-coarse:gap-0">
-            <button type="button" onClick={() => fileInputRef.current?.click()} className="touch-target p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer" title="Send images" aria-label="Send images">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="touch-target p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
+              title="Send images"
+              aria-label="Send images"
+            >
               <ImageIcon size={14} />
             </button>
             <button

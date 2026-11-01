@@ -6,6 +6,32 @@ Huddle is a vibe coded lightweight Discord alternative for voice and text chatti
 ![screenshot](https://github.com/TolgaGolet/huddle/blob/main/screenshots/Screenshot_2.png)
 ![screenshot](https://github.com/TolgaGolet/huddle/blob/main/screenshots/Screenshot_3.png)
 
+## Getting started
+
+```sh
+npm install
+npm run dev     # server on :3001, client on http://localhost:4173
+```
+
+For production:
+
+```sh
+npm run build
+npm start       # serves the API, Socket.IO and the built client
+```
+
+## Configuration
+
+The server reads these from `server/.env`:
+
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | Port to listen on (default `3001`). |
+| `NODE_ENV` | Set to `production` in production. |
+| `GIPHY_API_KEY` | Enables the GIF picker. |
+
+The client reads `VITE_ICE_SERVERS` at build time; see below.
+
 ## Voice connectivity (STUN / TURN)
 
 Huddle uses peer-to-peer WebRTC. ICE servers are configured at **client build
@@ -55,5 +81,6 @@ stopped, and check the selected ICE candidate pair (host/srflx/relay).
 ## Tests
 
 ```sh
-npm run test -w client   # unit tests (directional audio watchdog)
+npm run test -w client   # client unit tests
+npm run test -w server   # server unit and integration tests
 ```

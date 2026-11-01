@@ -11,6 +11,7 @@ export const IP_LIMITS = {
   createRoom: perMinute(20),
   lookupRoom: perMinute(60),
   uploadImages: perMinute(30),
+  imageSession: perMinute(60),
   giphy: perMinute(60),
   /** Wrong passwords per room and IP. Per socket would reset on every new connection. */
   passwordGuesses: perMinute(12),

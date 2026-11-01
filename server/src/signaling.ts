@@ -16,8 +16,6 @@ import { MAX_PARTICIPANTS } from "./limits.js";
 import { on, onRelay, onRoom, type AppServer } from "./socketRoute.js";
 import { noPayload, parseJoinRoom, parseMute } from "./validation.js";
 
-const roomScreenSharer = new Map<string, string>();
-
 export function setupSignaling(io: AppServer, proxyHops = 0): void {
   const passwordGuesses = createIpLimiter(IP_LIMITS.passwordGuesses);
 
@@ -26,18 +24,24 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       socket.emit("error", { code: JOIN_ERROR.RATE_LIMITED, message: "Too many attempts to join, please try again shortly" });
     };
 
+    // Removes a participant and tells the others; their share ends with them.
+    const removeAndAnnounce = (roomId: string, id: string) => {
+      const room = getRoom(roomId);
+      if (room?.screenSharerId === id) {
+        room.screenSharerId = null;
+        socket.to(roomId).emit("screen-share-stopped", { id });
+      }
+      removeParticipant(roomId, id);
+      socket.to(roomId).emit("participant-left", { id });
+    };
+
     // Remove this socket from the room it has joined (if any) and tell the
     // others. Used on disconnect, and by a successful join-room into another
     // room so the socket never leaves a ghost participant behind.
     const leaveCurrentRoom = () => {
       const roomId = socketRoomMap.get(socket.id);
       if (!roomId) return;
-      if (roomScreenSharer.get(roomId) === socket.id) {
-        roomScreenSharer.delete(roomId);
-        socket.to(roomId).emit("screen-share-stopped", { id: socket.id });
-      }
-      removeParticipant(roomId, socket.id);
-      socket.to(roomId).emit("participant-left", { id: socket.id });
+      removeAndAnnounce(roomId, socket.id);
       void socket.leave(roomId);
       // The room lingers for ROOM_GRACE_MS after the last participant leaves
       // (in case everyone is reconnecting after a shared network blip); its
@@ -82,12 +86,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       for (const p of room.participants.values()) {
         const nameHeldByDeadSocket = p.name.toLowerCase() === lowerName && !io.sockets.sockets.has(p.id);
         if (p.userId !== userId && !nameHeldByDeadSocket) continue;
-        if (roomScreenSharer.get(roomId) === p.id) {
-          roomScreenSharer.delete(roomId);
-          socket.to(roomId).emit("screen-share-stopped", { id: p.id });
-        }
-        removeParticipant(roomId, p.id);
-        socket.to(roomId).emit("participant-left", { id: p.id });
+        removeAndAnnounce(roomId, p.id);
         io.sockets.sockets.get(p.id)?.disconnect(true);
       }
 
@@ -120,7 +119,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
         participants: existingParticipants,
         chatHistory: room.chatHistory,
         pinnedMessageId: room.pinnedMessageId,
-        screenSharer: roomScreenSharer.get(roomId) || null,
+        screenSharer: room.screenSharerId,
       });
 
       socket.to(roomId).emit("participant-joined", participant);
@@ -139,14 +138,14 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       socket.to(roomId).emit("participant-muted", { id: socket.id, isMuted });
     });
 
-    onRoom(socket, "screen-share-started", noPayload, ({ roomId }) => {
-      roomScreenSharer.set(roomId, socket.id);
+    onRoom(socket, "screen-share-started", noPayload, ({ roomId, room }) => {
+      room.screenSharerId = socket.id;
       socket.to(roomId).emit("screen-share-started", { id: socket.id });
     });
 
-    onRoom(socket, "screen-share-stopped", noPayload, ({ roomId }) => {
-      if (roomScreenSharer.get(roomId) === socket.id) {
-        roomScreenSharer.delete(roomId);
+    onRoom(socket, "screen-share-stopped", noPayload, ({ roomId, room }) => {
+      if (room.screenSharerId === socket.id) {
+        room.screenSharerId = null;
       }
       socket.to(roomId).emit("screen-share-stopped", { id: socket.id });
     });

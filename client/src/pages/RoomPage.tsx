@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
-import { Settings, LogOut, Copy, Check, AlertTriangle, Volume2, ChevronDown, Link } from "lucide-react";
+import { Settings, LogOut, Copy, Check, AlertTriangle, Volume2, ChevronDown, Link, X } from "lucide-react";
+import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import { useSocket } from "../hooks/useSocket";
 import { useWebRTC } from "../hooks/useWebRTC";
 import { useMediaDevices } from "../hooks/useMediaDevices";
@@ -17,6 +18,7 @@ import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS } from "../types";
 import { errorName, huddleLog } from "../lib/huddleLog";
+import { ImageSessionContext } from "../lib/imageSessionContext";
 import { resyncCallStateWhenLimited } from "../lib/callStateResync";
 import { stopStreams } from "../lib/micStreams";
 import { playMuteSound, playUnmuteSound } from "../lib/notificationSounds";
@@ -29,7 +31,7 @@ export default function RoomPage() {
   const name = state?.name || "Anonymous";
   const password = state?.password;
 
-  const { socket, userId, joinedSocketId, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
+  const { socket, userId, imageSession, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
     roomId: roomId || "",
     name,
     password,
@@ -55,8 +57,8 @@ export default function RoomPage() {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [peerVolumes, setPeerVolumes] = useState<Map<string, number>>(new Map());
-  const [copied, setCopied] = useState(false);
-  const [linkCopied, setLinkCopied] = useState(false);
+  const { status: roomIdCopy, copy: copyRoomId } = useCopyFeedback();
+  const { status: linkCopy, copy: copyLink } = useCopyFeedback();
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [participantsOpen, setParticipantsOpen] = useState(false);
 
@@ -300,17 +302,12 @@ export default function RoomPage() {
 
   // Speaking indicator for local participant should illuminate ONLY if voice is actively
   // being transmitted to other users (unmuted AND passing transmission threshold).
-  const speaking = useRef(new Set<string>()).current;
-  speaking.clear();
-  for (const id of rawSpeaking) {
-    if (id === (socket?.id || "local")) {
-      if (isTransmitting && !isMuted) {
-        speaking.add(id);
-      }
-    } else {
-      speaking.add(id);
-    }
-  }
+  const localId = socket?.id || "local";
+  const localIsAudible = isTransmitting && !isMuted;
+  const speaking = useMemo(
+    () => new Set([...rawSpeaking].filter((id) => id !== localId || localIsAudible)),
+    [rawSpeaking, localId, localIsAudible],
+  );
 
   const handleToggleMute = useCallback(() => {
     setIsMuted((prev) => {
@@ -344,20 +341,15 @@ export default function RoomPage() {
   );
 
   const handleCopyRoomId = useCallback(() => {
-    if (!roomId) return;
-    navigator.clipboard.writeText(roomId);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [roomId]);
+    if (roomId) void copyRoomId(roomId);
+  }, [roomId, copyRoomId]);
 
   const handleCopyLink = useCallback(() => {
-    navigator.clipboard.writeText(globalThis.location.href);
-    setLinkCopied(true);
-    setTimeout(() => setLinkCopied(false), 2000);
-  }, []);
+    void copyLink(globalThis.location.href);
+  }, [copyLink]);
 
   const localParticipant: Participant = {
-    id: socket?.id || "local",
+    id: localId,
     userId: userId ?? "",
     name,
     isMuted,
@@ -375,7 +367,7 @@ export default function RoomPage() {
     if (state !== "connected" && state !== "closed") connecting.add(peerId);
   }
   const anyRemoteConnecting = connecting.size > 0;
-  if (anyRemoteConnecting) connecting.add(socket?.id || "local");
+  if (anyRemoteConnecting) connecting.add(localId);
 
   const speakingNames = allParticipants.filter((p) => speaking.has(p.id) && !p.isMuted).map((p) => p.name);
 
@@ -386,6 +378,8 @@ export default function RoomPage() {
   if (!roomId || !state?.name) {
     return null;
   }
+
+  const linkLabel = linkCopy === "failed" ? "Couldn't copy room link" : "Copy room link";
 
   const voiceControlsProps = {
     isMuted,
@@ -439,20 +433,24 @@ export default function RoomPage() {
           <button
             onClick={handleCopyRoomId}
             className="touch-target flex items-center gap-1.5 min-w-0 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
-            title="Copy room ID"
+            title={roomIdCopy === "failed" ? "Couldn't copy room ID" : "Copy room ID"}
           >
             <span className="font-mono truncate">{roomId}</span>
-            {copied ? <Check size={12} className="shrink-0 text-green-400" /> : <Copy size={12} className="shrink-0" />}
+            {roomIdCopy === "copied" && <Check size={12} className="shrink-0 text-green-400" />}
+            {roomIdCopy === "failed" && <X size={12} className="shrink-0 text-red-400" />}
+            {roomIdCopy === "idle" && <Copy size={12} className="shrink-0" />}
           </button>
           <button
             onClick={handleCopyLink}
             className="touch-target flex items-center gap-1.5 shrink-0 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
-            title="Copy room link"
-            aria-label="Copy room link"
+            title={linkLabel}
+            aria-label={linkLabel}
           >
             <span className="hidden sm:inline">Copy Link</span>
-            {linkCopied ? <Check size={12} className="text-green-400" /> : <Link size={12} className="sm:hidden" />}
-            {!linkCopied && <Copy size={12} className="hidden sm:block" />}
+            {linkCopy === "copied" && <Check size={12} className="text-green-400" />}
+            {linkCopy === "failed" && <X size={12} className="text-red-400" />}
+            {linkCopy === "idle" && <Link size={12} className="sm:hidden" />}
+            {linkCopy === "idle" && <Copy size={12} className="hidden sm:block" />}
           </button>
           {!connected && (
             <span className="truncate text-xs text-amber-400 animate-pulse">Connecting...</span>
@@ -505,7 +503,7 @@ export default function RoomPage() {
           >
             <ParticipantsList
               participants={allParticipants}
-              localId={socket?.id || "local"}
+              localId={localId}
               speaking={speaking}
               peerVolumes={peerVolumes}
               onSetPeerVolume={handleSetPeerVolume}
@@ -533,7 +531,17 @@ export default function RoomPage() {
                 : "flex-1 min-h-0 flex flex-col"
             }
           >
-            <ChatPanel socket={socket} chatHistory={chatHistory} pinnedMessageId={pinnedMessageId} localId={joinedSocketId ?? "local"} localUserId={userId ?? ""} roomId={roomId} typingUsers={typingUsers} notifyTyping={notifyTyping} />
+            <ImageSessionContext value={imageSession}>
+              <ChatPanel
+                socket={socket}
+                chatHistory={chatHistory}
+                pinnedMessageId={pinnedMessageId}
+                localUserId={userId ?? ""}
+                roomId={roomId}
+                typingUsers={typingUsers}
+                notifyTyping={notifyTyping}
+              />
+            </ImageSessionContext>
           </div>
         </main>
       </div>

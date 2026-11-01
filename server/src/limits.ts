@@ -10,6 +10,9 @@
  */
 export const MAX_PARTICIPANTS = 6;
 
+/** Chat entries kept per room; older ones are dropped on both sides. */
+export const MAX_CHAT_HISTORY = 200;
+
 export const MAX_NAME_LENGTH = 32;
 export const MAX_CHAT_TEXT_LENGTH = 4000;
 export const MAX_POLL_QUESTION_LENGTH = 200;

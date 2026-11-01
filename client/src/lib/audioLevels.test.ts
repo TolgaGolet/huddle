@@ -1,14 +1,30 @@
 import { describe, it, expect } from "vitest";
 import {
   closeGate,
+  getThresholdDb,
   INITIAL_GATE_STATE,
+  MANUAL_THRESHOLD_MAX_DB,
+  MANUAL_THRESHOLD_MIN_DB,
   NOISE_FLOOR_MAX_DB,
   NOISE_FLOOR_MIN_DB,
+  normalizeManualThresholdDb,
   RELEASE_MS,
   stepGate,
   stepNoiseFloor,
   type GateState,
 } from "./audioLevels";
+
+describe("manual threshold", () => {
+  it("normalizes to whole dB within the slider's range", () => {
+    expect(normalizeManualThresholdDb(-100)).toBe(MANUAL_THRESHOLD_MIN_DB);
+    expect(normalizeManualThresholdDb(0)).toBe(MANUAL_THRESHOLD_MAX_DB);
+    expect(normalizeManualThresholdDb(-30.4)).toBe(-30);
+  });
+
+  it("derives the gate limits from the threshold", () => {
+    expect(getThresholdDb("manual", -30)).toEqual({ openDb: -30, closeDb: -35 });
+  });
+});
 
 const LIMITS = { openDb: -36, closeDb: -41 };
 const LOUD = -20;

@@ -1,12 +1,50 @@
 import { isAllowedImage } from "../types";
+import { errorName, huddleWarn } from "./huddleLog";
+
+/** Well inside the server's 12-hour session, so an open tab never lapses. */
+export const IMAGE_SESSION_RENEW_MS = 6 * 60 * 60 * 1000;
+export const IMAGE_SESSION_RETRY_MS = 30 * 1000;
 
 export function isImageFile(file: File): boolean {
   return isAllowedImage(file.name.split(".").pop()?.toLowerCase() ?? "", file.type);
 }
 
-/** An uploaded image's URL, authorized for this socket. */
-export function roomImageUrl(url: string, socketId: string): string {
-  return `${url}?socketId=${encodeURIComponent(socketId)}`;
+/** Sets the cookie that authorizes this room's image requests. Call after joining. */
+export async function openImageSession(roomId: string, socketId: string): Promise<void> {
+  const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/image-session`, {
+    method: "POST",
+    headers: { "X-Socket-Id": socketId },
+  });
+  if (!response.ok) throw new Error("Failed to open image session");
+}
+
+/**
+ * Opens the image session and keeps it open until the returned function is
+ * called, after which `onSettled` never fires. `onSettled` fires on each success
+ * and after a failed first attempt, so images show as broken instead of loading.
+ */
+export function keepImageSessionOpen(roomId: string, socketId: string, onSettled: () => void): () => void {
+  let stopped = false;
+  let firstAttempt = true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const open = async () => {
+    let opened = true;
+    try {
+      await openImageSession(roomId, socketId);
+    } catch (err) {
+      opened = false;
+      huddleWarn("socket", { event: "image-session-failed", error: errorName(err) });
+    }
+    if (stopped) return;
+    timer = setTimeout(() => void open(), opened ? IMAGE_SESSION_RENEW_MS : IMAGE_SESSION_RETRY_MS);
+    if (opened || firstAttempt) onSettled();
+    firstAttempt = false;
+  };
+  void open();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
 }
 
 async function compressImage(file: File): Promise<Blob> {
