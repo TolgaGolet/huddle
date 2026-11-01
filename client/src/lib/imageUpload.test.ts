@@ -96,6 +96,14 @@ describe("uploadImages", () => {
     expect(init.headers).toEqual({ "X-Participant-Token": "tok" });
   });
 
+  // Regression: a stalled upload froze the composer for as long as the browser allowed.
+  it("gives the request a timeout", async () => {
+    const fetchMock = respondWith(200, { urls: [] });
+
+    await uploadImages("r", "tok", [png()]);
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("rejects a response whose urls are not all strings", async () => {
     respondWith(200, { urls: ["/ok", 1] });
     await expect(uploadImages("r", "tok", [png()])).rejects.toThrow("Invalid image upload response");

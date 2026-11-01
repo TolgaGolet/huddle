@@ -5,7 +5,7 @@ import { isPollMessage } from "../types";
 import { avatarTextColor } from "../lib/avatarColor";
 import { isEditable } from "../lib/messageEdit";
 import PollDisplay from "./PollDisplay";
-import MessageItem, { type MessageActions } from "./MessageItem";
+import MessageItem, { HIGHLIGHT_CLASS, type MessageActions } from "./MessageItem";
 import MessageContextMenu from "./MessageContextMenu";
 import ImageLightbox from "./ImageLightbox";
 import DeleteMessageDialog from "./DeleteMessageDialog";
@@ -34,12 +34,16 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
   const messagesContentRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const prevHistoryLenRef = useRef(chatHistory.length);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(highlightTimerRef.current), []);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<{ url: string; senderName: string } | null>(null);
+  const viewImage = useCallback((url: string, senderName: string) => setLightbox({ url, senderName }), []);
 
   const pinnedMessage = useMemo(
     () => chatHistory.find((entry) => entry.id === pinnedMessageId) ?? null,
@@ -101,8 +105,9 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
     const el = messageRefs.current.get(messageId);
     if (el) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.classList.add("bg-indigo-500/10");
-      setTimeout(() => el.classList.remove("bg-indigo-500/10"), 1500);
+      setHighlightedId(messageId);
+      clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = setTimeout(() => setHighlightedId(null), 1500);
     }
   }, []);
 
@@ -195,11 +200,11 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
     reply: onReply,
     openMenu: openContextMenu,
     scrollTo: scrollToMessage,
-    viewImage: setLightboxUrl,
+    viewImage,
     imageLoaded: scrollPinnedToBottom,
     submitEdit,
     cancelEdit,
-  }), [setMessageRef, handleReaction, onReply, openContextMenu, scrollToMessage, scrollPinnedToBottom, submitEdit, cancelEdit]);
+  }), [setMessageRef, handleReaction, onReply, openContextMenu, scrollToMessage, viewImage, scrollPinnedToBottom, submitEdit, cancelEdit]);
 
   return (
     <div className="relative flex-1 min-h-0 flex flex-col">
@@ -245,7 +250,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
           )}
           {chatHistory.map((entry) =>
             isPollMessage(entry) ? (
-              <div key={entry.id} ref={(el) => setMessageRef(entry.id, el)}>
+              <div key={entry.id} ref={(el) => setMessageRef(entry.id, el)} className={`rounded-xl transition-colors ${entry.id === highlightedId ? HIGHLIGHT_CLASS : ""}`}>
                 <PollDisplay
                   poll={entry}
                   isPinned={entry.id === pinnedMessageId}
@@ -260,6 +265,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
                 msg={entry}
                 isPinned={entry.id === pinnedMessageId}
                 isEditing={entry.id === editingMessageId}
+                isHighlighted={entry.id === highlightedId}
                 localUserId={localUserId}
                 actions={actions}
               />
@@ -303,7 +309,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
       )}
 
       {/* Image lightbox */}
-      {lightboxUrl && <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />}
+      {lightbox && <ImageLightbox url={lightbox.url} senderName={lightbox.senderName} onClose={() => setLightbox(null)} />}
 
       {/* Delete confirmation dialog */}
       {confirmDeleteId && (

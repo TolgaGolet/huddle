@@ -76,6 +76,17 @@ describe("giphyRouter", () => {
     expect(upstream).toHaveBeenCalledTimes(2);
   });
 
+  // Regression: a revoked key looked like user complaints with an empty server log.
+  it("logs an upstream failure with its status, and never the API key", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    upstream.mockResolvedValueOnce(new Response("{}", { status: 401 }));
+
+    expect((await get("/trending")).status).toBe(502);
+    expect(errorSpy).toHaveBeenCalledWith("[giphy] upstream failed", expect.objectContaining({ name: "GiphyUpstreamError", upstreamStatus: 401 }));
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("test-key");
+    errorSpy.mockRestore();
+  });
+
   it("returns 502 when the upstream call times out", async () => {
     upstream.mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"));
 

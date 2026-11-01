@@ -14,6 +14,12 @@ describe("lookupRoom", () => {
     await expect(lookupRoom("r")).resolves.toEqual(info);
   });
 
+  it("encodes the room id, which is typed by the user", async () => {
+    respondWith(200, {});
+    await lookupRoom("a/b?c");
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("/api/rooms/a%2Fb%3Fc");
+  });
+
   it("reports a rate limit as an error rather than a missing room", async () => {
     respondWith(429, { error: "Too many requests, please try again shortly" });
     await expect(lookupRoom("r")).resolves.toEqual({ error: "Too many requests, please try again shortly" });

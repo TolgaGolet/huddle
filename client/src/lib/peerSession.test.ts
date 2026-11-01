@@ -105,6 +105,24 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("retry candidates", () => {
+  it("keeps only the newest candidates across repeated failures", async () => {
+    const { pc, session } = setup();
+    pc.remoteDescription = OFFER;
+    pc.addIceCandidate.mockRejectedValue(new Error("stale"));
+    for (let i = 0; i < 150; i++) await session.addCandidate({ candidate: `c${i}` });
+    pc.addIceCandidate.mockClear();
+    pc.addIceCandidate.mockResolvedValue(undefined);
+
+    await session.handleOffer(OFFER, POLITE_SELF);
+
+    const retried = pc.addIceCandidate.mock.calls.map(([c]) => (c as RTCIceCandidateInit).candidate);
+    expect(retried).toHaveLength(100);
+    expect(retried[0]).toBe("c50");
+    expect(retried.at(-1)).toBe("c149");
+  });
+});
+
 describe("negotiation", () => {
   it("accepts a non-colliding offer and emits the answer", async () => {
     const { pc, host, session } = setup();

@@ -1,4 +1,4 @@
-import { DirectionalAudioWatchdog, type Direction } from "./audioWatchdog";
+import { describeStats, DirectionalAudioWatchdog, readAudioStats, type Direction } from "./audioWatchdog";
 import { errorName, huddleLog, huddleWarn } from "./huddleLog";
 import { isPoliteFor, resolveInboundOffer } from "./negotiation";
 import type { ClientToServerEvents } from "../types";
@@ -7,6 +7,7 @@ const MAX_RESTARTS = 3;
 const MAX_AUDIO_RECOVERIES = 2;
 const IGNORED_OFFER_RECOVERY_MS = 5000;
 const DISCONNECT_ESCALATION_MS = 8000;
+const MAX_RETRY_CANDIDATES = 100;
 
 // Structured stats log, development only.
 //
@@ -15,7 +16,7 @@ const DISCONNECT_ESCALATION_MS = 8000;
 // 5s sampler floods the Firefox console. Skip the periodic stats log entirely in
 // Firefox; the event-driven watchdog / negotiation logs remain active everywhere.
 const LOG_PERIODIC_STATS =
-  (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true &&
+  import.meta.env.DEV &&
   !(typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent));
 
 /** What a session needs from its owner; React state and socket wiring stay in `useWebRTC`. */
@@ -49,6 +50,11 @@ export class PeerSession {
   // restart while the old remote description was still set). They are retried
   // once the peer returns to a stable signaling state.
   private retryCandidates: RTCIceCandidateInit[] = [];
+  private queueRetryCandidate(candidate: RTCIceCandidateInit): void {
+    this.retryCandidates.push(candidate);
+    // Repeated ICE restarts must not grow this forever; the oldest are the stalest.
+    if (this.retryCandidates.length > MAX_RETRY_CANDIDATES) this.retryCandidates.shift();
+  }
   // Serializes SDP operations (setLocalDescription/setRemoteDescription and
   // answer creation) so concurrent offers cannot interleave.
   private sdpLock: Promise<unknown> = Promise.resolve();
@@ -242,7 +248,7 @@ export class PeerSession {
       } catch {
         // Stale generation (e.g. ICE restart raced the flush): keep it for
         // the next stable transition instead of dropping it forever.
-        this.retryCandidates.push(c);
+        this.queueRetryCandidate(c);
       }
     }
   }
@@ -261,8 +267,9 @@ export class PeerSession {
         });
 
         if (action === "ignore") {
-          // Impolite side: keep our offer, ignore the conflicting inbound offer
-          // and any candidates that belong to it.
+          // Impolite side: keep our offer and ignore the conflicting inbound one.
+          // Its candidates aren't filtered: any that fail to apply just wait in
+          // retryCandidates.
           huddleLog("negotiate", { from, event: "ignore-offer", isPolite, signalingState: pc.signalingState });
           // Recovery: if our own offer is never answered (the remote may
           // have given up), force a renegotiation after a grace period so
@@ -341,7 +348,7 @@ export class PeerSession {
       // The candidate belongs to a newer ICE generation than the currently
       // applied remote description (e.g. mid-restart). Buffer it and retry
       // once signaling is stable — never drop it permanently.
-      this.retryCandidates.push(candidate);
+      this.queueRetryCandidate(candidate);
     }
   }
 
@@ -459,23 +466,7 @@ export class PeerSession {
   async sampleStats(): Promise<void> {
     const { pc, peerId } = this;
     if (this.disposed) return;
-    // Escalate prolonged disconnection to an ICE restart.
-    const since = this.disconnectedSince;
-    if (since !== null && Date.now() - since > DISCONNECT_ESCALATION_MS) {
-      if (!this.iceRestarting) {
-        this.iceRestarting = true;
-        try {
-          pc.restartIce();
-        } catch {
-          /* negotiation may be in flight */
-        }
-        setTimeout(() => {
-          if (this.disposed) return;
-          this.iceRestarting = false;
-        }, 2000);
-      }
-      return;
-    }
+    if (this.escalateIfDisconnected()) return;
 
     if (pc.connectionState !== "connected") return;
 
@@ -488,61 +479,7 @@ export class PeerSession {
     // The peer may have been removed while the stats were being collected.
     if (this.disposed) return;
 
-    const diag: Record<string, unknown> = { peerId, state: pc.connectionState };
-    let inBytes = 0;
-    let outBytes = 0;
-    let inPackets = 0;
-    let outPackets = 0;
-    let inLost = 0;
-    // Whether the browser actually exposed each audio RTP stat. A missing
-    // stat (common cross-browser difference) must be distinguished from a
-    // genuine zero, otherwise a browser without `bytesReceived` would look
-    // permanently stalled and trigger spurious recovery.
-    let hasInbound = false;
-    let hasOutbound = false;
-    report.forEach((s) => {
-      if (s.type === "outbound-rtp" && (s as RTCOutboundRtpStreamStats).kind === "audio") {
-        const r = s as RTCOutboundRtpStreamStats & Record<string, unknown>;
-        hasOutbound = true;
-        outBytes = r.bytesSent ?? 0;
-        outPackets = r.packetsSent ?? 0;
-        diag.outbound = {
-          packetsSent: r.packetsSent,
-          bytesSent: r.bytesSent,
-        };
-      } else if (s.type === "inbound-rtp" && (s as RTCInboundRtpStreamStats).kind === "audio") {
-        const r = s as RTCInboundRtpStreamStats & Record<string, unknown>;
-        hasInbound = true;
-        inBytes = r.bytesReceived ?? 0;
-        inPackets = r.packetsReceived ?? 0;
-        inLost = r.packetsLost ?? 0;
-        diag.inbound = {
-          packetsReceived: r.packetsReceived,
-          packetsLost: r.packetsLost,
-          jitter: r.jitter,
-          bytesReceived: r.bytesReceived,
-          concealmentEvents: r.concealmentEvents,
-          concealedSamples: r.concealedSamples,
-          totalAudioEnergy: r.totalAudioEnergy,
-          audioLevel: r.audioLevel,
-        };
-      } else if (s.type === "candidate-pair" && (s as RTCIceCandidatePairStats).nominated) {
-        const r = s as RTCIceCandidatePairStats & Record<string, unknown>;
-        diag.transport = {
-          currentRoundTripTime: r.currentRoundTripTime,
-          bytesSent: r.bytesSent,
-          bytesReceived: r.bytesReceived,
-        };
-      } else if (s.type === "remote-inbound-rtp" && (s as RTCInboundRtpStreamStats).kind === "audio") {
-        const r = s as RTCInboundRtpStreamStats & Record<string, unknown>;
-        diag.remoteInbound = {
-          roundTripTime: r.roundTripTime,
-          packetsLost: r.packetsLost,
-          jitter: r.jitter,
-          fractionLost: r.fractionLost,
-        };
-      }
-    });
+    const audio = readAudioStats(report);
 
     // --- Recovery watchdog: detect audio broken in ONE direction ----------
     // Inbound and outbound RTP progress are tracked INDEPENDENTLY. A stuck or
@@ -562,8 +499,8 @@ export class PeerSession {
     const negotiatedDirection = audioTransceiver?.currentDirection ?? audioTransceiver?.direction;
     const outboundTrackActive = !!outboundTrack && outboundTrack.enabled && outboundTrack.readyState === "live";
     const decision = this.audioWatchdog.observe({
-      in: { bytes: hasInbound ? inBytes : null, packets: hasInbound ? inPackets : null },
-      out: { bytes: hasOutbound ? outBytes : null, packets: hasOutbound ? outPackets : null },
+      in: audio.in,
+      out: audio.out,
       expectsInbound: negotiatedDirection === "sendrecv" || negotiatedDirection === "recvonly",
       expectsOutbound: negotiatedDirection === "sendrecv" || negotiatedDirection === "sendonly",
       outboundTrackActive,
@@ -581,16 +518,38 @@ export class PeerSession {
         this.audioRecoveries[dir] = 0;
       }
     }
-    diag.watchdog = {
-      in: decision.in.status,
-      out: decision.out.status,
-      negotiatedDirection,
-      outboundTrackActive,
-      inLost,
-    };
 
     if (LOG_PERIODIC_STATS) {
-      console.debug("[huddle:webrtc-stats]", diag);
+      console.debug("[huddle:webrtc-stats]", {
+        peerId,
+        state: pc.connectionState,
+        ...describeStats(report),
+        watchdog: {
+          in: decision.in.status,
+          out: decision.out.status,
+          negotiatedDirection,
+          outboundTrackActive,
+        },
+      });
     }
+  }
+
+  /** Escalates a prolonged disconnection to an ICE restart; true if it has lasted that long. */
+  private escalateIfDisconnected(): boolean {
+    const since = this.disconnectedSince;
+    if (since === null || Date.now() - since <= DISCONNECT_ESCALATION_MS) return false;
+    if (!this.iceRestarting) {
+      this.iceRestarting = true;
+      try {
+        this.pc.restartIce();
+      } catch {
+        /* negotiation may be in flight */
+      }
+      setTimeout(() => {
+        if (this.disposed) return;
+        this.iceRestarting = false;
+      }, 2000);
+    }
+    return true;
   }
 }

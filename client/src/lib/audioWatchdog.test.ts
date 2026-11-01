@@ -3,6 +3,8 @@ import {
   DirectionalAudioWatchdog,
   evaluateDirection,
   DEFAULT_STALL_WINDOW_MS,
+  describeStats,
+  readAudioStats,
   type DirectionState,
   type WatchdogSample,
 } from "./audioWatchdog";
@@ -171,5 +173,44 @@ describe("DirectionalAudioWatchdog", () => {
 
   it("uses the default window when none is supplied", () => {
     expect(DEFAULT_STALL_WINDOW_MS).toBe(15000);
+  });
+});
+describe("readAudioStats", () => {
+  it("reads both directions and ignores video and other stats", () => {
+    const stats = readAudioStats([
+      { type: "outbound-rtp", kind: "audio", bytesSent: 10, packetsSent: 1 },
+      { type: "inbound-rtp", kind: "audio", bytesReceived: 20, packetsReceived: 2, packetsLost: 3 },
+      { type: "inbound-rtp", kind: "video", bytesReceived: 999, packetsReceived: 999 },
+      { type: "candidate-pair", nominated: true, bytesSent: 999 },
+    ]);
+
+    expect(stats).toEqual({
+      in: { bytes: 20, packets: 2 },
+      out: { bytes: 10, packets: 1 },
+    });
+  });
+
+  // A direction with no stat must read as unmeasurable, never as a stall at zero.
+  it("reports a direction the browser doesn't expose as null", () => {
+    const stats = readAudioStats([{ type: "outbound-rtp", kind: "audio", bytesSent: 10, packetsSent: 1 }]);
+
+    expect(stats.in).toEqual({ bytes: null, packets: null });
+  });
+
+  it("treats a missing counter on a reported stream as zero", () => {
+    const stats = readAudioStats([{ type: "inbound-rtp", kind: "audio" }]);
+
+    expect(stats.in).toEqual({ bytes: 0, packets: 0 });
+  });
+});
+
+describe("describeStats", () => {
+  it("includes only the nominated candidate pair", () => {
+    const diag = describeStats([
+      { type: "candidate-pair", nominated: false, currentRoundTripTime: 1 },
+      { type: "candidate-pair", nominated: true, currentRoundTripTime: 2 },
+    ]);
+
+    expect(diag.transport).toMatchObject({ currentRoundTripTime: 2 });
   });
 });

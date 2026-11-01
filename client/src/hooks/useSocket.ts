@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
-import type { AppSocket, Participant, ChatMessage, ChatEntry, PollMessage, JoinErrorCode, ReactionUser, ServerToClientEvents } from "../types";
-import { isPollMessage, MAX_CHAT_HISTORY } from "../types";
-import { appendCapped, applyMessageDelete, applyMessageEdit } from "../lib/chatHistory";
+import type { AppSocket, Participant, JoinErrorCode, ServerToClientEvents } from "../types";
 import { claimClientKey } from "../lib/clientKey";
 import { keepImageSessionOpen } from "../lib/imageUpload";
-import { playJoinSound, playLeaveSound, playMessageSound, playDisconnectedSound } from "../lib/notificationSounds";
+import { playDisconnectedSound } from "../lib/notificationSounds";
+import { subscribeRoomSounds } from "../lib/roomSounds";
 import { errorName, huddleLog, huddleWarn } from "../lib/huddleLog";
 import { joinRetryDelay, shouldRetryJoin } from "../lib/joinRetry";
 
@@ -26,13 +25,9 @@ export interface UseSocketReturn {
   /** See ImageSessionContext. */
   imageSession: number;
   participants: Participant[];
-  chatHistory: ChatEntry[];
-  pinnedMessageId: string | null;
   connected: boolean;
   joinError: string | null;
   currentScreenSharer: string | null;
-  typingUsers: string[];
-  notifyTyping: () => void;
   joinRoom: () => void;
 }
 
@@ -45,18 +40,9 @@ export function useSocket({ roomId, name, password, isMuted }: UseSocketOptions)
   // Read by listener closures defined inside the connection effect.
   const userIdRef = useRef<string | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [chatHistory, setChatHistory] = useState<ChatEntry[]>([]);
-  const [pinnedMessageId, setPinnedMessageId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [currentScreenSharer, setCurrentScreenSharer] = useState<string | null>(null);
-  // Names of other participants currently typing (most recent first).
-  const [typingUsers, setTypingUsers] = useState<string[]>([]);
-
-  const notifyTyping = useCallback(() => {
-    socketRef.current?.emit("typing");
-  }, []);
-
   // Room-join coordination: `joinRoom()` is invoked by the caller only after
   // the WebRTC signaling listeners have been installed, so the server cannot
   // emit `room-joined`/`offer`/`ice-candidate` before this client is ready to
@@ -103,16 +89,11 @@ export function useSocket({ roomId, name, password, isMuted }: UseSocketOptions)
     return true;
   }, [joinRoom]);
 
-  // Live view of other participants' typing state, shared with listener
-  // closures defined inside the connection effect.
-  const typingMapRef = useRef<Map<string, { name: string; timer: ReturnType<typeof setTimeout>; until: number }>>(new Map());
-
   useEffect(() => {
     if (!roomId || !name) return;
 
     let socket: AppSocket | null = null;
     let stopImageSession: (() => void) | undefined;
-    const typingState = typingMapRef.current;
 
     // Defer socket creation by one macrotask so React StrictMode cleanup
     // can cancel before a WebSocket is actually opened.
@@ -190,26 +171,16 @@ export function useSocket({ roomId, name, password, isMuted }: UseSocketOptions)
         stopImageSession?.();
         stopImageSession = keepImageSessionOpen(roomId, data.httpToken, () => setImageSession((n) => n + 1));
         setParticipants(data.participants);
-        setChatHistory(data.chatHistory.slice(-MAX_CHAT_HISTORY));
-        setPinnedMessageId(data.pinnedMessageId);
         setCurrentScreenSharer(data.screenSharer);
       };
 
       const onParticipantJoined = (p: Participant) => {
         setParticipants((prev) => [...prev.filter((x) => x.id !== p.id), p]);
-        playJoinSound();
       };
 
       const onParticipantLeft = ({ id }: { id: string }) => {
         setParticipants((prev) => prev.filter((p) => p.id !== id));
         setCurrentScreenSharer((prev) => (prev === id ? null : prev));
-        playLeaveSound();
-        const t = typingState.get(id);
-        if (t) {
-          clearTimeout(t.timer);
-          typingState.delete(id);
-          setTypingUsers((prev) => prev.filter((n) => n !== t.name));
-        }
       };
 
       const onParticipantMuted = ({ id, isMuted }: { id: string; isMuted: boolean }) => {
@@ -226,79 +197,6 @@ export function useSocket({ roomId, name, password, isMuted }: UseSocketOptions)
         setCurrentScreenSharer((prev) => (prev === id ? null : prev));
       };
 
-      const setTypingFromMap = (map: Map<string, { name: string; until: number }>) => {
-        const now = Date.now();
-        setTypingUsers(
-          [...map.values()]
-            .filter((u) => u.until > now)
-            .map((u) => u.name)
-            .reverse(),
-        );
-      };
-
-      const onChatMessage = (msg: ChatMessage) => {
-        setChatHistory((prev) => appendCapped(prev, msg));
-        // Clear this sender's typing indicator and play a cue only for
-        // messages from other participants (server broadcasts to all).
-        // The typing map is keyed by socket id and messages carry the userId,
-        // so match on the name, which is unique among live participants.
-        for (const [id, typing] of typingState) {
-          if (typing.name === msg.senderName) {
-            clearTimeout(typing.timer);
-            typingState.delete(id);
-            setTypingFromMap(typingState);
-          }
-        }
-        if (msg.senderId !== userIdRef.current) playMessageSound();
-      };
-
-      const onTyping = ({ senderId, senderName }: { senderId: string; senderName: string }) => {
-        const existing = typingState.get(senderId);
-        if (existing) clearTimeout(existing.timer);
-        // Auto-expire if the user stops typing without sending (e.g. closes
-        // the tab). The server only relays, so this is the only timeout.
-        const timer = setTimeout(() => {
-          typingState.delete(senderId);
-          setTypingFromMap(typingState);
-        }, 5000);
-        typingState.set(senderId, { name: senderName, timer, until: Date.now() + 4500 });
-        setTypingFromMap(typingState);
-      };
-
-      const onChatReactionUpdate = ({ messageId, reactions }: { messageId: string; reactions: Record<string, ReactionUser[]> }) => {
-        setChatHistory((prev) =>
-          prev.map((entry) =>
-            entry.id === messageId && !isPollMessage(entry)
-              ? { ...entry, reactions }
-              : entry,
-          ),
-        );
-      };
-
-      const onPollCreate = (poll: PollMessage) => {
-        setChatHistory((prev) => appendCapped(prev, poll));
-      };
-
-      const onPollUpdate = (poll: PollMessage) => {
-        setChatHistory((prev) =>
-          prev.map((entry) => (entry.id === poll.id ? poll : entry)),
-        );
-      };
-
-      const onChatMessageEdit = ({ messageId, text }: { messageId: string; text: string }) => {
-        setChatHistory((prev) => applyMessageEdit(prev, messageId, text));
-      };
-
-      const onChatMessageDelete = ({ messageId }: { messageId: string }) => {
-        setChatHistory((prev) => applyMessageDelete(prev, messageId));
-        // The server clears the pin on delete without sending a pin update.
-        setPinnedMessageId((prev) => (prev === messageId ? null : prev));
-      };
-
-      const onChatPinUpdate = ({ pinnedMessageId: id }: { pinnedMessageId: string | null }) => {
-        setPinnedMessageId(id);
-      };
-
       socket.on("connect", onConnect);
       socket.on("disconnect", onDisconnect);
       socket.on("error", onError);
@@ -308,14 +206,7 @@ export function useSocket({ roomId, name, password, isMuted }: UseSocketOptions)
       socket.on("participant-muted", onParticipantMuted);
       socket.on("screen-share-started", onScreenShareStarted);
       socket.on("screen-share-stopped", onScreenShareStopped);
-      socket.on("chat-message", onChatMessage);
-      socket.on("typing", onTyping);
-      socket.on("chat-reaction-update", onChatReactionUpdate);
-      socket.on("chat-message-edit", onChatMessageEdit);
-      socket.on("chat-message-delete", onChatMessageDelete);
-      socket.on("chat-pin-update", onChatPinUpdate);
-      socket.on("poll-create", onPollCreate);
-      socket.on("poll-update", onPollUpdate);
+      subscribeRoomSounds(socket, () => userIdRef.current);
     }, 0);
 
     return () => {
@@ -327,9 +218,6 @@ export function useSocket({ roomId, name, password, isMuted }: UseSocketOptions)
         clearTimeout(joinRetryTimerRef.current);
         joinRetryTimerRef.current = null;
       }
-      for (const { timer: typingTimer } of typingState.values()) clearTimeout(typingTimer);
-      typingState.clear();
-      setTypingUsers([]);
       stopImageSession?.();
       setHttpToken(null);
       setImageSession(0);
@@ -342,5 +230,5 @@ export function useSocket({ roomId, name, password, isMuted }: UseSocketOptions)
     };
   }, [roomId, name, password, joinRoom, scheduleJoinRetry]);
 
-  return { socket, userId, httpToken, imageSession, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
+  return { socket, userId, httpToken, imageSession, participants, connected, joinError, currentScreenSharer, joinRoom };
 }

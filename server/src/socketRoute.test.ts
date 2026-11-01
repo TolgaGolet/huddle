@@ -147,13 +147,13 @@ describe("on", () => {
 
   it("catches a throwing handler and never logs the error message", () => {
     const { socket, fire } = fakeSocket("s1");
-    on(socket, "boom", (raw) => raw, () => {
+    on(socket, "mute-toggle", (raw) => raw as { isMuted: boolean }, () => {
       throw new TypeError("secret payload text");
     });
 
-    expect(() => fire("boom", { text: "private" })).not.toThrow();
+    expect(() => fire("mute-toggle", { text: "private" })).not.toThrow();
     expect(errorSpy).toHaveBeenCalledWith("[socket] handler error", expect.objectContaining({
-      event: "boom",
+      event: "mute-toggle",
       name: "TypeError",
     }));
     expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("secret");
@@ -162,11 +162,11 @@ describe("on", () => {
   it("catches a throwing parser", () => {
     const { socket, fire } = fakeSocket("s1");
     const handler = vi.fn();
-    on(socket, "x", () => {
+    on(socket, "mute-toggle", () => {
       throw new Error("bad parser");
     }, handler);
 
-    expect(() => fire("x", {})).not.toThrow();
+    expect(() => fire("mute-toggle", {})).not.toThrow();
     expect(handler).not.toHaveBeenCalled();
   });
 });
@@ -202,7 +202,7 @@ describe("onRoom", () => {
 
   it("passes the resolved room and participant to the handler", () => {
     const room = createRoom();
-    addParticipant(room.id, "s1", "Ana");
+    addParticipant(room, "s1", "Ana");
 
     const { socket, fire } = fakeSocket("s1");
     const handler = vi.fn();

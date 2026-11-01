@@ -5,12 +5,13 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import { isPollMessage } from "./protocol.js";
-import { getRoom, resolveParticipantByHttpToken, type ChatEntry, type Room } from "./roomManager.js";
+import { getRoom, resolveParticipantByHttpToken, totalImageBytes, type ChatEntry, type Room } from "./roomManager.js";
 import { decryptFile, encryptFile, roomImageKey } from "./imageCrypto.js";
-import { IMAGE_EXTENSIONS, isAllowedImage, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_IMAGE_BYTES, MAX_ROOM_IMAGE_BYTES, MAX_ROOM_INFLIGHT_READ_BYTES } from "./limits.js";
+import { reserveRoomImageBytes, tryReserveImageMemory, type Reservation } from "./imageQuota.js";
+import { IMAGE_EXTENSIONS, isAllowedImage, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_ROOM_IMAGE_BYTES, MAX_ROOM_INFLIGHT_READ_BYTES, MAX_TOTAL_IMAGE_BYTES } from "./limits.js";
 import { errorSummary } from "./errorLog.js";
 
-export const uploadsDir = path.resolve(process.cwd(), "uploads");
+export const uploadsDir = process.env.HUDDLE_UPLOADS_DIR ?? path.resolve(process.cwd(), "uploads");
 // nanoid filenames may contain letters, digits, `_`, and `-`. Keep the
 // complete filename constrained to this allowlist so path traversal remains
 // impossible while every generated filename can be served.
@@ -83,19 +84,6 @@ const MAX_UPLOAD_BYTES = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE + MULTIPART_OVE
 /** Longer than an 8 MB image takes on a slow mobile link. */
 export const IMAGE_READ_TIMEOUT_MS = 2 * 60 * 1000;
 
-let inFlightImageBytes = 0;
-
-/** Holds `bytes` of the shared budget until the response closes, if they fit. */
-function tryReserveImageMemory(res: Response, bytes: number): boolean {
-  // Already closed: the release below would never run, leaking the bytes for good.
-  if (res.closed || inFlightImageBytes + bytes > MAX_INFLIGHT_IMAGE_BYTES) return false;
-  inFlightImageBytes += bytes;
-  res.once("close", () => {
-    inFlightImageBytes -= bytes;
-  });
-  return true;
-}
-
 /**
  * Rejects before multer reads the body, so a request that will be refused never
  * gets buffered. Node stops reading at Content-Length, so reserving it bounds
@@ -119,17 +107,13 @@ const rejectEarly: RequestHandler = (req, res, next) => {
     res.status(413).json({ error: QUOTA_ERROR });
     return;
   }
-  if (!tryReserveImageMemory(res, declaredBytes)) {
+  if (totalImageBytes() + declaredBytes > MAX_TOTAL_IMAGE_BYTES || !tryReserveImageMemory(res, declaredBytes)) {
     res.status(503).json({ error: "The server is busy, please try again" });
     return;
   }
-  room.imageBytes += declaredBytes;
-  res.locals.storedBytes = 0;
-  res.once("close", () => {
-    void Promise.resolve(res.locals.storing).then(() => {
-      room.imageBytes -= declaredBytes - (res.locals.storedBytes as number);
-    });
-  });
+  const reservation = reserveRoomImageBytes(room, declaredBytes);
+  res.locals.reservation = reservation;
+  res.once("close", () => void reservation.release());
   next();
 };
 
@@ -147,7 +131,7 @@ const onUploadError: ErrorRequestHandler = (err, req, res, next) => {
 export const imageRouter = Router();
 
 /** Never rejects: the reservation's release waits for it (see rejectEarly). */
-async function storeImages(room: Room, roomId: string, files: Express.Multer.File[], res: Response): Promise<void> {
+async function storeImages(room: Room, roomId: string, files: Express.Multer.File[], reservation: Reservation, res: Response): Promise<void> {
   try {
     const roomDir = path.join(uploadsDir, roomId);
     await mkdir(roomDir, { recursive: true });
@@ -162,13 +146,26 @@ async function storeImages(room: Room, roomId: string, files: Express.Multer.Fil
       const body = key ? encryptFile(file.buffer, key) : file.buffer;
       await writeFile(path.join(roomDir, filename), body, { flag: "wx" });
       room.imageSizes.set(filename, file.size);
-      res.locals.storedBytes += file.size;
+      reservation.commit(file.size);
       urls.push(`${roomImagesPath(roomId)}/${filename}`);
     }
     res.json({ urls });
-  } catch {
+  } catch (err) {
+    console.error("[images] store failed", errorSummary(err));
     res.status(500).json({ error: "Failed to store images" });
   }
+}
+
+/** A file deleted during the read is normal; anything else is a real failure. */
+function endFailedRead(res: Response, err: unknown): void {
+  if (res.headersSent || res.closed) return;
+  const { code, status } = err as { code?: string; status?: number };
+  if (code === "ENOENT" || status === 404) {
+    res.status(404).end();
+    return;
+  }
+  console.error("[images] read failed", errorSummary(err));
+  res.status(500).end();
 }
 
 imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IMAGES_PER_MESSAGE), async (req: Request, res: Response) => {
@@ -183,8 +180,10 @@ imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IM
     res.status(400).json({ error: "No valid image files supplied" });
     return;
   }
-  const storing = storeImages(room, param(req.params.id), files, res);
-  res.locals.storing = storing;
+  // Set by rejectEarly, which runs first on this route.
+  const reservation = res.locals.reservation as Reservation;
+  const storing = storeImages(room, param(req.params.id), files, reservation, res);
+  reservation.trackStore(storing);
   await storing;
 }, onUploadError);
 
@@ -229,7 +228,7 @@ imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
       // the room or deleting the message also ends access to a cached copy.
       const headers = { "Content-Type": contentType, "Cache-Control": "private, no-cache" };
       res.sendFile(filename, { root: roomDir, cacheControl: false, headers }, (err) => {
-        if (err && !res.headersSent) res.status(404).end();
+        if (err) endFailedRead(res, err);
       });
       return;
     }
@@ -256,8 +255,8 @@ imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
     // Not res.send: it would hash the whole image for an ETag no-store never uses.
     res.setHeader("Content-Length", body.length);
     res.end(body);
-  } catch {
-    res.status(404).end();
+  } catch (err) {
+    endFailedRead(res, err);
   }
 });
 

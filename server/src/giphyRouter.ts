@@ -1,5 +1,7 @@
 import { Router, type Response } from "express";
+import { errorSummary } from "./errorLog.js";
 import { TtlCache } from "./ttlCache.js";
+import type { GifItem } from "./protocol.js";
 
 const GIPHY_BASE = "https://api.giphy.com/v1/gifs";
 const LIMIT = 24;
@@ -25,13 +27,6 @@ interface RawGiphyGif {
   };
 }
 
-export interface GifItem {
-  id: string;
-  title: string;
-  preview: string;
-  url: string;
-}
-
 function mapGif(gif: RawGiphyGif): GifItem | null {
   const preview =
     gif.images.fixed_width_downsampled?.url ||
@@ -45,10 +40,18 @@ function mapGif(gif: RawGiphyGif): GifItem | null {
   return { id: gif.id, title: gif.title || "GIF", preview, url };
 }
 
+/** Carries the status for the log, since errorSummary drops messages: a revoked key must look unlike a timeout. */
+class GiphyUpstreamError extends Error {
+  override name = "GiphyUpstreamError";
+  constructor(readonly status: number) {
+    super(`GIPHY responded with ${status}`);
+  }
+}
+
 /** `url` contains the API key, so it must never reach logs or error messages. */
 async function fetchGifs(url: string): Promise<GifItem[]> {
   const upstream = await fetch(url, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
-  if (!upstream.ok) throw new Error(`GIPHY responded with ${upstream.status}`);
+  if (!upstream.ok) throw new GiphyUpstreamError(upstream.status);
   const raw = (await upstream.json()) as { data?: unknown };
   if (!Array.isArray(raw.data)) throw new Error("Unexpected GIPHY response");
   return (raw.data as RawGiphyGif[]).map(mapGif).filter((gif): gif is GifItem => gif !== null);
@@ -65,7 +68,9 @@ async function sendGifs(res: Response, cacheKey: string, ttlMs: number, endpoint
   const url = `${GIPHY_BASE}/${endpoint}?api_key=${apiKey}${params}&limit=${LIMIT}&rating=${RATING}`;
   try {
     res.json({ data: await cache.getOrLoad(cacheKey, ttlMs, () => fetchGifs(url)) });
-  } catch {
+  } catch (err) {
+    const upstreamStatus = err instanceof GiphyUpstreamError ? err.status : undefined;
+    console.error("[giphy] upstream failed", { ...errorSummary(err), upstreamStatus });
     res.status(502).json({ error: "Failed to fetch from GIPHY" });
   }
 }

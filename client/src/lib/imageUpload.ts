@@ -1,5 +1,6 @@
 import { isAllowedImage } from "../types";
 import { errorName, huddleWarn } from "./huddleLog";
+import { REQUEST_TIMEOUT_MS, uploadTimeoutMs } from "./requestTimeouts";
 
 /** Well inside the server's 12-hour session, so an open tab never lapses. */
 export const IMAGE_SESSION_RENEW_MS = 6 * 60 * 60 * 1000;
@@ -14,6 +15,7 @@ export async function openImageSession(roomId: string, httpToken: string): Promi
   const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/image-session`, {
     method: "POST",
     headers: { "X-Participant-Token": httpToken },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error("Failed to open image session");
 }
@@ -80,8 +82,10 @@ async function compressImage(file: File): Promise<Blob> {
 
 export async function uploadImages(roomId: string, httpToken: string, files: File[]): Promise<string[]> {
   const form = new FormData();
+  let totalBytes = 0;
   for (const file of files) {
     const compressed = await compressImage(file);
+    totalBytes += compressed.size;
     const extension = compressed === file ? file.name.split(".").pop()?.toLowerCase() : "webp";
     form.append("images", compressed, `${file.name.replace(/\.[^.]+$/, "")}.${extension}`);
   }
@@ -89,6 +93,7 @@ export async function uploadImages(roomId: string, httpToken: string, files: Fil
     method: "POST",
     headers: { "X-Participant-Token": httpToken },
     body: form,
+    signal: AbortSignal.timeout(uploadTimeoutMs(totalBytes)),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: string } | null;

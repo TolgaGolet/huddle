@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { addChatMessage, emptyReactions, removeMessage, type ChatMessage } from "./roomManager.js";
+import { addChatMessage, findEntry, emptyReactions, removeMessage, type ChatMessage } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
 import { isPollMessage, quoteText } from "./protocol.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
@@ -39,7 +39,7 @@ export function setupChat(io: AppServer): void {
     // "X is typing...". Clients auto-expire the indicator themselves.
     onRoom(socket, "typing", noPayload, ({ roomId, participant }) => {
       socket.to(roomId).emit("typing", {
-        senderId: socket.id,
+        userId: participant.userId,
         senderName: participant.name,
       });
     });
@@ -71,15 +71,15 @@ export function setupChat(io: AppServer): void {
       }
 
       // If the original is gone, the message still goes, without a quote.
-      const quoted = replyToId ? room.chatHistory.find((m) => m.id === replyToId) : undefined;
+      const quoted = replyToId ? findEntry(room, replyToId) : undefined;
       if (quoted && !isPollMessage(quoted)) msg.replyTo = quoteOf(quoted);
 
-      addChatMessage(roomId, msg);
+      addChatMessage(room, msg);
       io.to(roomId).emit("chat-message", msg);
     });
 
     onRoom(socket, "chat-reaction", parseChatReaction, ({ roomId, room, participant }, { messageId, emoji }) => {
-      const msg = room.chatHistory.find((m) => m.id === messageId);
+      const msg = findEntry(room, messageId);
       if (!msg || isPollMessage(msg)) return;
 
       const list = msg.reactions[emoji] ?? [];
@@ -103,7 +103,7 @@ export function setupChat(io: AppServer): void {
     });
 
     onRoom(socket, "chat-edit", parseChatEdit, ({ roomId, room, participant }, { messageId, text }) => {
-      const msg = room.chatHistory.find((m) => m.id === messageId);
+      const msg = findEntry(room, messageId);
       if (!msg || isPollMessage(msg)) return;
 
       // Only the sender can edit their own message. GIFs and image-only
@@ -120,16 +120,16 @@ export function setupChat(io: AppServer): void {
     });
 
     onRoom(socket, "chat-delete", parseMessageId, ({ roomId, room, participant }, { messageId }) => {
-      const entry = room.chatHistory.find((m) => m.id === messageId);
+      const entry = findEntry(room, messageId);
       if (!entry) return;
       if (entry.senderId !== participant.userId) return;
 
-      removeMessage(roomId, messageId);
+      removeMessage(room, messageId);
       io.to(roomId).emit("chat-message-delete", { messageId });
     });
 
     onRoom(socket, "chat-pin", parseMessageId, ({ roomId, room }, { messageId }) => {
-      const entry = room.chatHistory.find((m) => m.id === messageId);
+      const entry = findEntry(room, messageId);
       if (!entry) return;
 
       // Toggle: pinning a different message unpins the previous one.

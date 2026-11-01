@@ -1,7 +1,9 @@
 import { memo } from "react";
 import { Check, MoreVertical, Pin } from "lucide-react";
 import type { PollMessage } from "../types";
+import { avatarTextColor } from "../lib/avatarColor";
 import { formatTime } from "../lib/formatTime";
+import { hasReacted } from "../lib/reactions";
 
 interface Props {
   poll: PollMessage;
@@ -12,7 +14,7 @@ interface Props {
 }
 
 function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Props) {
-  const totalVotes = poll.options.reduce((sum, o) => sum + o.voterIds.length, 0);
+  const totalVotes = poll.options.reduce((sum, o) => sum + o.voters.length, 0);
 
   return (
     <div
@@ -30,7 +32,7 @@ function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Pro
         </span>
       )}
       <div className="flex items-baseline gap-2">
-        <span className="text-sm font-semibold text-indigo-400">{poll.senderName}</span>
+        <span className={`text-sm font-semibold ${avatarTextColor(poll.senderName)}`}>{poll.senderName}</span>
         <span className="text-[10px] text-gray-400">{formatTime(poll.timestamp)}</span>
         <span className="text-[10px] text-gray-400 bg-gray-700/60 px-1.5 py-0.5 rounded">Poll</span>
       </div>
@@ -51,8 +53,8 @@ function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Pro
 
       <div className="space-y-1.5">
         {poll.options.map((option) => {
-          const voted = option.voterIds.includes(localUserId);
-          const count = option.voterIds.length;
+          const voted = hasReacted(option.voters, localUserId);
+          const count = option.voters.length;
           const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
 
           return (

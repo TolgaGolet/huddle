@@ -15,7 +15,7 @@ export interface MessageActions {
   reply: (msg: ChatMessage) => void;
   openMenu: (entry: ChatEntry, e: React.MouseEvent) => void;
   scrollTo: (messageId: string) => void;
-  viewImage: (url: string) => void;
+  viewImage: (url: string, senderName: string) => void;
   imageLoaded: () => void;
   submitEdit: (messageId: string, text: string) => void;
   cancelEdit: () => void;
@@ -25,14 +25,17 @@ interface Props {
   msg: ChatMessage;
   isPinned: boolean;
   isEditing: boolean;
+  isHighlighted: boolean;
   /** Stable identity, for "is this mine?" checks. */
   localUserId: string;
   actions: MessageActions;
 }
 
+export const HIGHLIGHT_CLASS = "bg-indigo-500/10";
+
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "👌"];
 
-function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) {
+function MessageItem({ msg, isPinned, isEditing, isHighlighted, localUserId, actions }: Props) {
   const reactions = msg.reactions || {};
   const reactionEntries = Object.entries(reactions).filter(([, users]) => users.length > 0);
   const formattedText = useMemo(() => formatMessage(msg.text), [msg.text]);
@@ -46,7 +49,7 @@ function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) 
       tabIndex={0}
       className={`group relative rounded-lg px-2 py-1 -mx-2 transition-colors hover:bg-gray-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${
         isPinned ? "border-l-2 border-amber-400/70" : ""
-      }`}
+      } ${isHighlighted ? HIGHLIGHT_CLASS : ""}`}
     >
       {isPinned && (
         <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 mb-0.5">
@@ -71,7 +74,7 @@ function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) 
           {msg.replyTo.imageUrl && (
             <button
               type="button"
-              onClick={() => actions.viewImage(msg.replyTo!.imageUrl!)}
+              onClick={() => actions.viewImage(msg.replyTo!.imageUrl!, msg.replyTo!.senderName)}
               className="shrink-0 cursor-zoom-in"
               title="View image"
             >
@@ -105,7 +108,7 @@ function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) 
               alt={msg.text || "GIF"}
               className="rounded-lg max-w-full object-cover group-hover/gif:brightness-90 transition-all"
               style={{ maxHeight: 200, maxWidth: 260 }}
-              loading="eager"
+              loading="lazy"
               onLoad={actions.imageLoaded}
             />
           </a>
@@ -124,7 +127,7 @@ function MessageItem({ msg, isPinned, isEditing, localUserId, actions }: Props) 
                 <button
                   key={url}
                   type="button"
-                  onClick={() => actions.viewImage(url)}
+                  onClick={() => actions.viewImage(url, msg.senderName)}
                   className="cursor-zoom-in"
                   title="View image"
                 >

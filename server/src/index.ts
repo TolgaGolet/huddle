@@ -4,7 +4,8 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
-import { router as roomRouter, onMessageRemoved, onRoomDestroyed, purgeExpiredRooms } from "./roomManager.js";
+import { onMessageRemoved, onRoomDestroyed, purgeExpiredRooms, roomCount, totalImageBytes } from "./roomManager.js";
+import { createRoomRouter } from "./roomRouter.js";
 import { giphyRouter } from "./giphyRouter.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
@@ -59,7 +60,7 @@ app.post("/api/rooms/:id/images", httpRateLimit(IP_LIMITS.uploadImages, proxyHop
 app.post("/api/rooms/:id/image-session", httpRateLimit(IP_LIMITS.imageSession, proxyHops));
 app.use("/api/giphy", httpRateLimit(IP_LIMITS.giphy, proxyHops));
 
-app.use("/api", roomRouter);
+app.use("/api", createRoomRouter(proxyHops));
 app.use("/api/giphy", giphyRouter);
 app.use("/api", imageRouter);
 app.use("/api", apiNotFound);
@@ -85,7 +86,8 @@ setInterval(() => {
   const heapUsed = (mem.heapUsed / 1024 / 1024).toFixed(1);
   const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(1);
   const external = (mem.external / 1024 / 1024).toFixed(1);
-  console.log(`[mem] rss=${rss}MB heap=${heapUsed}/${heapTotal}MB ext=${external}MB conns=${io.engine.clientsCount}`);
+  const images = (totalImageBytes() / 1024 / 1024).toFixed(1);
+  console.log(`[mem] rss=${rss}MB heap=${heapUsed}/${heapTotal}MB ext=${external}MB conns=${io.engine.clientsCount} rooms=${roomCount()} images=${images}MB`);
 }, 30_000);
 
 // Delete a room's uploaded images whenever the room is destroyed, whether by

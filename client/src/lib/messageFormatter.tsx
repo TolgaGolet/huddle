@@ -24,10 +24,32 @@ interface Token {
   content: string;
 }
 
+const URL_SOURCE = String.raw`https?:\/\/[^\s<>'")\]]+`;
+
+function UrlLink({ url }: { url: string }) {
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-indigo-400 hover:underline break-all"
+    >
+      {url}
+    </a>
+  );
+}
+
+/** Emphasized text can hold a URL; split's capture group puts each at an odd index. */
+function linkify(text: string): React.ReactNode[] {
+  return text
+    .split(new RegExp(`(${URL_SOURCE})`))
+    .map((part, i) => (i % 2 ? <UrlLink key={i} url={part} /> : part));
+}
+
 export function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
   // Order matters: **bold** before *italic*, ~~strike~~, `code`, then URLs
-  const COMBINED = /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)|(~~(.+?)~~)|(https?:\/\/[^\s<>'")\]]+)/g;
+  const COMBINED = new RegExp(String.raw`(\*\*(.+?)\*\*)|(\*(.+?)\*)|(\`(.+?)\`)|(~~(.+?)~~)|(${URL_SOURCE})`, "g");
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -72,11 +94,11 @@ export function formatMessage(text: string): React.ReactNode[] {
   return tokens.map((token, i) => {
     switch (token.type) {
       case "bold":
-        return <strong key={i} className="font-bold">{token.content}</strong>;
+        return <strong key={i} className="font-bold">{linkify(token.content)}</strong>;
       case "italic":
-        return <em key={i} className="italic">{token.content}</em>;
+        return <em key={i} className="italic">{linkify(token.content)}</em>;
       case "strike":
-        return <s key={i} className="line-through">{token.content}</s>;
+        return <s key={i} className="line-through">{linkify(token.content)}</s>;
       case "code":
         return (
           <code key={i} className="px-1 py-0.5 rounded bg-gray-700 text-pink-300 text-xs font-mono">
@@ -84,17 +106,7 @@ export function formatMessage(text: string): React.ReactNode[] {
           </code>
         );
       case "url":
-        return (
-          <a
-            key={i}
-            href={token.content}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-indigo-400 hover:underline break-all"
-          >
-            {token.content}
-          </a>
-        );
+        return <UrlLink key={i} url={token.content} />;
       default:
         return <React.Fragment key={i}>{token.content}</React.Fragment>;
     }

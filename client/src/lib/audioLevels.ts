@@ -5,7 +5,7 @@
 
 import type { VoiceTransmissionThreshold } from "../types";
 
-export const NOISE_FLOOR_LEARN_RATE = 0.02;
+const NOISE_FLOOR_LEARN_RATE = 0.02;
 export const NOISE_FLOOR_MIN_DB = -70;
 export const NOISE_FLOOR_MAX_DB = -35;
 
@@ -15,16 +15,16 @@ export const ATTACK_MS = 60;
 export const RELEASE_MS = 500;
 
 export const THRESHOLD_LOW_OPEN_DB = -42;
-export const THRESHOLD_LOW_CLOSE_DB = -47;
+const THRESHOLD_LOW_CLOSE_DB = -47;
 
 export const THRESHOLD_MEDIUM_OPEN_DB = -36;
-export const THRESHOLD_MEDIUM_CLOSE_DB = -41;
+const THRESHOLD_MEDIUM_CLOSE_DB = -41;
 
 export const THRESHOLD_HIGH_OPEN_DB = -30;
-export const THRESHOLD_HIGH_CLOSE_DB = -35;
+const THRESHOLD_HIGH_CLOSE_DB = -35;
 
 export const THRESHOLD_VERY_HIGH_OPEN_DB = -24;
-export const THRESHOLD_VERY_HIGH_CLOSE_DB = -29;
+const THRESHOLD_VERY_HIGH_CLOSE_DB = -29;
 
 export const MANUAL_THRESHOLD_MIN_DB = -60;
 export const MANUAL_THRESHOLD_MAX_DB = -10;
@@ -57,11 +57,16 @@ export function getThresholdDb(
   return { openDb: THRESHOLD_MEDIUM_OPEN_DB, closeDb: THRESHOLD_MEDIUM_CLOSE_DB };
 }
 
-export function rmsToDb(rms: number): number {
+function rmsToDb(rms: number): number {
   if (rms <= 0) return -100;
   // Clamp to avoid log(0)/Infinity; 8-bit data is 0..255 centered at 128.
   const clamped = Math.max(rms, 1e-7);
   return 20 * Math.log10(clamped / 128);
+}
+
+/** A buffer that fits this analyser, reusing `current` when it already does. */
+export function analyserBuffer(analyser: AnalyserNode, current: Uint8Array<ArrayBuffer> | null): Uint8Array<ArrayBuffer> {
+  return current && current.length >= analyser.fftSize ? current : new Uint8Array(analyser.fftSize);
 }
 
 /**
@@ -101,7 +106,7 @@ export function stepNoiseFloor(floorDb: number | null, levelDb: number): number 
 }
 
 /** Consecutive samples above the open threshold needed before the gate opens. */
-export const REQUIRED_ATTACK_SAMPLES = 2;
+const REQUIRED_ATTACK_SAMPLES = 2;
 /** The gate's thresholds never sit closer to the ambient noise floor than this. */
 const GATE_OPEN_FLOOR_MARGIN_DB = 8;
 const GATE_CLOSE_FLOOR_MARGIN_DB = 4;

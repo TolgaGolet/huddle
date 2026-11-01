@@ -25,6 +25,30 @@ const UNITY_GAIN = 1.0;
 
 type AudioHealthListener = (needsGesture: boolean) => void;
 
+class HealthListeners {
+  private listeners = new Set<AudioHealthListener>();
+
+  notify(needsGesture: boolean) {
+    for (const l of this.listeners) {
+      try {
+        l(needsGesture);
+      } catch {
+        /* listener errors must not break audio */
+      }
+    }
+  }
+
+  /** Returns an unsubscribe function. */
+  add(listener: AudioHealthListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  clear() {
+    this.listeners.clear();
+  }
+}
+
 /**
  * Local analyser engine.
  *
@@ -37,28 +61,17 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
-  private healthListeners = new Set<AudioHealthListener>();
-
-  private notifyHealth(needsGesture: boolean) {
-    for (const l of this.healthListeners) {
-      try {
-        l(needsGesture);
-      } catch {
-        /* listener errors must not break audio */
-      }
-    }
-  }
+  private health = new HealthListeners();
 
   /** Subscribe to audio-health updates. Returns an unsubscribe function. */
   onHealth(listener: AudioHealthListener): () => void {
-    this.healthListeners.add(listener);
-    return () => this.healthListeners.delete(listener);
+    return this.health.add(listener);
   }
 
   private getContext(): AudioContext {
     if (!this.ctx) {
-      // Request 48 kHz for consistent analyser behavior; the browser may
-      // choose a different rate depending on hardware/OS.
+      // 48 kHz for consistent analyser behavior; the context resamples if the
+      // hardware runs at another rate.
       this.ctx = new AudioContext({ sampleRate: 48000 });
       this.analyser = this.ctx.createAnalyser();
       this.analyser.fftSize = 512;
@@ -80,7 +93,7 @@ export class AudioEngine {
       try {
         await ctx.resume();
       } catch {
-        this.notifyHealth(true);
+        this.health.notify(true);
       }
     }
 
@@ -103,13 +116,13 @@ export class AudioEngine {
         // Reported below: the context is still not running.
       }
     }
-    this.notifyHealth(ctx.state !== "running");
+    this.health.notify(ctx.state !== "running");
   }
 
   destroy() {
     this.source?.disconnect();
     this.analyser?.disconnect();
-    this.healthListeners.clear();
+    this.health.clear();
     this.ctx?.close();
     this.ctx = null;
     this.source = null;
@@ -123,8 +136,10 @@ export class RemoteAudioManager {
   private analysers = new Map<string, AnalyserNode>();
   private sources = new Map<string, MediaStreamAudioSourceNode>();
   private audioElements = new Map<string, HTMLAudioElement>();
+  /** Outlives the audio path: a watchdog recreate must not reset the listener's choice. */
+  private volumes = new Map<string, number>();
   private keepAliveOsc: OscillatorNode | null = null;
-  private healthListeners = new Set<AudioHealthListener>();
+  private health = new HealthListeners();
 
   private startKeepAliveNode(ctx: AudioContext) {
     if (this.keepAliveOsc) return;
@@ -137,20 +152,9 @@ export class RemoteAudioManager {
     this.keepAliveOsc = osc;
   }
 
-  private notifyHealth(needsGesture: boolean) {
-    for (const l of this.healthListeners) {
-      try {
-        l(needsGesture);
-      } catch {
-        /* listener errors must not break audio */
-      }
-    }
-  }
-
   /** Subscribe to remote-audio-health updates (e.g. autoplay blocked). */
   onHealth(listener: AudioHealthListener): () => void {
-    this.healthListeners.add(listener);
-    return () => this.healthListeners.delete(listener);
+    return this.health.add(listener);
   }
 
   /**
@@ -183,7 +187,7 @@ export class RemoteAudioManager {
       if (audio.paused) allPlayed = false;
     }
     const healthy = ctx.state === "running" && allPlayed;
-    this.notifyHealth(!healthy);
+    this.health.notify(!healthy);
     return healthy;
   }
 
@@ -200,7 +204,7 @@ export class RemoteAudioManager {
 
     const ctx = this.getContext();
     if (ctx.state === "suspended") {
-      ctx.resume().catch(() => this.notifyHealth(true));
+      ctx.resume().catch(() => this.health.notify(true));
     }
 
     // A silent HTMLAudioElement activates the MediaStream in Firefox/Safari
@@ -211,11 +215,11 @@ export class RemoteAudioManager {
     const audio = new Audio();
     audio.srcObject = stream;
     audio.volume = 0;
-    audio.play().catch(() => this.notifyHealth(true));
+    audio.play().catch(() => this.health.notify(true));
     // `play()` can resolve while the element is still paused (or become paused
     // again after an interruption). Track the element's real state so the
     // health signal and `resumePlayback` reflect actual playback.
-    audio.onpause = () => this.notifyHealth(true);
+    audio.onpause = () => this.health.notify(true);
 
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
@@ -229,7 +233,7 @@ export class RemoteAudioManager {
     analyser.channelInterpretation = "speakers";
 
     const gain = ctx.createGain();
-    gain.gain.value = UNITY_GAIN;
+    gain.gain.value = this.volumes.get(peerId) ?? UNITY_GAIN;
     gain.channelCount = 2;
     gain.channelCountMode = "explicit";
     gain.channelInterpretation = "speakers";
@@ -249,6 +253,9 @@ export class RemoteAudioManager {
   }
 
   setVolume(peerId: string, value: number) {
+    // RoomCall re-applies every peer's volume on any change; a recreated gain reads `volumes`.
+    if (this.volumes.get(peerId) === value) return;
+    this.volumes.set(peerId, value);
     const gain = this.gains.get(peerId);
     if (gain && this.ctx) {
       gain.gain.setTargetAtTime(value, this.ctx.currentTime, 0.01);
@@ -280,7 +287,7 @@ export class RemoteAudioManager {
     for (const id of ids) {
       this.removeStream(id);
     }
-    this.healthListeners.clear();
+    this.health.clear();
     this.ctx?.close();
     this.ctx = null;
   }

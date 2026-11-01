@@ -117,6 +117,15 @@ describe("parseCreateRoom", () => {
     expect(parseCreateRoom({ password: pw + "p" })).toBeNull();
     expect(parseCreateRoom({ password: 5 })).toBeNull();
   });
+
+  // Regression: a pasted trailing space spent a password guess on a correct password.
+  it("trims passwords the same way as join-room, before the limit", () => {
+    expect(parseCreateRoom({ password: " pw " })).toEqual({ password: "pw" });
+    expect(parseJoinRoom({ roomId: "r1", name: "Ana", password: " pw " })?.password).toBe("pw");
+
+    const padded = ` ${"p".repeat(MAX_PASSWORD_LENGTH)} `;
+    expect(parseCreateRoom({ password: padded })).toEqual({ password: padded.trim() });
+  });
 });
 
 describe("parseChatMessage", () => {

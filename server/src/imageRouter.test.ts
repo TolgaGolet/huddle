@@ -1,14 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request, type ClientRequest, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import express from "express";
 import { httpErrorHandler } from "./httpErrors.js";
 import { deleteRoomImages, IMAGE_READ_TIMEOUT_MS, imageRouter, releaseMessageImages, uploadsDir } from "./imageRouter.js";
-import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_IMAGE_BYTES, MAX_ROOM_IMAGE_BYTES, MAX_ROOM_INFLIGHT_READ_BYTES } from "./limits.js";
+import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_IMAGE_BYTES, MAX_ROOM_IMAGE_BYTES, MAX_ROOM_INFLIGHT_READ_BYTES, MAX_TOTAL_IMAGE_BYTES } from "./limits.js";
 import { addParticipant, createRoom, emptyReactions, httpTokenFor, removeParticipant, type ChatMessage, type Room } from "./roomManager.js";
+
+// Before imageRouter loads, so its files go to a temp directory, not the real uploads.
+await vi.hoisted(async () => {
+  const [{ mkdtempSync }, { tmpdir }, { join }] = await Promise.all([import("node:fs"), import("node:os"), import("node:path")]);
+  process.env.HUDDLE_UPLOADS_DIR = mkdtempSync(join(tmpdir(), "huddle-uploads-"));
+});
+
+afterAll(() => rm(uploadsDir, { recursive: true, force: true }));
 
 // Lets a test hold a route at one of its file operations.
 const fsHooks = vi.hoisted(() => ({
@@ -103,7 +111,7 @@ function openUpload(socketId: string, headers: Record<string, string | number> =
 function joinRoom(extraBytes = 0): void {
   room = createRoom();
   room.imageBytes = extraBytes;
-  addParticipant(room.id, SOCKET_ID, "Ana");
+  addParticipant(room, SOCKET_ID, "Ana");
 }
 
 describe("POST /rooms/:id/images", () => {
@@ -123,6 +131,23 @@ describe("POST /rooms/:id/images", () => {
     const { status, body } = await response;
     expect(status).toBe(413);
     expect(JSON.parse(body).error).toMatch(/storage limit/);
+  });
+
+  it("answers 503 without reserving when all rooms together hold the server-wide limit", async () => {
+    const other = createRoom();
+    other.imageBytes = MAX_TOTAL_IMAGE_BYTES;
+    joinRoom();
+    try {
+      const { req, response } = openUpload(SOCKET_ID, { "Content-Length": 1000 });
+      req.write(multipartBody(16).subarray(0, 20));
+
+      const { status, body } = await response;
+      expect(status).toBe(503);
+      expect(JSON.parse(body).error).toMatch(/busy/);
+      expect(room.imageBytes).toBe(0);
+    } finally {
+      other.imageBytes = 0;
+    }
   });
 
   it("requires a Content-Length, since a chunked body can't be reserved", async () => {
@@ -429,9 +454,37 @@ describe("GET /rooms/:id/images/:filename", () => {
     expect((await revalidate()).statusCode).toBe(404);
   });
 
+  // Regression: a corrupted file answered 404 and logged nothing, like a missing one.
+  it("answers 500 and logs without the message when a stored file can't be decrypted", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    room = createRoom("secret");
+    addParticipant(room, SOCKET_ID, "Ana");
+    const filename = await upload();
+    const filePath = path.join(uploadsDir, room.id, filename);
+    const stored = await readFile(filePath);
+    stored[stored.length - 1] ^= 1; // fails the GCM authentication check
+    await writeFile(filePath, stored);
+
+    expect((await get(filename, await sessionCookie())).status).toBe(500);
+    expect(errorSpy).toHaveBeenCalledWith("[images] read failed", { name: "Error", frames: expect.any(String) });
+    errorSpy.mockRestore();
+  });
+
+  it("still answers 404 without logging when a stored file is gone", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    room = createRoom("secret");
+    addParticipant(room, SOCKET_ID, "Ana");
+    const filename = await upload();
+    await rm(path.join(uploadsDir, room.id, filename));
+
+    expect((await get(filename, await sessionCookie())).status).toBe(404);
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   it("refuses a decrypting read while image memory is full, then serves it", async () => {
     room = createRoom("secret");
-    addParticipant(room.id, SOCKET_ID, "Ana");
+    addParticipant(room, SOCKET_ID, "Ana");
     const filename = await upload();
     const cookie = await sessionCookie();
     const imageRoom = room;
@@ -448,7 +501,7 @@ describe("GET /rooms/:id/images/:filename", () => {
       holds.push(hold);
     }
     room = imageRoom;
-    addParticipant(room.id, SOCKET_ID, "Ana");
+    addParticipant(room, SOCKET_ID, "Ana");
 
     const busy = await get(filename, cookie);
     expect(busy.status).toBe(503);
@@ -472,7 +525,7 @@ describe("GET /rooms/:id/images/:filename", () => {
       holds.push(hold);
     }
     room = imageRoom;
-    addParticipant(room.id, SOCKET_ID, "Ana");
+    addParticipant(room, SOCKET_ID, "Ana");
     return holds;
   }
 
@@ -490,7 +543,7 @@ describe("GET /rooms/:id/images/:filename", () => {
   // about eight abandoned reads took every upload and decrypting read down for good.
   it("doesn't reserve image memory for a read abandoned before the reservation", async () => {
     room = createRoom("secret");
-    addParticipant(room.id, SOCKET_ID, "Ana");
+    addParticipant(room, SOCKET_ID, "Ana");
     const filename = await upload();
     const cookie = await sessionCookie();
     let releaseStat!: () => void;
@@ -516,7 +569,7 @@ describe("GET /rooms/:id/images/:filename", () => {
 
     const passwordRoomFile = async () => {
       room = createRoom("secret");
-      addParticipant(room.id, SOCKET_ID, "Ana");
+      addParticipant(room, SOCKET_ID, "Ana");
       const filename = await upload();
       return { filename, cookie: await sessionCookie() };
     };
@@ -590,7 +643,7 @@ describe("GET /rooms/:id/images/:filename", () => {
     const otherCookie = await sessionCookie();
     removeParticipant(room.id, SOCKET_ID);
     room = imageRoom;
-    addParticipant(room.id, SOCKET_ID, "Ana");
+    addParticipant(room, SOCKET_ID, "Ana");
 
     expect((await get(filename, otherCookie)).status).toBe(404);
   });
@@ -627,7 +680,7 @@ describe("GET /rooms/:id/images/:filename", () => {
 
   it("encrypts a password-protected room's image at rest and decrypts it on read", async () => {
     room = createRoom("secret");
-    addParticipant(room.id, SOCKET_ID, "Ana");
+    addParticipant(room, SOCKET_ID, "Ana");
     const filename = await upload();
 
     const onDisk = await readFile(path.join(uploadsDir, room.id, filename));

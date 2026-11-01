@@ -205,10 +205,48 @@ describe("join-room", () => {
     }
   });
 
+  it("leaves your old session alone when a join under your key is refused", async () => {
+    const room = createRoom();
+    const clientKey = "k".repeat(32);
+    const old = connect(url, { transports: ["websocket"] });
+    const peer = connect(url, { transports: ["websocket"] });
+    const retry = connect(url, { transports: ["websocket"] });
+    try {
+      await joined(old, { roomId: room.id, name: "Ana", clientKey });
+      await joined(peer, { roomId: room.id, name: "Bo" });
+
+      await expect(joined(retry, { roomId: room.id, name: "Bo", clientKey })).rejects.toThrow(/name already taken/i);
+
+      expect(getRoom(room.id)?.participants.has(old.id!)).toBe(true);
+      expect(old.connected).toBe(true);
+    } finally {
+      for (const client of [old, peer, retry]) client.disconnect();
+    }
+  });
+
+  it("lets you rejoin a full room, since your old session's place is freed", async () => {
+    const room = createRoom();
+    const clientKey = "k".repeat(32);
+    const old = connect(url, { transports: ["websocket"] });
+    const again = connect(url, { transports: ["websocket"] });
+    try {
+      await joined(old, { roomId: room.id, name: "Ana", clientKey });
+      for (let i = 1; i < MAX_PARTICIPANTS; i++) addParticipant(room, `socket-${i}`, `P${i}`);
+
+      await joined(again, { roomId: room.id, name: "Ana", clientKey });
+
+      expect(getRoom(room.id)?.participants.has(again.id!)).toBe(true);
+      expect(getRoom(room.id)?.participants.size).toBe(MAX_PARTICIPANTS);
+    } finally {
+      old.disconnect();
+      again.disconnect();
+    }
+  });
+
   // Rejoin race: the old socket is gone but its participant entry remains.
   it("evicts a stale participant holding the requested name", async () => {
     const room = createRoom();
-    addParticipant(room.id, "gone-socket", "Ana");
+    addParticipant(room, "gone-socket", "Ana");
     const client = connect(url, { transports: ["websocket"] });
     const peer = connect(url, { transports: ["websocket"] });
     try {
@@ -217,7 +255,7 @@ describe("join-room", () => {
 
       await joined(client, { roomId: room.id, name: "ana" });
 
-      await expect(left).resolves.toEqual({ id: "gone-socket" });
+      await expect(left).resolves.toEqual({ id: "gone-socket", userId: "gone-socket" });
       expect(getRoom(room.id)?.participants.has("gone-socket")).toBe(false);
       expect(getRoom(room.id)?.participants.has(client.id!)).toBe(true);
     } finally {
@@ -287,7 +325,7 @@ describe("join-room error codes", () => {
     const open = createRoom();
     const locked = createRoom("secret");
     const full = createRoom();
-    for (let i = 0; i < MAX_PARTICIPANTS; i++) addParticipant(full.id, `socket-${i}`, `P${i}`);
+    for (let i = 0; i < MAX_PARTICIPANTS; i++) addParticipant(full, `socket-${i}`, `P${i}`);
 
     const client = connect(url, { transports: ["websocket"] });
     const peer = connect(url, { transports: ["websocket"] });

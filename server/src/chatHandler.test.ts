@@ -152,7 +152,7 @@ describe("typing", () => {
 
       client.emit("typing");
 
-      await expect(received).resolves.toEqual({ senderId: client.id, senderName: "Ana" });
+      await expect(received).resolves.toEqual({ userId: expect.any(String), senderName: "Ana" });
       expect(echoed).not.toHaveBeenCalled();
     } finally {
       peer.disconnect();

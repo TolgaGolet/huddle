@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Search, X } from "lucide-react";
-import type { GifItem } from "../lib/giphyClient";
+import type { GifItem } from "../types";
 import { fetchTrending, fetchSearch } from "../lib/giphyClient";
 
 interface Props {

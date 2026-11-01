@@ -32,8 +32,9 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
         room.screenSharerId = null;
         socket.to(roomId).emit("screen-share-stopped", { id });
       }
+      const participant = room?.participants.get(id);
       removeParticipant(roomId, id);
-      socket.to(roomId).emit("participant-left", { id });
+      if (participant) socket.to(roomId).emit("participant-left", { id, userId: participant.userId });
     };
 
     // Remove this socket from the room it has joined (if any) and tell the
@@ -68,7 +69,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
         rejectAsLimited();
         return;
       }
-      if (!verifyPassword(roomId, password)) {
+      if (!verifyPassword(room, password)) {
         passwordGuesses.take(guesser);
         socket.emit("error", { code: JOIN_ERROR.INCORRECT_PASSWORD, message: "Incorrect password" });
         return;
@@ -84,19 +85,16 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       // server-initiated), so two holders of a key can't keep evicting each other.
       const userId = clientKey ? deriveUserId(roomId, clientKey) : undefined;
       const lowerName = name.toLowerCase();
-      for (const p of room.participants.values()) {
-        const nameHeldByDeadSocket = p.name.toLowerCase() === lowerName && !io.sockets.sockets.has(p.id);
-        if (p.userId !== userId && !nameHeldByDeadSocket) continue;
-        removeAndAnnounce(roomId, p.id);
-        io.sockets.sockets.get(p.id)?.disconnect(true);
-      }
+      const evicted = getParticipantsArray(room).filter(
+        (p) => p.userId === userId || (p.name.toLowerCase() === lowerName && !io.sockets.sockets.has(p.id)),
+      );
 
-      if (isNameTaken(roomId, name)) {
+      if (isNameTaken(room, name, evicted)) {
         socket.emit("error", { code: JOIN_ERROR.NAME_TAKEN, message: "Name already taken in this room" });
         return;
       }
 
-      if (isRoomFull(roomId)) {
+      if (isRoomFull(room, evicted)) {
         socket.emit("error", {
           code: JOIN_ERROR.ROOM_FULL,
           message: `This room is full (max ${MAX_PARTICIPANTS} participants).`,
@@ -104,15 +102,20 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
         return;
       }
 
+      // Only once the join will succeed: a refused one must leave the old session alone.
+      for (const p of evicted) {
+        removeAndAnnounce(roomId, p.id);
+        io.sockets.sockets.get(p.id)?.disconnect(true);
+      }
+
       // Only now that the new join is certain to succeed, leave the previous
       // room; a failed join must not drop the socket from the room it is in.
       leaveCurrentRoom();
-      const participant = addParticipant(roomId, socket.id, name, userId, isMuted);
-      if (!participant) return;
+      const participant = addParticipant(room, socket.id, name, userId, isMuted);
 
       socket.join(roomId);
 
-      const existingParticipants = getParticipantsArray(roomId).filter(
+      const existingParticipants = getParticipantsArray(room).filter(
         (p) => p.id !== socket.id,
       );
       socket.emit("room-joined", {
@@ -135,8 +138,8 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
     onRelay(socket, "answer", "answer");
     onRelay(socket, "ice-candidate", "candidate");
 
-    onRoom(socket, "mute-toggle", parseMute, ({ roomId }, { isMuted }) => {
-      setMuted(roomId, socket.id, isMuted);
+    onRoom(socket, "mute-toggle", parseMute, ({ roomId, room }, { isMuted }) => {
+      setMuted(room, socket.id, isMuted);
       socket.to(roomId).emit("participant-muted", { id: socket.id, isMuted });
     });
 

@@ -1,14 +1,17 @@
-import { useState, useRef, useEffect, useImperativeHandle } from "react";
+import { useState, useRef, useEffect, useImperativeHandle, useLayoutEffect } from "react";
 import { Send, Loader2, Smile, BarChart3, Reply, X, Image as ImageIcon } from "lucide-react";
 import type { AppSocket, ChatMessage, ClientToServerEvents } from "../types";
-import { createBucket, MAX_CHAT_TEXT_LENGTH, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, RATE_LIMITS } from "../types";
+import { createBucket, MAX_CHAT_TEXT_LENGTH, MAX_IMAGES_PER_MESSAGE, RATE_LIMITS } from "../types";
 import FormattingToolbar, { formatForShortcut, formatSelection, restoreSelection } from "./FormattingToolbar";
 import EmojiPicker from "./EmojiPicker";
 import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
 import RoomImage from "./RoomImage";
+import { useImageDraft } from "../hooks/useImageDraft";
+import { useTyping } from "../hooks/useTyping";
 import { isImageFile, uploadImages } from "../lib/imageUpload";
-import { CONNECTION_LOST_ERROR, createSendLock, isSameConnection, replyToSend, uploadErrorMessage } from "../lib/sendLock";
+import { CONNECTION_LOST_ERROR, createSendLock, isSameConnection, replyToSend, reusableUploadUrls, uploadErrorMessage, type UploadedImages } from "../lib/sendLock";
+import { fitToContent } from "../lib/textareaHeight";
 
 export interface ComposerHandle {
   addImages: (fileList: FileList | File[]) => void;
@@ -20,15 +23,12 @@ interface Props {
   socket: AppSocket | null;
   httpToken: string | null;
   roomId: string;
-  typingUsers: string[];
-  notifyTyping: () => void;
   replyingTo: ChatMessage | null;
   onReplyingToChange: React.Dispatch<React.SetStateAction<ChatMessage | null>>;
   /** Called just before anything is sent, so the list follows the new entry. */
   onBeforeSend: () => void;
 }
 
-interface PendingImage { id: string; file: File; previewUrl: string; }
 type Popover = "emoji" | "gif" | "poll";
 type ChatMessagePayload = Parameters<ClientToServerEvents["chat-message"]>[0];
 
@@ -57,20 +57,16 @@ const SENDING_TOO_FAST_ERROR = "You're sending messages too fast.";
 const SERVER_LIMIT_ERROR = "You're doing that too fast.";
 const SERVER_LIMIT_ERROR_MS = 4000;
 
-export default function Composer({ ref, socket, httpToken, roomId, typingUsers, notifyTyping, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
+export default function Composer({ ref, socket, httpToken, roomId, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
   const [text, setText] = useState("");
   const [openPopover, setOpenPopover] = useState<Popover | null>(null);
   // Read after an upload, when the `replyingTo` a send captured may be outdated.
   const replyingToRef = useRef(replyingTo);
   replyingToRef.current = replyingTo;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  // Read on unmount, when an unsent draft's preview URLs must still be released.
-  const pendingImagesRef = useRef(pendingImages);
-  pendingImagesRef.current = pendingImages;
-  useEffect(() => () => {
-    pendingImagesRef.current.forEach((image) => URL.revokeObjectURL(image.previewUrl));
-  }, []);
+  const { images: pendingImages, add: addToDraft, remove: removeImage, clear: clearDraft } = useImageDraft();
+  const { typingUsers, notifyTyping } = useTyping(socket);
+  const uploadedRef = useRef<UploadedImages | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [sendLock] = useState(createSendLock);
   // Same limit as the server, checked first: the draft is cleared on send, so a
@@ -106,16 +102,8 @@ export default function Composer({ ref, socket, httpToken, roomId, typingUsers, 
     // A successful send clears the draft, which would lose images added now.
     if (sending) return;
     setUploadError(null);
-    const accepted: PendingImage[] = [];
-    const errors: string[] = [];
-    for (const file of Array.from(fileList)) {
-      if (pendingImages.length + accepted.length >= MAX_IMAGES_PER_MESSAGE) { errors.push(`You can send up to ${MAX_IMAGES_PER_MESSAGE} images at once.`); break; }
-      if (!isImageFile(file)) { errors.push(`${file.name} is not a supported image file.`); continue; }
-      if (file.size > MAX_IMAGE_SIZE) { errors.push(`${file.name} is larger than ${MAX_IMAGE_SIZE / (1024 * 1024)} MB.`); continue; }
-      accepted.push({ id: `${file.name}-${file.lastModified}-${Math.random()}`, file, previewUrl: URL.createObjectURL(file) });
-    }
-    if (accepted.length) setPendingImages((current) => [...current, ...accepted]);
-    if (errors.length) setUploadError(errors[0]);
+    const problem = addToDraft(fileList);
+    if (problem) setUploadError(problem);
   }
 
   useImperativeHandle(ref, () => ({
@@ -128,14 +116,6 @@ export default function Composer({ ref, socket, httpToken, roomId, typingUsers, 
     if (!images.length) return;
     e.preventDefault();
     addImages(images);
-  }
-
-  function removeImage(id: string) {
-    setPendingImages((current) => {
-      const image = current.find((item) => item.id === id);
-      if (image) URL.revokeObjectURL(image.previewUrl);
-      return current.filter((item) => item.id !== id);
-    });
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -187,7 +167,11 @@ export default function Composer({ ref, socket, httpToken, roomId, typingUsers, 
   async function sendDraft(activeSocket: AppSocket, socketId: string) {
     let imageUrls: string[] = [];
     try {
-      if (pendingImages.length) imageUrls = await uploadImages(roomId, httpToken!, pendingImages.map((image) => image.file));
+      if (pendingImages.length) {
+        const files = pendingImages.map((image) => image.file);
+        imageUrls = reusableUploadUrls(uploadedRef.current, files) ?? await uploadImages(roomId, httpToken!, files);
+        uploadedRef.current = { files, urls: imageUrls };
+      }
     } catch (error) {
       setUploadError(uploadErrorMessage(error, isSameConnection(activeSocket, socketId)));
       return;
@@ -204,8 +188,8 @@ export default function Composer({ ref, socket, httpToken, roomId, typingUsers, 
     if (reply) payload.replyToId = reply.id;
     onBeforeSend();
     activeSocket.emit("chat-message", payload);
-    pendingImages.forEach((image) => URL.revokeObjectURL(image.previewUrl));
-    setPendingImages([]);
+    uploadedRef.current = null;
+    clearDraft();
     setText("");
     // Keep a reply the user started while the upload was running.
     onReplyingToChange((current) => (current === replyingTo ? null : current));
@@ -261,6 +245,11 @@ export default function Composer({ ref, socket, httpToken, roomId, typingUsers, 
       setText(text + emoji);
     }
   }
+
+  // On every text change, not onInput: sending, emoji and formatting don't fire that.
+  useLayoutEffect(() => {
+    if (textareaRef.current) fitToContent(textareaRef.current);
+  }, [text]);
 
   // The server dropped something other than a draft (a reaction, vote, edit or call state).
   useEffect(() => {
@@ -351,24 +340,28 @@ export default function Composer({ ref, socket, httpToken, roomId, typingUsers, 
         if (event.target.files) addImages(event.target.files);
         event.target.value = "";
       }} />
-      {pendingImages.length > 0 && <div className="mb-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-2">
-        <div className="mb-1 text-[11px] font-medium text-indigo-300">Images ready to send ({pendingImages.length}/{MAX_IMAGES_PER_MESSAGE})</div>
-        <div className="flex gap-2 overflow-x-auto">
-          {pendingImages.map((image) => <div key={image.id} className="relative shrink-0 rounded-md border border-gray-600 bg-gray-900/70 p-1">
-            <img src={image.previewUrl} alt={image.file.name} className="h-16 w-16 rounded object-cover" />
-            <button
-              type="button"
-              onClick={() => removeImage(image.id)}
-              disabled={sending}
-              className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-900 border border-gray-600 p-0.5 text-gray-300 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Remove image"
-              aria-label={`Remove ${image.file.name}`}
-            >
-              <X size={11} />
-            </button>
-          </div>)}
+      {pendingImages.length > 0 && (
+        <div className="mb-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-2">
+          <div className="mb-1 text-[11px] font-medium text-indigo-300">Images ready to send ({pendingImages.length}/{MAX_IMAGES_PER_MESSAGE})</div>
+          <div className="flex gap-2 overflow-x-auto">
+            {pendingImages.map((image) => (
+              <div key={image.id} className="relative shrink-0 rounded-md border border-gray-600 bg-gray-900/70 p-1">
+                <img src={image.previewUrl} alt={image.file.name} className="h-16 w-16 rounded object-cover" />
+                <button
+                  type="button"
+                  onClick={() => removeImage(image.id)}
+                  disabled={sending}
+                  className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-900 border border-gray-600 p-0.5 text-gray-300 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Remove image"
+                  aria-label={`Remove ${image.file.name}`}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>}
+      )}
       {uploadError && <p role="alert" className="mb-1 text-xs text-red-400">{uploadError}</p>}
       {pendingImages.length > 0 && <p className="mb-1 text-[10px] text-gray-400">Images are temporarily stored and deleted when the room ends. Password-protected rooms encrypt uploaded images at rest; chat messages are not encrypted.</p>}
       <form onSubmit={send} className="space-y-1">
@@ -434,12 +427,6 @@ export default function Composer({ ref, socket, httpToken, roomId, typingUsers, 
             aria-label="Message"
             rows={1}
             className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-base md:text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500 transition-colors resize-none min-h-[36px] max-h-28 overflow-y-auto"
-            style={{ height: "auto" }}
-            onInput={(e) => {
-              const target = e.target as HTMLTextAreaElement;
-              target.style.height = "auto";
-              target.style.height = Math.min(target.scrollHeight, 112) + "px";
-            }}
           />
           <button
             type="submit"

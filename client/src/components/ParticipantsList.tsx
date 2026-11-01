@@ -7,17 +7,17 @@ interface Props {
   participants: Participant[];
   localId: string;
   speaking: Set<string>;
+  /** Playback volume by userId, which survives a peer's reconnect. */
   peerVolumes: Map<string, number>;
-  onSetPeerVolume: (peerId: string, volume: number) => void;
+  onSetPeerVolume: (userId: string, volume: number) => void;
   maxParticipants?: number;
   /** Participant ids whose peer connection is still being established. */
   connecting?: Set<string>;
 }
 
 interface ContextMenuState {
-  peerId: string;
+  userId: string;
   name: string;
-  isLocal: boolean;
   x: number;
   y: number;
 }
@@ -33,22 +33,10 @@ export default function ParticipantsList({
 }: Props) {
   const [ctx, setCtx] = useState<ContextMenuState | null>(null);
 
-  const openMenu = useCallback(
-    (e: React.MouseEvent, p: Participant) => {
-      e.preventDefault();
-      setCtx({ peerId: p.id, name: p.name, isLocal: p.id === localId, x: e.clientX, y: e.clientY });
-    },
-    [localId],
-  );
-
-  // The local participant has no software volume control anymore (native
-  // unity-gain capture is transmitted directly). Only remote participants
-  // expose a playback-volume slider.
-  const ctxVolume = ctx && !ctx.isLocal ? (peerVolumes.get(ctx.peerId) ?? 1) : 1;
-
-  const ctxOnChange = ctx && !ctx.isLocal
-    ? (v: number) => onSetPeerVolume(ctx.peerId, v)
-    : undefined;
+  const openMenu = useCallback((e: React.MouseEvent, p: Participant) => {
+    e.preventDefault();
+    setCtx({ userId: p.userId, name: p.name, x: e.clientX, y: e.clientY });
+  }, []);
 
   const isFull = typeof maxParticipants === "number" && participants.length >= maxParticipants;
   const countLabel = typeof maxParticipants === "number"
@@ -60,24 +48,29 @@ export default function ParticipantsList({
       <h3 className={`text-[11px] uppercase tracking-wider font-semibold px-3 mb-1 ${isFull ? "text-amber-400" : "text-gray-400"}`}>
         Participants — {countLabel}{isFull ? " (full)" : ""}
       </h3>
-      {participants.map((p) => (
-        <ParticipantCard
-          key={p.id}
-          participant={p}
-          isSpeaking={speaking.has(p.id)}
-          isLocal={p.id === localId}
-          isConnecting={connecting?.has(p.id)}
-          onContextMenu={(e) => openMenu(e, p)}
-          onMenuClick={(e) => openMenu(e, p)}
-        />
-      ))}
-      {ctx && ctxOnChange && (
+      {participants.map((p) => {
+        // The local participant has no software volume control (native
+        // unity-gain capture is transmitted directly), so no menu either.
+        const isLocal = p.id === localId;
+        const onOpenMenu = isLocal ? undefined : (e: React.MouseEvent) => openMenu(e, p);
+        return (
+          <ParticipantCard
+            key={p.id}
+            participant={p}
+            isSpeaking={speaking.has(p.id)}
+            isLocal={isLocal}
+            isConnecting={connecting?.has(p.id)}
+            onOpenMenu={onOpenMenu}
+          />
+        );
+      })}
+      {ctx && (
         <ParticipantContextMenu
           x={ctx.x}
           y={ctx.y}
-          name={ctx.isLocal ? `${ctx.name} (you)` : ctx.name}
-          volume={ctxVolume}
-          onVolumeChange={ctxOnChange}
+          name={ctx.name}
+          volume={peerVolumes.get(ctx.userId) ?? 1}
+          onVolumeChange={(v) => onSetPeerVolume(ctx.userId, v)}
           onClose={() => setCtx(null)}
         />
       )}

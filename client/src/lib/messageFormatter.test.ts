@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { detectEmojiOnly, tokenize } from "./messageFormatter";
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { detectEmojiOnly, formatMessage, tokenize } from "./messageFormatter";
 
 describe("tokenize", () => {
   it("reads ** as bold rather than two italics", () => {
@@ -53,5 +55,24 @@ describe("detectEmojiOnly", () => {
     expect(detectEmojiOnly("😂😂😂")).toBe(false);
     expect(detectEmojiOnly("hi 😂")).toBe(false);
     expect(detectEmojiOnly("   ")).toBe(false);
+  });
+});
+
+describe("formatMessage", () => {
+  const html = (text: string) => renderToStaticMarkup(createElement(Fragment, null, ...formatMessage(text)));
+
+  it.each([
+    ["bold", "**see https://a.io now**", "strong"],
+    ["italic", "*see https://a.io now*", "em"],
+    ["strike", "~~see https://a.io now~~", "s"],
+  ])("links a URL inside %s text", (_name, text, tag) => {
+    const out = html(text);
+    expect(out).toContain(`<${tag} `);
+    expect(out).toContain('href="https://a.io"');
+    expect(out).toContain(" now");
+  });
+
+  it("keeps a URL in code literal", () => {
+    expect(html("`https://a.io`")).not.toContain("href=");
   });
 });

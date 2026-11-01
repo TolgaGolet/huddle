@@ -29,6 +29,12 @@ export function isAllowedImage(extension: string, mimeType: string): boolean {
   return IMAGE_EXTENSIONS.has(extension) && (!mimeType || mimeType.startsWith("image/") || mimeType === "application/octet-stream");
 }
 export const MAX_ROOM_IMAGE_BYTES = 200 * 1024 * 1024;
+/** Stored or reserved image bytes across all rooms, so a few busy rooms can't fill the disk. */
+export const MAX_TOTAL_IMAGE_BYTES = 2 * 1024 * 1024 * 1024;
+/** Live rooms. At about 0.8 MB of chat history each, the worst case still fits the 384 MB heap. */
+export const MAX_ROOMS = 200;
+/** Live rooms one IP can have created, so it can't hold all of MAX_ROOMS and lock everyone out. */
+export const MAX_ROOMS_PER_IP = 10;
 /**
  * Image bytes held in memory at once across all rooms: upload bodies, which
  * multer buffers, plus decrypting reads. Must fit one maximum upload.

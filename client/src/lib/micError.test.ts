@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { classifyMicError, micErrorAfterTrackEnded, micErrorMessage, type MicError } from "./micError";
 
 const named = (name: string) => Object.assign(new Error("details"), { name });
@@ -19,6 +19,21 @@ describe("classifyMicError", () => {
     expect(classifyMicError(new TypeError("undefined"))).toBe("busy");
     expect(classifyMicError("not an error")).toBe("busy");
   });
+
+  // Regression: plain HTTP blamed "another app" for a mic the browser never offered.
+  it("blames the connection on an insecure origin, whatever the error", () => {
+    vi.stubGlobal("isSecureContext", false);
+    expect(classifyMicError(new TypeError("undefined"))).toBe("insecure");
+    expect(classifyMicError(named("NotAllowedError"))).toBe("insecure");
+    expect(micErrorMessage("insecure")).toMatch(/HTTPS/);
+    vi.unstubAllGlobals();
+  });
+
+  it("classifies by error name on a secure origin", () => {
+    vi.stubGlobal("isSecureContext", true);
+    expect(classifyMicError(named("NotAllowedError"))).toBe("denied");
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("micErrorAfterTrackEnded", () => {
@@ -37,7 +52,7 @@ describe("micErrorAfterTrackEnded", () => {
 
 describe("micErrorMessage", () => {
   it("has a message for every state", () => {
-    const errors: MicError[] = ["denied", "not-found", "busy", "ended", "switch-failed"];
+    const errors: MicError[] = ["insecure", "denied", "not-found", "busy", "ended", "switch-failed"];
     for (const error of errors) expect(micErrorMessage(error)).toBeTruthy();
   });
 

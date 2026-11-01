@@ -1,3 +1,5 @@
+import { errorName } from "./huddleLog";
+
 /**
  * False once the socket has dropped or reconnected. Socket.IO buffers emits made
  * while disconnected and flushes them before the rejoin, so the server would
@@ -8,6 +10,7 @@ export function isSameConnection(socket: { connected: boolean; id?: string }, so
 }
 
 export const CONNECTION_LOST_ERROR = "Connection lost, please try again.";
+export const UPLOAD_TIMEOUT_ERROR = "The upload took too long. Check your connection and try again.";
 
 /**
  * What to show for a failed upload. A drop revokes the token the upload was sent
@@ -15,7 +18,23 @@ export const CONNECTION_LOST_ERROR = "Connection lost, please try again.";
  */
 export function uploadErrorMessage(error: unknown, sameConnection: boolean): string {
   if (!sameConnection) return CONNECTION_LOST_ERROR;
+  if (errorName(error) === "TimeoutError") return UPLOAD_TIMEOUT_ERROR;
   return error instanceof Error ? error.message : "Failed to upload images";
+}
+
+export interface UploadedImages {
+  files: File[];
+  urls: string[];
+}
+
+/**
+ * The URLs from an earlier upload of exactly these files, if any. Retrying after a
+ * dropped connection reuses them: uploading again would charge the room's quota
+ * twice for copies nothing can ever reference.
+ */
+export function reusableUploadUrls(uploaded: UploadedImages | null, files: File[]): string[] | null {
+  if (uploaded?.files.length !== files.length) return null;
+  return uploaded.files.every((file, i) => file === files[i]) ? uploaded.urls : null;
 }
 
 /** The reply to send: none if it was cancelled or replaced while uploading. */

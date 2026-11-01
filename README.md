@@ -20,6 +20,10 @@ npm run build
 npm start       # serves the API, Socket.IO and the built client
 ```
 
+Serve it over HTTPS: browsers only give microphone access on secure origins, so
+voice won't work over plain HTTP (for example `http://192.168.x.x`) except on
+`localhost`.
+
 ## Configuration
 
 The server reads these from `server/.env`:
@@ -60,7 +64,7 @@ short-lived/ephemeral credentials issued by your TURN provider.
 ## Diagnosing one-way audio
 
 The client emits structured, privacy-safe logs prefixed with `[huddle:<scope>]`
-(`socket`, `peer`, `negotiate`, `connection`, `audio`, `watchdog`, `capture`).
+(`socket`, `peer`, `negotiate`, `connection`, `audio`, `watchdog`, `capture`, `clipboard`, `ui`).
 They contain no SDP, media, IP addresses, or credentials. Useful scopes when
 someone "can be heard but cannot hear":
 

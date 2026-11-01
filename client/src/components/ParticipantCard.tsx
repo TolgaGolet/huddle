@@ -8,8 +8,8 @@ interface Props {
   isLocal?: boolean;
   /** True while this participant's peer connection is still being established. */
   isConnecting?: boolean;
-  onContextMenu?: (e: React.MouseEvent) => void;
-  onMenuClick?: (e: React.MouseEvent) => void;
+  /** Opens the options menu, from a right-click or the button. Without it there is no menu. */
+  onOpenMenu?: (e: React.MouseEvent) => void;
 }
 
 function getInitials(name: string): string {
@@ -21,10 +21,10 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-export default function ParticipantCard({ participant, isSpeaking, isLocal, isConnecting, onContextMenu, onMenuClick }: Props) {
+export default function ParticipantCard({ participant, isSpeaking, isLocal, isConnecting, onOpenMenu }: Props) {
   return (
     <div
-      onContextMenu={onContextMenu}
+      onContextMenu={onOpenMenu}
       className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800/60 transition-colors select-none group"
     >
       <div
@@ -48,9 +48,9 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, isCo
       ) : (
         <Mic size={16} role="img" aria-label="Not muted" className="text-gray-400 flex-shrink-0" />
       )}
-      {onMenuClick && (
+      {onOpenMenu && (
         <button
-          onClick={onMenuClick}
+          onClick={onOpenMenu}
           aria-label={`Options for ${participant.name}`}
           className="touch-target flex-shrink-0 p-0.5 rounded text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
         >

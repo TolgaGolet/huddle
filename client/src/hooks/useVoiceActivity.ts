@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ATTACK_MS,
+  analyserBuffer, ATTACK_MS,
   calculateAnalyserLevel,
   CLOSE_THRESHOLD_DB,
   OPEN_THRESHOLD_DB,
@@ -67,11 +67,8 @@ export function useVoiceActivity(
 
       const nowSpeaking = new Set<string>();
       for (const [id, analyser] of current) {
-        const binCount = analyser.fftSize;
-        if (!bufferRef.current || bufferRef.current.length < binCount) {
-          bufferRef.current = new Uint8Array(binCount);
-        }
-        const buf = bufferRef.current;
+        const buf = analyserBuffer(analyser, bufferRef.current);
+        bufferRef.current = buf;
         const { levelDb } = calculateAnalyserLevel(analyser, buf);
 
         let st = states.get(id);

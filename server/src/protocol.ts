@@ -46,11 +46,17 @@ export function quoteText(text: string): string {
   return [...text].slice(0, MAX_REPLY_QUOTE_LENGTH).join("");
 }
 
+export interface GifItem {
+  id: string;
+  title: string;
+  preview: string;
+  url: string;
+}
+
 export interface PollOption {
   id: string;
   text: string;
-  voterIds: string[];
-  voterNames: string[];
+  voters: ReactionUser[];
 }
 
 export interface PollMessage {
@@ -116,14 +122,14 @@ export interface ServerToClientEvents {
     screenSharer: string | null;
   }) => void;
   "participant-joined": (participant: Participant) => void;
-  "participant-left": (data: { id: string }) => void;
+  "participant-left": (data: { id: string; userId: string }) => void;
   "participant-muted": (data: { id: string; isMuted: boolean }) => void;
   "screen-share-started": (data: { id: string }) => void;
   "screen-share-stopped": (data: { id: string }) => void;
   offer: (data: { from: string; offer: SessionDescription }) => void;
   answer: (data: { from: string; answer: SessionDescription }) => void;
   "ice-candidate": (data: { from: string; candidate: IceCandidate }) => void;
-  typing: (data: { senderId: string; senderName: string }) => void;
+  typing: (data: { userId: string; senderName: string }) => void;
   "chat-message": (msg: ChatMessage) => void;
   "chat-reaction-update": (data: { messageId: string; reactions: Record<string, ReactionUser[]> }) => void;
   "chat-message-edit": (data: { messageId: string; text: string }) => void;

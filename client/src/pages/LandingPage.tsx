@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Users, Plus, Lock } from "lucide-react";
 import { MAX_NAME_LENGTH, MAX_PASSWORD_LENGTH } from "../types";
+import { REQUEST_TIMEOUT_MS } from "../lib/requestTimeouts";
 import { lookupRoom } from "../lib/roomLookup";
 
 type Mode = "idle" | "join" | "create";
@@ -14,6 +15,45 @@ interface RedirectState {
   roomId?: string;
   name?: string;
   password?: string;
+}
+
+function NameInput({ value, onChange }: { value: string; onChange: (name: string) => void }) {
+  return (
+    <input
+      aria-label="Your name"
+      type="text"
+      placeholder="Your name"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      maxLength={MAX_NAME_LENGTH}
+      autoFocus
+      className={`w-full ${INPUT}`}
+    />
+  );
+}
+
+function FormActions({ error, onBack, disabled, label }: { error: string; onBack: () => void; disabled: boolean; label: string }) {
+  return (
+    <>
+      {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
+      <div className="flex gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex-1 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-colors cursor-pointer"
+        >
+          Back
+        </button>
+        <button
+          type="submit"
+          disabled={disabled}
+          className="flex-1 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+        >
+          {label}
+        </button>
+      </div>
+    </>
+  );
 }
 
 export default function LandingPage() {
@@ -61,7 +101,7 @@ export default function LandingPage() {
         setRoomNeedsPassword(false);
         return;
       }
-      goToRoom(roomId.trim(), data.hasPassword ? password : undefined);
+      goToRoom(roomId.trim(), data.hasPassword ? password.trim() : undefined);
     } catch {
       setError("Failed to connect. Please try again.");
     } finally {
@@ -79,6 +119,7 @@ export default function LandingPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: password.trim() || undefined }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -131,16 +172,7 @@ export default function LandingPage() {
 
         {mode === "join" && (
           <form onSubmit={handleJoin} className="flex flex-col gap-4">
-            <input
-              aria-label="Your name"
-              type="text"
-              placeholder="Your name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={MAX_NAME_LENGTH}
-              autoFocus
-              className={`w-full ${INPUT}`}
-            />
+            <NameInput value={name} onChange={setName} />
             <input
               aria-label="Room ID"
               type="text"
@@ -168,38 +200,18 @@ export default function LandingPage() {
                 />
               </div>
             )}
-            {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={resetMode}
-                className="flex-1 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-colors cursor-pointer"
-              >
-                Back
-              </button>
-              <button
-                type="submit"
-                disabled={loading || !name.trim() || !roomId.trim() || (roomNeedsPassword && !password.trim())}
-                className="flex-1 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
-              >
-                {loading ? "Joining..." : "Join"}
-              </button>
-            </div>
+            <FormActions
+              error={error}
+              onBack={resetMode}
+              disabled={loading || !name.trim() || !roomId.trim() || (roomNeedsPassword && !password.trim())}
+              label={loading ? "Joining..." : "Join"}
+            />
           </form>
         )}
 
         {mode === "create" && (
           <form onSubmit={handleCreate} className="flex flex-col gap-4">
-            <input
-              aria-label="Your name"
-              type="text"
-              placeholder="Your name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={MAX_NAME_LENGTH}
-              autoFocus
-              className={`w-full ${INPUT}`}
-            />
+            <NameInput value={name} onChange={setName} />
             <div className="flex items-center gap-2">
               <Lock size={16} className="text-gray-400 flex-shrink-0" />
               <input
@@ -212,23 +224,12 @@ export default function LandingPage() {
                 className={`flex-1 ${INPUT}`}
               />
             </div>
-            {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={resetMode}
-                className="flex-1 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-colors cursor-pointer"
-              >
-                Back
-              </button>
-              <button
-                type="submit"
-                disabled={loading || !name.trim()}
-                className="flex-1 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
-              >
-                {loading ? "Creating..." : "Create Room"}
-              </button>
-            </div>
+            <FormActions
+              error={error}
+              onBack={resetMode}
+              disabled={loading || !name.trim()}
+              label={loading ? "Creating..." : "Create Room"}
+            />
           </form>
         )}
       </div>

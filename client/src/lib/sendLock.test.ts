@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { CONNECTION_LOST_ERROR, createSendLock, isSameConnection, replyToSend, uploadErrorMessage } from "./sendLock";
+import { CONNECTION_LOST_ERROR, createSendLock, isSameConnection, replyToSend, reusableUploadUrls, UPLOAD_TIMEOUT_ERROR, uploadErrorMessage } from "./sendLock";
 
 describe("isSameConnection", () => {
   it("accepts only the connected socket the upload started on", () => {
@@ -15,9 +15,34 @@ describe("uploadErrorMessage", () => {
     expect(uploadErrorMessage(new Error("Not authorized for this room"), false)).toBe(CONNECTION_LOST_ERROR);
   });
 
+  it("explains a timeout instead of showing the browser's message", () => {
+    expect(uploadErrorMessage(new DOMException("signal timed out", "TimeoutError"), true)).toBe(UPLOAD_TIMEOUT_ERROR);
+  });
+
   it("shows the server's reason while still connected", () => {
     expect(uploadErrorMessage(new Error("Image is too large"), true)).toBe("Image is too large");
     expect(uploadErrorMessage("odd", true)).toBe("Failed to upload images");
+  });
+});
+
+describe("reusableUploadUrls", () => {
+  const a = new File(["a"], "a.png");
+  const b = new File(["b"], "b.png");
+  const uploaded = { files: [a, b], urls: ["/a", "/b"] };
+
+  // Regression: each retry after a drop uploaded again, using up the room's quota.
+  it("reuses the URLs when the draft holds the same files", () => {
+    expect(reusableUploadUrls(uploaded, [a, b])).toEqual(["/a", "/b"]);
+  });
+
+  it("uploads again when the images changed", () => {
+    expect(reusableUploadUrls(uploaded, [a])).toBeNull();
+    expect(reusableUploadUrls(uploaded, [b, a])).toBeNull();
+    expect(reusableUploadUrls(uploaded, [a, new File(["b"], "b.png")])).toBeNull();
+  });
+
+  it("has nothing to reuse before the first upload", () => {
+    expect(reusableUploadUrls(null, [a])).toBeNull();
   });
 });
 

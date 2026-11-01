@@ -1,27 +1,26 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
-import { Settings, LogOut, Copy, Check, AlertTriangle, Volume2, ChevronDown, Link, MicOff, X, type LucideIcon } from "lucide-react";
-import { useCopyFeedback } from "../hooks/useCopyFeedback";
+import { ChevronDown } from "lucide-react";
 import { useSocket } from "../hooks/useSocket";
 import { useWebRTC } from "../hooks/useWebRTC";
 import { useMediaDevices } from "../hooks/useMediaDevices";
 import { useCaptureAudio } from "../hooks/useCaptureAudio";
+import { useMicrophone } from "../hooks/useMicrophone";
 import { useVoiceActivity } from "../hooks/useVoiceActivity";
 import { useAudioSettings } from "../hooks/useAudioSettings";
 import { useTransmissionGate } from "../hooks/useTransmissionGate";
-import Dialog from "../components/Dialog";
+import LeaveRoomDialog from "../components/LeaveRoomDialog";
 import ParticipantsList from "../components/ParticipantsList";
-import ChatPanel from "../components/ChatPanel";
+import RoomBanners from "../components/RoomBanners";
+import RoomChat from "../components/RoomChat";
+import RoomHeader from "../components/RoomHeader";
 import VoiceControls from "../components/VoiceControls";
 import SettingsPopup from "../components/SettingsPopup";
 import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS } from "../types";
-import { errorName, huddleLog } from "../lib/huddleLog";
-import { ImageSessionContext } from "../lib/imageSessionContext";
 import { resyncCallStateWhenLimited } from "../lib/callStateResync";
-import { classifyMicError, micErrorAfterTrackEnded, micErrorMessage, type MicError } from "../lib/micError";
-import { applyNoiseSuppression, stopStreams } from "../lib/micStreams";
+import { isNoiseCancellationSupported } from "../lib/micCapture";
 import { playMuteSound, playUnmuteSound } from "../lib/notificationSounds";
 
 /**
@@ -43,31 +42,39 @@ export default function RoomPage() {
   return <RoomCall roomId={roomId} name={name} password={state?.password} />;
 }
 
-const BANNER_ACTION = "px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer";
-
-function RoomBanner({ icon: Icon, role, message, children }: { icon: LucideIcon; role?: "alert"; message: string; children: ReactNode }) {
-  return (
-    <div role={role} className="flex items-center justify-between gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs">
-      <span className="flex items-center gap-2">
-        <Icon size={14} className="shrink-0" />
-        {message}
-      </span>
-      <span className="flex items-center gap-2 shrink-0">{children}</span>
-    </div>
-  );
-}
-
 function RoomCall({ roomId, name, password }: { roomId: string; name: string; password?: string }) {
   const navigate = useNavigate();
 
   const [isMuted, setIsMuted] = useState(false);
-  const [micError, setMicError] = useState<MicError | null>(null);
+  const { audioInputs, selectedDeviceId, setSelectedDeviceId } = useMediaDevices();
+  const {
+    settings,
+    setNoiseCancellationEnabled,
+    setTransmissionThreshold,
+    setManualThresholdDb,
+  } = useAudioSettings();
+  const { processStream, localAnalyser, needsAudioGesture, resumeAudio, cleanup } = useCaptureAudio();
+  const {
+    stream: localStream,
+    error: micError,
+    retrying: micRetrying,
+    retry: retryMic,
+    dismissError: dismissMicError,
+    setDevice,
+    setNoiseCancellation,
+  } = useMicrophone({
+    isMuted,
+    noiseCancellation: settings.noiseCancellationEnabled,
+    processStream,
+    onDevice: setSelectedDeviceId,
+    onRelease: cleanup,
+  });
   const micUnavailable = !!micError && micError !== "switch-failed";
   // What the room is told: without a mic the user can't be heard, whatever their
   // own mute choice (which is kept, and applies again once the mic is back).
   const announcedMuted = isMuted || micUnavailable;
 
-  const { socket, userId, httpToken, imageSession, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
+  const { socket, userId, httpToken, imageSession, participants, connected, joinError, currentScreenSharer, joinRoom } = useSocket({
     roomId,
     name,
     password,
@@ -83,13 +90,9 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
     }
   }, [joinError, navigate, roomId, name, password]);
 
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [micRetrying, setMicRetrying] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [peerVolumes, setPeerVolumes] = useState<Map<string, number>>(new Map());
-  const { status: roomIdCopy, copy: copyRoomId } = useCopyFeedback();
-  const { status: linkCopy, copy: copyLink } = useCopyFeedback();
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [participantsOpen, setParticipantsOpen] = useState(false);
 
@@ -102,24 +105,8 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
-  const { audioInputs, selectedDeviceId, setSelectedDeviceId } = useMediaDevices();
-  const {
-    settings,
-    setNoiseCancellationEnabled,
-    setTransmissionThreshold,
-    setManualThresholdDb,
-  } = useAudioSettings();
-  const { processStream, localAnalyser, needsAudioGesture, resumeAudio, cleanup } = useCaptureAudio();
-  const rawStreamRef = useRef<MediaStream | null>(null);
-  // The outbound clone is independent of the raw track and must be stopped
-  // separately; refs keep acquireMic and the unmount cleanup off stale state.
-  const outboundStreamRef = useRef<MediaStream | null>(null);
-  const isMutedRef = useRef(isMuted);
-  isMutedRef.current = isMuted;
   const announcedMutedRef = useRef(announcedMuted);
   announcedMutedRef.current = announcedMuted;
-  // The device Retry asks for: the one that failed, unless it has gone away.
-  const micRetryDeviceRef = useRef<string | undefined>(undefined);
   const isScreenSharingRef = useRef(isScreenSharing);
   isScreenSharingRef.current = isScreenSharing;
 
@@ -137,213 +124,12 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
     if (socket?.connected) socket.emit("mute-toggle", { isMuted: announcedMuted });
   }, [socket, announcedMuted]);
 
-  // Generation guard: only the newest acquisition may install its stream.
-  // Stale getUserMedia completions (e.g. from a superseded device switch)
-  // are stopped instead of overwriting the active capture.
-  const acquireGenRef = useRef(0);
-
-  // Check if noise suppression is supported as a controllable constraint
-  const isNoiseCancellationSupported = Boolean(
-    typeof navigator !== "undefined" &&
-      navigator.mediaDevices?.getSupportedConstraints?.()?.noiseSuppression,
-  );
-
-  /**
-   * Build browser-compatible audio constraints that request native WebRTC
-   * processing (echo cancellation, noise suppression, automatic gain control).
-   *
-   * These constraints are treated as hints: each browser may honor or ignore
-   * them depending on platform/hardware. They are the same class of processing
-   * used by Google Meet / Zoom and, unlike a page-owned AudioWorklet, continue
-   * to run on the browser's real-time audio thread when the tab is backgrounded.
-   *
-   * `advanced`/`exact` are avoided for processing flags so a browser that does
-   * not support a constraint still returns a usable track. Device selection
-   * uses `exact` so switching devices is honored.
-   */
-  const buildAudioConstraints = useCallback(
-    (deviceId?: string, noiseCancellation = settings.noiseCancellationEnabled): MediaTrackConstraints => {
-      const constraints: MediaTrackConstraints = {
-        echoCancellation: true,
-        noiseSuppression: noiseCancellation,
-        autoGainControl: true,
-      };
-      if (deviceId) {
-        constraints.deviceId = { exact: deviceId };
-      }
-      return constraints;
-    },
-    [settings.noiseCancellationEnabled],
-  );
-
-  /** Resolves true only if this acquisition became the active capture. */
-  const acquireMic = useCallback(
-    async (deviceId?: string, noiseCancellation?: boolean): Promise<boolean> => {
-      const gen = ++acquireGenRef.current;
-      const startedAt = performance.now();
-      try {
-        const raw = await navigator.mediaDevices.getUserMedia({
-          audio: buildAudioConstraints(deviceId, noiseCancellation),
-        });
-        huddleLog("capture", {
-          event: "getUserMedia-resolved",
-          gen,
-          elapsedMs: Math.round(performance.now() - startedAt),
-          deviceId: deviceId ?? "default",
-        });
-        // A newer acquisition superseded this one; discard the stale stream.
-        if (gen !== acquireGenRef.current) {
-          stopStreams(raw);
-          return false;
-        }
-        // Stop the previously active raw tracks before replacing, now that
-        // the new stream is confirmed good.
-        if (rawStreamRef.current && rawStreamRef.current !== raw) {
-          stopStreams(rawStreamRef.current);
-        }
-        rawStreamRef.current = raw;
-
-        // Surface the browser-reported capture settings in development so
-        // noise-suppression capability can be distinguished from request.
-        const env = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env;
-        if (env?.DEV) {
-          const track = raw.getAudioTracks()[0];
-          const settings = track?.getSettings();
-          const supported = navigator.mediaDevices.getSupportedConstraints?.() ?? {};
-          console.debug("[huddle:capture]", {
-            deviceId: settings?.deviceId,
-            echoCancellation: settings?.echoCancellation,
-            noiseSuppression: settings?.noiseSuppression,
-            autoGainControl: settings?.autoGainControl,
-            sampleRate: settings?.sampleRate,
-            channelCount: settings?.channelCount,
-            supportedEchoCancellation: supported.echoCancellation,
-            supportedNoiseSuppression: supported.noiseSuppression,
-            supportedAutoGainControl: supported.autoGainControl,
-          });
-        }
-
-        const processed = await processStream(raw);
-        if (gen !== acquireGenRef.current) return false;
-
-        // Clone the native capture track specifically for the outbound WebRTC stream.
-        // This decouples outbound transmission gating (track.enabled) from the localAnalyser
-        // tap. Setting outboundTrack.enabled = false silences transmission without silencing
-        // the raw analyser input, allowing the gate to reopen when speech resumes.
-        const rawAudioTrack = raw.getAudioTracks()[0];
-        const outboundTrack = rawAudioTrack ? rawAudioTrack.clone() : null;
-        const outboundStream = outboundTrack ? new MediaStream([outboundTrack]) : processed;
-
-        const outboundAudioTrack = outboundStream.getAudioTracks()[0];
-        if (outboundAudioTrack) {
-          outboundAudioTrack.enabled = !isMutedRef.current;
-        }
-
-        // Clean up previously active outbound tracks
-        if (outboundStreamRef.current && outboundStreamRef.current !== raw) {
-          stopStreams(outboundStreamRef.current);
-        }
-        outboundStreamRef.current = outboundStream;
-
-        setLocalStream(outboundStream);
-        setMicError(null);
-        micRetryDeviceRef.current = undefined;
-        // Set here, not when the user picks, so the picker only ever shows the
-        // device in use, including after a fallback to the default one.
-        const activeDeviceId = rawAudioTrack?.getSettings().deviceId;
-        if (activeDeviceId) setSelectedDeviceId(activeDeviceId);
-        // Unplugged, or revoked by the browser. stop() doesn't fire this, so our
-        // own device switches and leaving don't reach it.
-        rawAudioTrack?.addEventListener("ended", () => {
-          if (rawStreamRef.current !== raw) return;
-          huddleLog("capture", { event: "track-ended" });
-          void acquireMicRef.current?.().then((recovered) => {
-            if (!recovered && rawStreamRef.current === raw) setMicError(micErrorAfterTrackEnded);
-          });
-        });
-        huddleLog("capture", {
-          event: "localStream-committed",
-          gen,
-          elapsedMs: Math.round(performance.now() - startedAt),
-        });
-        return true;
-      } catch (err) {
-        huddleLog("capture", { event: "getUserMedia-failed", error: errorName(err) });
-        if (gen !== acquireGenRef.current) return false;
-        const error = classifyMicError(err);
-        const stillCapturing = outboundStreamRef.current?.getAudioTracks()[0]?.readyState === "live";
-        setMicError(stillCapturing ? "switch-failed" : error);
-        micRetryDeviceRef.current = error === "not-found" ? undefined : deviceId;
-        return false;
-      }
-    },
-    [processStream, buildAudioConstraints, setSelectedDeviceId],
-  );
-  const acquireMicRef = useRef(acquireMic);
-  acquireMicRef.current = acquireMic;
-
-  const retryMic = useCallback(async () => {
-    if (micRetrying) return;
-    setMicRetrying(true);
-    await acquireMic(micRetryDeviceRef.current);
-    setMicRetrying(false);
-  }, [micRetrying, acquireMic]);
-
-  useEffect(() => {
-    acquireMic();
-    return () => {
-      // Invalidate any in-flight acquisition so a late getUserMedia resolve
-      // stops its own stream instead of reopening the mic after leaving.
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- a counter that must bump its live value.
-      acquireGenRef.current++;
-      stopStreams(rawStreamRef.current, outboundStreamRef.current);
-      rawStreamRef.current = null;
-      outboundStreamRef.current = null;
-      cleanup();
-    };
-    // Mount-only: acquireMic changes with the noise-cancellation setting, and
-    // re-running this effect would tear down the live mic and audio engine.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const handleDeviceChange = useCallback(
-    (deviceId: string) => {
-      // acquireMic stops the old raw tracks only after the new stream is
-      // confirmed, avoiding a window with no active capture.
-      void acquireMic(deviceId);
-    },
-    [acquireMic],
-  );
-
   const handleNoiseCancellationChange = useCallback(
     async (enabled: boolean) => {
       setNoiseCancellationEnabled(enabled);
-
-      // Peers receive the outbound clone, and constraints apply per track.
-      const tracks = [rawStreamRef.current, outboundStreamRef.current].flatMap((stream) => stream?.getAudioTracks() ?? []);
-      try {
-        if (await applyNoiseSuppression(tracks, enabled)) {
-          huddleLog("capture", {
-            event: "applyConstraints-noiseSuppression-success",
-            enabled,
-          });
-          return;
-        }
-        huddleLog("capture", { event: "applyConstraints-not-applied-fallback-reacquire" });
-      } catch (err) {
-        huddleLog("capture", {
-          event: "applyConstraints-failed-fallback-reacquire",
-          error: errorName(err),
-        });
-      }
-
-      // Fallback: reacquire mic with new constraints. Chromium accepts the call
-      // above without changing anything, and hands a new capture of an open device
-      // that device's old processing, so the current capture must close first.
-      stopStreams(rawStreamRef.current, outboundStreamRef.current);
-      void acquireMic(selectedDeviceId, enabled);
+      await setNoiseCancellation(enabled, selectedDeviceId);
     },
-    [setNoiseCancellationEnabled, acquireMic, selectedDeviceId],
+    [setNoiseCancellationEnabled, setNoiseCancellation, selectedDeviceId],
   );
 
   const handleScreenShareStopped = useCallback(() => {
@@ -384,13 +170,11 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
   );
 
   const handleToggleMute = useCallback(() => {
-    setIsMuted((prev) => {
-      const nextMuted = !prev;
-      if (nextMuted) playMuteSound();
-      else playUnmuteSound();
-      return nextMuted;
-    });
-  }, []);
+    // Not in a state updater: StrictMode runs those twice.
+    if (isMuted) playUnmuteSound();
+    else playMuteSound();
+    setIsMuted(!isMuted);
+  }, [isMuted]);
 
   const someoneElseSharing = !!currentScreenSharer && currentScreenSharer !== socket?.id;
 
@@ -405,21 +189,17 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
     }
   }, [isScreenSharing, startScreenShare, stopScreenShare, someoneElseSharing]);
 
-  const handleSetPeerVolume = useCallback(
-    (peerId: string, volume: number) => {
-      setPeerVolumes((prev) => new Map(prev).set(peerId, volume));
-      setRemoteVolume(peerId, volume);
-    },
-    [setRemoteVolume],
-  );
+  const handleSetPeerVolume = useCallback((userId: string, volume: number) => {
+    setPeerVolumes((prev) => new Map(prev).set(userId, volume));
+  }, []);
 
-  const handleCopyRoomId = useCallback(() => {
-    void copyRoomId(roomId);
-  }, [roomId, copyRoomId]);
-
-  const handleCopyLink = useCallback(() => {
-    void copyLink(globalThis.location.href);
-  }, [copyLink]);
+  // Choices are by userId, so one survives a reconnect under a new socket id.
+  useEffect(() => {
+    for (const p of participants) {
+      const volume = peerVolumes.get(p.userId);
+      if (volume !== undefined) setRemoteVolume(p.id, volume);
+    }
+  }, [participants, peerVolumes, setRemoteVolume]);
 
   const localParticipant: Participant = {
     id: localId,
@@ -448,8 +228,6 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
   const screenSharerName =
     firstScreenStream && allParticipants.find((p) => p.id === firstScreenStream[0])?.name;
 
-  const linkLabel = linkCopy === "failed" ? "Couldn't copy room link" : "Copy room link";
-
   const voiceControlsProps = {
     isMuted: announcedMuted,
     micUnavailable,
@@ -461,93 +239,22 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
 
   return (
     <div className="h-dvh flex flex-col bg-gray-950 text-gray-100">
-      {micError && (
-        <RoomBanner icon={MicOff} role="alert" message={micErrorMessage(micError)}>
-          <button onClick={retryMic} disabled={micRetrying} className={`${BANNER_ACTION} disabled:opacity-60 disabled:cursor-wait`}>
-            {micRetrying ? "Retrying..." : "Retry"}
-          </button>
-          {micError === "switch-failed" && (
-            <button
-              onClick={() => setMicError(null)}
-              className="touch-target p-1 rounded-md hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
-              title="Dismiss"
-              aria-label="Dismiss"
-            >
-              <X size={14} />
-            </button>
-          )}
-        </RoomBanner>
-      )}
-      {/* Audio enable banner: shown when the browser blocked AudioContext
-          resume / autoplay (notably Safari/iOS after backgrounding). The
-          action must be triggered by a user gesture. */}
-      {needsAudioGesture && (
-        <RoomBanner icon={Volume2} message="Audio was paused by your browser. Click to re-enable voice.">
-          <button onClick={resumeAudio} className={BANNER_ACTION}>
-            Enable audio
-          </button>
-        </RoomBanner>
-      )}
-      {/* Remote playback blocked: the AudioContext that plays OTHER users'
-          voices is suspended (autoplay block / OS interruption). Without this
-          banner there was no recovery path — the user heard nobody. */}
-      {remotePlaybackBlocked && (
-        <RoomBanner icon={Volume2} message="Incoming audio was paused by your browser. Click to hear others.">
-          <button onClick={resumeRemotePlayback} className={BANNER_ACTION}>
-            Enable audio
-          </button>
-        </RoomBanner>
-      )}
-      {/* Top bar */}
-      <header className="flex items-center justify-between gap-2 px-4 py-2 border-b border-gray-800 bg-gray-900/50 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <h1 className="sr-only sm:not-sr-only text-sm font-bold tracking-tight">Huddle</h1>
-          <div className="hidden sm:block h-4 w-px bg-gray-700" />
-          <button
-            onClick={handleCopyRoomId}
-            className="touch-target flex items-center gap-1.5 min-w-0 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
-            title={roomIdCopy === "failed" ? "Couldn't copy room ID" : "Copy room ID"}
-          >
-            <span className="font-mono truncate">{roomId}</span>
-            {roomIdCopy === "copied" && <Check size={12} className="shrink-0 text-green-400" />}
-            {roomIdCopy === "failed" && <X size={12} className="shrink-0 text-red-400" />}
-            {roomIdCopy === "idle" && <Copy size={12} className="shrink-0" />}
-          </button>
-          <button
-            onClick={handleCopyLink}
-            className="touch-target flex items-center gap-1.5 shrink-0 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
-            title={linkLabel}
-            aria-label={linkLabel}
-          >
-            <span className="hidden sm:inline">Copy Link</span>
-            {linkCopy === "copied" && <Check size={12} className="text-green-400" />}
-            {linkCopy === "failed" && <X size={12} className="text-red-400" />}
-            {linkCopy === "idle" && <Link size={12} className="sm:hidden" />}
-            {linkCopy === "idle" && <Copy size={12} className="hidden sm:block" />}
-          </button>
-          {!connected && (
-            <span className="truncate text-xs text-amber-400 animate-pulse">Connecting...</span>
-          )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => setShowSettings(true)}
-            className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
-            title="Settings"
-            aria-label="Settings"
-          >
-            <Settings size={18} />
-          </button>
-          <button
-            onClick={() => setShowLeaveConfirm(true)}
-            className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-800 transition-colors cursor-pointer"
-            title="Leave room"
-            aria-label="Leave room"
-          >
-            <LogOut size={18} />
-          </button>
-        </div>
-      </header>
+      <RoomBanners
+        micError={micError}
+        micRetrying={micRetrying}
+        onRetryMic={retryMic}
+        onDismissMicError={dismissMicError}
+        needsAudioGesture={needsAudioGesture}
+        onResumeAudio={resumeAudio}
+        remotePlaybackBlocked={remotePlaybackBlocked}
+        onResumeRemotePlayback={resumeRemotePlayback}
+      />
+      <RoomHeader
+        roomId={roomId}
+        connected={connected}
+        onOpenSettings={() => setShowSettings(true)}
+        onLeave={() => setShowLeaveConfirm(true)}
+      />
 
       {/* Main content */}
       <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
@@ -604,18 +311,13 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
                 : "flex-1 min-h-0 flex flex-col"
             }
           >
-            <ImageSessionContext value={imageSession}>
-              <ChatPanel
-                socket={socket}
-                httpToken={httpToken}
-                chatHistory={chatHistory}
-                pinnedMessageId={pinnedMessageId}
-                localUserId={userId ?? ""}
-                roomId={roomId}
-                typingUsers={typingUsers}
-                notifyTyping={notifyTyping}
-              />
-            </ImageSessionContext>
+            <RoomChat
+              socket={socket}
+              httpToken={httpToken}
+              imageSession={imageSession}
+              localUserId={userId ?? ""}
+              roomId={roomId}
+            />
           </div>
         </main>
       </div>
@@ -626,10 +328,10 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
           onClose={() => setShowSettings(false)}
           audioInputs={audioInputs}
           selectedDeviceId={selectedDeviceId}
-          onDeviceChange={handleDeviceChange}
+          onDeviceChange={setDevice}
           noiseCancellationEnabled={settings.noiseCancellationEnabled}
           onNoiseCancellationChange={handleNoiseCancellationChange}
-          isNoiseCancellationSupported={isNoiseCancellationSupported}
+          isNoiseCancellationSupported={isNoiseCancellationSupported()}
           transmissionThreshold={settings.transmissionThreshold}
           onTransmissionThresholdChange={setTransmissionThreshold}
           manualThresholdDb={settings.manualThresholdDb}
@@ -641,40 +343,8 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
         />
       )}
 
-      {/* Leave room confirmation */}
       {showLeaveConfirm && (
-        <Dialog
-          onClose={() => setShowLeaveConfirm(false)}
-          labelledBy="leave-dialog-title"
-          overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-          panelClassName="w-full max-w-sm mx-4 rounded-xl bg-gray-900 border border-gray-700 shadow-2xl p-6 focus:outline-none"
-        >
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 rounded-full bg-red-500/10 text-red-400">
-              <AlertTriangle size={22} />
-            </div>
-            <div>
-              <h3 id="leave-dialog-title" className="text-lg font-semibold text-gray-100">Leave room?</h3>
-              <p className="text-sm text-gray-400 mt-0.5">
-                You will be disconnected from the call.
-              </p>
-            </div>
-          </div>
-          <div className="flex gap-3 justify-end">
-            <button
-              onClick={() => setShowLeaveConfirm(false)}
-              className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => navigate("/")}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-500 text-white transition-colors cursor-pointer"
-            >
-              Leave
-            </button>
-          </div>
-        </Dialog>
+        <LeaveRoomDialog onCancel={() => setShowLeaveConfirm(false)} onLeave={() => navigate("/")} />
       )}
     </div>
   );

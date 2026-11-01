@@ -1,0 +1,9 @@
+root = true
+
+# No end_of_line: git's autocrlf decides that per checkout.
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true

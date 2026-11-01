@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type { MicTelemetry, VoiceTransmissionThreshold } from "../types";
 import {
-  calculateAnalyserLevel,
+  analyserBuffer, calculateAnalyserLevel,
   getThresholdDb,
   stepNoiseFloor,
   type GateState,
@@ -36,10 +36,7 @@ export function useMicTelemetry(
     }
 
     const interval = setInterval(() => {
-      const binCount = localAnalyser.fftSize;
-      if (!bufferRef.current || bufferRef.current.length < binCount) {
-        bufferRef.current = new Uint8Array(binCount);
-      }
+      bufferRef.current = analyserBuffer(localAnalyser, bufferRef.current);
 
       const { levelDb } = calculateAnalyserLevel(localAnalyser, bufferRef.current);
 

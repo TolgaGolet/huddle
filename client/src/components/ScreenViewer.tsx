@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Maximize, Minimize } from "lucide-react";
+import { Maximize, Minimize } from "lucide-react";
+import { isFullscreenShortcut } from "../lib/fullscreenShortcut";
 
 interface Props {
   stream: MediaStream;
   sharerName: string;
-  onClose?: () => void;
 }
 
-export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
+export default function ScreenViewer({ stream, sharerName }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -40,7 +40,7 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
       if (!document.fullscreenEnabled) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if (e.key === "f" || e.key === "F") {
+      if (isFullscreenShortcut(e)) {
         toggleFullscreen();
       }
     };
@@ -67,15 +67,6 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
               aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
             >
               {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
-            </button>
-          )}
-          {onClose && (
-            <button
-              onClick={onClose}
-              aria-label="Close screen share"
-              className="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
-            >
-              <X size={14} />
             </button>
           )}
         </div>

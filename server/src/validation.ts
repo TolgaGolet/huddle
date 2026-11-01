@@ -53,7 +53,8 @@ export function noPayload(): Record<string, never> {
   return {};
 }
 
-const password = (v: unknown) => str(v, MAX_PASSWORD_LENGTH);
+/** Trimmed in this one parser so that create and join can't disagree over stray spaces. */
+const password = (v: unknown) => (typeof v === "string" ? str(v.trim(), MAX_PASSWORD_LENGTH) : null);
 
 const clientKey = (v: unknown) => (typeof v === "string" && CLIENT_KEY_PATTERN.test(v) ? v : null);
 

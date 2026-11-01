@@ -51,7 +51,7 @@ function vote(pollId: string, optionId: string): Promise<PollMessage> {
   });
 }
 
-const voteCounts = (poll: PollMessage) => poll.options.map((o) => o.voterIds.length);
+const voteCounts = (poll: PollMessage) => poll.options.map((o) => o.voters.length);
 
 describe("poll-vote", () => {
   it("moves a single-select vote to the newly chosen option", async () => {
@@ -61,7 +61,7 @@ describe("poll-vote", () => {
     expect(voteCounts(await vote(poll.id, a.id))).toEqual([1, 0, 0]);
     const moved = await vote(poll.id, b.id);
     expect(voteCounts(moved)).toEqual([0, 1, 0]);
-    expect(moved.options[1].voterNames).toEqual(["Ana"]);
+    expect(moved.options[1].voters.map((v) => v.name)).toEqual(["Ana"]);
   });
 
   it("accumulates multi-select votes", async () => {
@@ -79,7 +79,7 @@ describe("poll-vote", () => {
     await vote(poll.id, a.id);
     const cleared = await vote(poll.id, a.id);
     expect(voteCounts(cleared)).toEqual([0, 0, 0]);
-    expect(cleared.options[0].voterNames).toEqual([]);
+    expect(cleared.options[0].voters).toEqual([]);
   });
 
   it("ignores an unknown poll or option", async () => {

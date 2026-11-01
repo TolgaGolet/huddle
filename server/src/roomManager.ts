@@ -1,9 +1,7 @@
-import { Router } from "express";
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
-import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS, MAX_PASSWORD_LENGTH } from "./limits.js";
+import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS } from "./limits.js";
 import { isPollMessage, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry } from "./protocol.js";
-import { parseCreateRoom } from "./validation.js";
 
 export type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry };
 
@@ -26,6 +24,8 @@ export interface Room {
   screenSharerId: string | null;
   /** Set at creation and when the last participant leaves; the room is deleted once this age exceeds ROOM_GRACE_MS. */
   emptySince: number | null;
+  /** Checked against MAX_ROOMS_PER_IP. Never broadcast or log it. */
+  creatorIp: string | null;
 }
 
 /**
@@ -90,7 +90,7 @@ export function emptyReactions(): Record<string, ReactionUser[]> {
   return Object.create(null) as Record<string, ReactionUser[]>;
 }
 
-export function createRoom(password?: string): Room {
+export function createRoom(password?: string, creatorIp: string | null = null): Room {
   const id = nanoid(6);
   const room: Room = {
     id,
@@ -106,14 +106,13 @@ export function createRoom(password?: string): Room {
     imageKey: null,
     // A new room is empty: if nobody ever joins, it expires like any other.
     emptySince: Date.now(),
+    creatorIp,
   };
   rooms.set(id, room);
   return room;
 }
 
-export function verifyPassword(roomId: string, password?: string): boolean {
-  const room = rooms.get(roomId);
-  if (!room) return false;
+export function verifyPassword(room: Room, password?: string): boolean {
   if (!room.password) return true;
   return room.password === password;
 }
@@ -162,35 +161,44 @@ export function purgeExpiredRooms(): void {
   }
 }
 
-export function isNameTaken(roomId: string, name: string): boolean {
-  const room = rooms.get(roomId);
-  if (!room) return false;
+export function roomCount(): number {
+  return rooms.size;
+}
+
+export function roomCountForIp(ip: string): number {
+  let count = 0;
+  for (const room of rooms.values()) {
+    if (room.creatorIp === ip) count++;
+  }
+  return count;
+}
+
+/** Summed on demand: a running total could drift from the many places that change a room's bytes. */
+export function totalImageBytes(): number {
+  let total = 0;
+  for (const room of rooms.values()) total += room.imageBytes;
+  return total;
+}
+
+/** `leaving` are about to be removed, so they neither hold a name nor take up a place. */
+export function isNameTaken(room: Room, name: string, leaving: Participant[]): boolean {
   const lower = name.toLowerCase();
   for (const p of room.participants.values()) {
-    if (p.name.toLowerCase() === lower) return true;
+    if (p.name.toLowerCase() === lower && !leaving.includes(p)) return true;
   }
   return false;
 }
 
-export function isRoomFull(roomId: string): boolean {
-  const room = rooms.get(roomId);
-  if (!room) return false;
-  return room.participants.size >= MAX_PARTICIPANTS;
-}
-
-export function getParticipantCount(roomId: string): number {
-  const room = rooms.get(roomId);
-  return room ? room.participants.size : 0;
+export function isRoomFull(room: Room, leaving: Participant[]): boolean {
+  return room.participants.size - leaving.length >= MAX_PARTICIPANTS;
 }
 
 /** Without a `userId` the identity lasts only as long as this connection. */
-export function addParticipant(roomId: string, socketId: string, name: string, userId = socketId, isMuted = false): Participant | null {
-  const room = rooms.get(roomId);
-  if (!room) return null;
+export function addParticipant(room: Room, socketId: string, name: string, userId = socketId, isMuted = false): Participant {
   room.emptySince = null;
   const participant: Participant = { id: socketId, userId, name, isMuted };
   room.participants.set(socketId, participant);
-  socketRoomMap.set(socketId, roomId);
+  socketRoomMap.set(socketId, room.id);
   revokeHttpToken(socketId);
   const token = randomBytes(32).toString("base64url");
   httpTokenSockets.set(token, socketId);
@@ -201,7 +209,7 @@ export function addParticipant(roomId: string, socketId: string, name: string, u
 export function removeParticipant(roomId: string, socketId: string): void {
   socketRoomMap.delete(socketId);
   revokeHttpToken(socketId);
-  const room = rooms.get(roomId);
+  const room = getRoom(roomId);
   if (!room) return;
   room.participants.delete(socketId);
   if (room.participants.size === 0) {
@@ -212,19 +220,19 @@ export function removeParticipant(roomId: string, socketId: string): void {
   }
 }
 
-export function setMuted(roomId: string, socketId: string, isMuted: boolean): void {
-  const room = rooms.get(roomId);
-  if (!room) return;
+export function setMuted(room: Room, socketId: string, isMuted: boolean): void {
   const p = room.participants.get(socketId);
   if (p) p.isMuted = isMuted;
 }
 
-export function addChatMessage(roomId: string, msg: ChatEntry): void {
-  const room = rooms.get(roomId);
-  if (!room) return;
+export function findEntry(room: Room, id: string): ChatEntry | undefined {
+  return room.chatHistory.find((m) => m.id === id);
+}
+
+export function addChatMessage(room: Room, msg: ChatEntry): void {
   room.chatHistory.push(msg);
   if (room.chatHistory.length > MAX_CHAT_HISTORY) {
-    removeMessage(roomId, room.chatHistory[0].id);
+    removeMessage(room, room.chatHistory[0].id);
   }
 }
 
@@ -238,9 +246,7 @@ export function onMessageRemoved(fn: MessageRemovedListener): () => void {
 }
 
 // Every removal goes through here so the pin and listeners can't be skipped.
-export function removeMessage(roomId: string, messageId: string): void {
-  const room = rooms.get(roomId);
-  if (!room) return;
+export function removeMessage(room: Room, messageId: string): void {
   const index = room.chatHistory.findIndex((m) => m.id === messageId);
   if (index < 0) return;
   const [entry] = room.chatHistory.splice(index, 1);
@@ -252,40 +258,6 @@ export function removeMessage(roomId: string, messageId: string): void {
   messageRemovedListeners.forEach((fn) => fn(room, entry));
 }
 
-export function getChatHistory(roomId: string): ChatEntry[] {
-  return getRoom(roomId)?.chatHistory ?? [];
-}
-
-export function getParticipantsArray(roomId: string): Participant[] {
-  const room = getRoom(roomId);
-  if (!room) return [];
+export function getParticipantsArray(room: Room): Participant[] {
   return Array.from(room.participants.values());
 }
-
-export const router = Router();
-
-router.post("/rooms", (req, res) => {
-  const body = parseCreateRoom(req.body ?? {});
-  if (!body) {
-    // Only the password field is user-controlled; anything else is a malformed request.
-    const tooLong = typeof req.body?.password === "string" && req.body.password.length > MAX_PASSWORD_LENGTH;
-    res.status(400).json({ error: tooLong ? `Password must be at most ${MAX_PASSWORD_LENGTH} characters` : "Invalid request" });
-    return;
-  }
-  const room = createRoom(body.password);
-  res.json({ roomId: room.id });
-});
-
-router.get("/rooms/:id", (req, res) => {
-  const room = getRoom(req.params.id);
-  if (!room) {
-    res.json({ exists: false, hasPassword: false, participantCount: 0, maxParticipants: MAX_PARTICIPANTS });
-    return;
-  }
-  res.json({
-    exists: true,
-    hasPassword: !!room.password,
-    participantCount: room.participants.size,
-    maxParticipants: MAX_PARTICIPANTS,
-  });
-});

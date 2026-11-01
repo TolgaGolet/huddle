@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import express from "express";
+import { MAX_ROOMS, MAX_ROOMS_PER_IP } from "./limits.js";
 import {
   addChatMessage,
   addParticipant,
@@ -12,7 +16,80 @@ import {
   removeParticipant,
   resolveParticipant,
   ROOM_GRACE_MS,
+  roomCount,
+  totalImageBytes,
 } from "./roomManager.js";
+import { createRoomRouter } from "./roomRouter.js";
+
+describe("server-wide limits", () => {
+  it("sums image bytes across rooms", () => {
+    const before = totalImageBytes();
+    const a = createRoom();
+    const b = createRoom();
+    a.imageBytes = 100;
+    b.imageBytes = 23;
+
+    expect(totalImageBytes()).toBe(before + 123);
+    a.imageBytes = 0;
+    b.imageBytes = 0;
+  });
+
+  it("refuses new rooms at the cap, until expired ones can be purged", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createRoomRouter());
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const url = `http://localhost:${(server.address() as AddressInfo).port}/api/rooms`;
+    const post = () => fetch(url, { method: "POST" });
+
+    while (roomCount() < MAX_ROOMS) createRoom();
+    try {
+      const full = await post();
+      expect(full.status).toBe(503);
+      expect((await full.json()).error).toMatch(/full/);
+
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + ROOM_GRACE_MS + 1);
+      try {
+        expect((await post()).status).toBe(200);
+      } finally {
+        clock.mockRestore();
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  // Regression: one IP could fill MAX_ROOMS and lock everyone else out for good.
+  it("caps the live rooms one IP can create, leaving others unaffected", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createRoomRouter(1));
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const url = `http://localhost:${(server.address() as AddressInfo).port}/api/rooms`;
+    const post = (ip: string) => fetch(url, { method: "POST", headers: { "X-Forwarded-For": ip } });
+
+    try {
+      for (let i = 0; i < MAX_ROOMS_PER_IP; i++) expect((await post("203.0.113.1")).status).toBe(200);
+      expect((await post("203.0.113.1")).status).toBe(429);
+      expect((await post("203.0.113.2")).status).toBe(200);
+
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + ROOM_GRACE_MS + 1);
+      try {
+        expect((await post("203.0.113.1")).status).toBe(200);
+      } finally {
+        clock.mockRestore();
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
 
 describe("removeMessage", () => {
   const message = (id: string) => ({
@@ -35,10 +112,10 @@ describe("removeMessage", () => {
 
   it("removes the message, clears its pin and notifies listeners", () => {
     const room = createRoom();
-    addChatMessage(room.id, message("a"));
+    addChatMessage(room, message("a"));
     room.pinnedMessageId = "a";
 
-    removeMessage(room.id, "a");
+    removeMessage(room, "a");
 
     expect(room.chatHistory).toEqual([]);
     expect(room.pinnedMessageId).toBeNull();
@@ -47,10 +124,10 @@ describe("removeMessage", () => {
 
   it("does the same for a message pushed out by the history cap", () => {
     const room = createRoom();
-    for (let i = 0; i < 200; i++) addChatMessage(room.id, message(`m${i}`));
+    for (let i = 0; i < 200; i++) addChatMessage(room, message(`m${i}`));
     room.pinnedMessageId = "m0";
 
-    addChatMessage(room.id, message("newest"));
+    addChatMessage(room, message("newest"));
 
     expect(room.chatHistory).toHaveLength(200);
     expect(room.pinnedMessageId).toBeNull();
@@ -75,7 +152,7 @@ describe("room destruction", () => {
 
   function abandonedRoom(): string {
     const room = createRoom();
-    addParticipant(room.id, "s1", "Ana");
+    addParticipant(room, "s1", "Ana");
     removeParticipant(room.id, "s1");
     return room.id;
   }
@@ -125,7 +202,7 @@ describe("room destruction", () => {
 describe("participant membership", () => {
   it("keeps the socket -> room index in step with add/removeParticipant", () => {
     const room = createRoom();
-    addParticipant(room.id, "s1", "Ana");
+    addParticipant(room, "s1", "Ana");
     expect(resolveParticipant("s1")?.roomId).toBe(room.id);
 
     removeParticipant(room.id, "s1");

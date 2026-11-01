@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type { VoiceTransmissionThreshold } from "../types";
 import {
-  calculateAnalyserLevel,
+  analyserBuffer, calculateAnalyserLevel,
   closeGate,
   getThresholdDb,
   INITIAL_GATE_STATE,
@@ -123,10 +123,7 @@ export function useTransmissionGate({
         return;
       }
 
-      const binCount = localAnalyser.fftSize;
-      if (!bufferRef.current || bufferRef.current.length < binCount) {
-        bufferRef.current = new Uint8Array(binCount);
-      }
+      bufferRef.current = analyserBuffer(localAnalyser, bufferRef.current);
 
       const { levelDb } = calculateAnalyserLevel(localAnalyser, bufferRef.current);
 

@@ -1,12 +1,14 @@
 import { X } from "lucide-react";
 import Dialog from "./Dialog";
+import RoomImage from "./RoomImage";
 
 interface Props {
   url: string;
+  senderName: string;
   onClose: () => void;
 }
 
-export default function ImageLightbox({ url, onClose }: Props) {
+export default function ImageLightbox({ url, senderName, onClose }: Props) {
   return (
     <Dialog
       onClose={onClose}
@@ -24,11 +26,12 @@ export default function ImageLightbox({ url, onClose }: Props) {
       >
         <X size={16} />
       </button>
-      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- click-to-close is a mouse shortcut; the Close button and Escape are the keyboard routes. */}
-      <img
+      {/* Click-to-close is a mouse shortcut; the Close button and Escape are the keyboard routes. */}
+      <RoomImage
         src={url}
-        alt="Preview"
+        alt={`Sent by ${senderName}`}
         className="max-h-full max-w-full rounded-lg shadow-2xl"
+        skeletonClassName="h-64 w-64 rounded-lg"
         onClick={onClose}
       />
     </Dialog>

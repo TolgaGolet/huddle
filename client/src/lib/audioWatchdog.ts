@@ -32,7 +32,7 @@
 
 export type Direction = "in" | "out";
 
-export type DirectionStatus =
+type DirectionStatus =
   /** Counters advanced since the previous sample. */
   | "progressing"
   /** Expected and measurable, but flat for the full window — recovery should run. */
@@ -44,7 +44,7 @@ export type DirectionStatus =
   /** The browser did not expose usable stats — cannot measure, never recovers. */
   | "unknown";
 
-export interface DirectionSample {
+interface DirectionSample {
   /** Cumulative RTP bytes for this direction, or `null` if unavailable. */
   bytes: number | null;
   /** Cumulative RTP packets for this direction, or `null` if unavailable. */
@@ -60,7 +60,7 @@ export interface DirectionState {
   seeded: boolean;
 }
 
-export interface DirectionDecision {
+interface DirectionDecision {
   status: DirectionStatus;
   /** True when this direction has been flat for >= stallWindowMs and recovery should run. */
   shouldRecover: boolean;
@@ -81,7 +81,7 @@ export interface WatchdogSample {
   now: number;
 }
 
-export interface WatchdogDecision {
+interface WatchdogDecision {
   in: DirectionDecision;
   out: DirectionDecision;
 }
@@ -157,6 +157,73 @@ export function evaluateDirection(
     };
   }
   return { state: nextState, decision: { status: "measuring", shouldRecover: false, flatForMs } };
+}
+
+/** The part of an `RTCStatsReport` read here; each stat's fields vary by browser. */
+interface StatsReportLike {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- stats are a per-type grab bag.
+  forEach(callback: (stat: any) => void): void;
+}
+
+interface AudioStats {
+  in: DirectionSample;
+  out: DirectionSample;
+}
+
+/**
+ * Audio RTP counters from a stats report. A missing stat (a common cross-browser
+ * difference) stays `null` rather than zero, otherwise a browser without
+ * `bytesReceived` would look permanently stalled and trigger spurious recovery.
+ */
+export function readAudioStats(report: StatsReportLike): AudioStats {
+  const stats: AudioStats = {
+    in: { bytes: null, packets: null },
+    out: { bytes: null, packets: null },
+  };
+  report.forEach((s) => {
+    if (s.kind !== "audio") return;
+    if (s.type === "outbound-rtp") {
+      stats.out = { bytes: s.bytesSent ?? 0, packets: s.packetsSent ?? 0 };
+    } else if (s.type === "inbound-rtp") {
+      stats.in = { bytes: s.bytesReceived ?? 0, packets: s.packetsReceived ?? 0 };
+    }
+  });
+  return stats;
+}
+
+/** The development-only diagnostics view of a stats report. */
+export function describeStats(report: StatsReportLike): Record<string, unknown> {
+  const diag: Record<string, unknown> = {};
+  report.forEach((s) => {
+    if (s.type === "outbound-rtp" && s.kind === "audio") {
+      diag.outbound = { packetsSent: s.packetsSent, bytesSent: s.bytesSent };
+    } else if (s.type === "inbound-rtp" && s.kind === "audio") {
+      diag.inbound = {
+        packetsReceived: s.packetsReceived,
+        packetsLost: s.packetsLost,
+        jitter: s.jitter,
+        bytesReceived: s.bytesReceived,
+        concealmentEvents: s.concealmentEvents,
+        concealedSamples: s.concealedSamples,
+        totalAudioEnergy: s.totalAudioEnergy,
+        audioLevel: s.audioLevel,
+      };
+    } else if (s.type === "candidate-pair" && s.nominated) {
+      diag.transport = {
+        currentRoundTripTime: s.currentRoundTripTime,
+        bytesSent: s.bytesSent,
+        bytesReceived: s.bytesReceived,
+      };
+    } else if (s.type === "remote-inbound-rtp" && s.kind === "audio") {
+      diag.remoteInbound = {
+        roundTripTime: s.roundTripTime,
+        packetsLost: s.packetsLost,
+        jitter: s.jitter,
+        fractionLost: s.fractionLost,
+      };
+    }
+  });
+  return diag;
 }
 
 /**

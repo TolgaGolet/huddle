@@ -1,18 +1,21 @@
-export interface GifItem {
-  id: string;
-  title: string;
-  preview: string;
-  url: string;
-}
+import type { GifItem } from "../types";
+import { errorName } from "./huddleLog";
+import { REQUEST_TIMEOUT_MS } from "./requestTimeouts";
 
 async function fetchGifs(endpoint: string, signal: AbortSignal): Promise<GifItem[]> {
-  const res = await fetch(endpoint, { signal });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((body as { error?: string }).error ?? "GIPHY request failed");
+  try {
+    const res = await fetch(endpoint, { signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error((body as { error?: string }).error ?? "GIPHY request failed");
+    }
+    const json = (await res.json()) as { data: (GifItem | null)[] };
+    return (json.data ?? []).filter((g): g is GifItem => g !== null);
+  } catch (err) {
+    // GifPicker shows the message, and the browser's own isn't meant for users.
+    if (errorName(err) === "TimeoutError") throw new Error("GIPHY took too long to respond");
+    throw err;
   }
-  const json = (await res.json()) as { data: (GifItem | null)[] };
-  return (json.data ?? []).filter((g): g is GifItem => g !== null);
 }
 
 export function fetchTrending(signal: AbortSignal): Promise<GifItem[]> {

@@ -3,6 +3,7 @@ import type { Socket } from "socket.io-client";
 import type { AppSocket } from "../types";
 import { RemoteAudioManager } from "../lib/audioEngine";
 import { errorName, huddleLog, huddleWarn } from "../lib/huddleLog";
+import { parseIceServers } from "../lib/iceServers";
 import { PeerSession } from "../lib/peerSession";
 import { rekeyStream, withoutStream } from "../lib/screenStreams";
 
@@ -15,17 +16,12 @@ import { rekeyStream, withoutStream } from "../lib/screenStreams";
 // media, which presents as "connected but no audio" and is unrelated to the
 // negotiation races fixed here.
 const ICE_SERVERS: RTCConfiguration = (() => {
-  const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-  const raw = env?.VITE_ICE_SERVERS;
+  const raw = import.meta.env.VITE_ICE_SERVERS;
   if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as RTCIceServer[];
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return { iceServers: parsed };
-      }
-    } catch {
-      // Fall through to default on malformed env.
-    }
+    const iceServers = parseIceServers(raw);
+    if (iceServers) return { iceServers };
+    // vite.config.ts fails the build on this, so it takes an unusual build to get here.
+    huddleWarn("connection", { event: "ice-servers-invalid" });
   }
   return {
     iceServers: [
@@ -236,7 +232,8 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       // lazily creates their answering peer in `handleOffer`. This eliminates
       // the initial-offer glare where both sides negotiated at once.
       const micReady = !!localStreamRef.current;
-      huddleLog("room-joined", {
+      huddleLog("socket", {
+        event: "room-joined-roster",
         rosterSize: participants.length,
         micReady,
         roster: participants.map((p) => p.id),
@@ -342,7 +339,9 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
 
       socketRef.current?.emit("screen-share-started");
       return true;
-    } catch {
+    } catch (err) {
+      // NotAllowedError is the user cancelling the picker.
+      if (errorName(err) !== "NotAllowedError") huddleWarn("capture", { event: "screen-share-failed", error: errorName(err) });
       return false;
     }
   }, [stopScreenShare]);

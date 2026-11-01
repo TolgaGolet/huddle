@@ -1,10 +1,12 @@
 import { errorName } from "./huddleLog";
 
 /** `switch-failed`: a device change failed, but the previous mic is still live. */
-export type MicError = "denied" | "not-found" | "busy" | "ended" | "switch-failed";
+export type MicError = "insecure" | "denied" | "not-found" | "busy" | "ended" | "switch-failed";
 
 /** Classifies a getUserMedia rejection. The browser's message isn't used: it can quote details. */
 export function classifyMicError(err: unknown): MicError {
+  // Browsers hide mediaDevices on plain HTTP, so the error itself says nothing useful.
+  if (globalThis.isSecureContext === false) return "insecure";
   const name = errorName(err);
   if (name === "NotAllowedError" || name === "SecurityError") return "denied";
   if (name === "NotFoundError" || name === "OverconstrainedError") return "not-found";
@@ -22,6 +24,8 @@ export function micErrorAfterTrackEnded(current: MicError | null): MicError {
 
 export function micErrorMessage(error: MicError): string {
   switch (error) {
+    case "insecure":
+      return "Browsers only allow microphones on secure connections, so nobody can hear you. Open this page over HTTPS.";
     case "denied":
       return "Microphone access is blocked, so nobody can hear you. Allow it in your browser's site settings, then retry.";
     case "not-found":

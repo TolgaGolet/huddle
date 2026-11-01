@@ -12,11 +12,9 @@ interface Props {
   /** Stable identity, for "is this mine?" checks. */
   localUserId: string;
   roomId: string;
-  typingUsers: string[];
-  notifyTyping: () => void;
 }
 
-export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId, typingUsers, notifyTyping }: Props) {
+export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId }: Props) {
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -64,8 +62,6 @@ export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessag
         socket={socket}
         httpToken={httpToken}
         roomId={roomId}
-        typingUsers={typingUsers}
-        notifyTyping={notifyTyping}
         replyingTo={replyingTo}
         onReplyingToChange={setReplyingTo}
         onBeforeSend={() => { isAtBottomRef.current = true; }}

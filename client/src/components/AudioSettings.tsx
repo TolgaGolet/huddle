@@ -1,6 +1,13 @@
 import { Mic, ShieldCheck, Sparkles, Sliders } from "lucide-react";
 import type { MicTelemetry, VoiceTransmissionThreshold } from "../types";
-import { MANUAL_THRESHOLD_MAX_DB, MANUAL_THRESHOLD_MIN_DB } from "../lib/audioLevels";
+import {
+  MANUAL_THRESHOLD_MAX_DB,
+  MANUAL_THRESHOLD_MIN_DB,
+  THRESHOLD_HIGH_OPEN_DB,
+  THRESHOLD_LOW_OPEN_DB,
+  THRESHOLD_MEDIUM_OPEN_DB,
+  THRESHOLD_VERY_HIGH_OPEN_DB,
+} from "../lib/audioLevels";
 import { MicLevelPreview } from "./MicLevelPreview";
 
 interface Props {
@@ -81,10 +88,10 @@ export default function AudioSettings({
           className="w-full px-3 py-2 rounded-lg bg-gray-700 border border-gray-600 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors cursor-pointer"
         >
           <option value="off">Off (Continuous Transmission)</option>
-          <option value="low">Low (-42 dB)</option>
-          <option value="medium">Medium (-36 dB, Recommended)</option>
-          <option value="high">High (-30 dB)</option>
-          <option value="very-high">Very High (-24 dB)</option>
+          <option value="low">Low ({THRESHOLD_LOW_OPEN_DB} dB)</option>
+          <option value="medium">Medium ({THRESHOLD_MEDIUM_OPEN_DB} dB, Recommended)</option>
+          <option value="high">High ({THRESHOLD_HIGH_OPEN_DB} dB)</option>
+          <option value="very-high">Very High ({THRESHOLD_VERY_HIGH_OPEN_DB} dB)</option>
           <option value="manual">Manual (Custom dB Level)</option>
         </select>
 
@@ -138,7 +145,7 @@ export default function AudioSettings({
             </div>
           </div>
 
-          <label className="relative inline-flex items-center cursor-pointer shrink-0" aria-label="Toggle noise cancellation">
+          <label className="relative inline-flex items-center cursor-pointer shrink-0">
             <input
               id="noise-cancellation-toggle"
               type="checkbox"
