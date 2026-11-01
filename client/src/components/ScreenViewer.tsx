@@ -61,12 +61,14 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
             onClick={toggleFullscreen}
             className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
             title={isFullscreen ? "Exit fullscreen (F / Esc)" : "Fullscreen (F)"}
+            aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
           >
             {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
           </button>
           {onClose && (
             <button
               onClick={onClose}
+              aria-label="Close screen share"
               className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
             >
               <X size={14} />
@@ -75,6 +77,7 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
         </div>
       </div>
       <div className="relative flex-1 min-h-0 w-full">
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption, jsx-a11y/control-has-associated-label -- a live screen share has no caption track. */}
         <video
           ref={videoRef}
           autoPlay

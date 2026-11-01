@@ -16,6 +16,7 @@ export default function VoiceControls({
   onToggleScreenShare,
 }: Props) {
   const screenDisabled = screenShareDisabled && !isScreenSharing;
+  const screenLabel = screenDisabled ? "Someone is already sharing" : isScreenSharing ? "Stop sharing" : "Share screen";
 
   return (
     <div className="flex items-center justify-center gap-3 px-4 py-3 border-t border-gray-800">
@@ -27,6 +28,7 @@ export default function VoiceControls({
             : "bg-gray-800 text-gray-300 hover:bg-gray-700"
         }`}
         title={isMuted ? "Unmute" : "Mute"}
+        aria-label={isMuted ? "Unmute" : "Mute"}
       >
         {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
       </button>
@@ -40,7 +42,8 @@ export default function VoiceControls({
               ? "bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 cursor-pointer"
               : "bg-gray-800 text-gray-300 hover:bg-gray-700 cursor-pointer"
         }`}
-        title={screenDisabled ? "Someone is already sharing" : isScreenSharing ? "Stop sharing" : "Share screen"}
+        title={screenLabel}
+        aria-label={screenLabel}
       >
         {isScreenSharing ? <MonitorOff size={20} /> : <MonitorUp size={20} />}
       </button>

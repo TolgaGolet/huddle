@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { Send, Smile, BarChart3, Reply, X, ChevronDown, Image as ImageIcon, MoreVertical, Pencil, Trash2, Pin, PinOff } from "lucide-react";
+import { Send, Loader2, Smile, BarChart3, Reply, X, ChevronDown, Image as ImageIcon, MoreVertical, Pencil, Trash2, Pin, PinOff } from "lucide-react";
 import type { Socket } from "socket.io-client";
 import type { ChatMessage, ChatEntry } from "../types";
 import { isPollMessage, MAX_CHAT_TEXT_LENGTH, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE } from "../types";
@@ -11,11 +11,20 @@ import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
 import PollDisplay from "./PollDisplay";
 import { isImageFile, uploadImages } from "../lib/imageUpload";
+import { createSendLock } from "../lib/sendLock";
+import { hasReacted } from "../lib/reactions";
+import { cycleFocus } from "../lib/focusTrap";
+import { isSameConnection, replyToSend } from "../lib/sendLock";
+import Dialog from "./Dialog";
 
 interface Props {
   socket: Socket | null;
   chatHistory: ChatEntry[];
+  pinnedMessageId: string | null;
+  /** socket id, for authorizing image requests. */
   localId: string;
+  /** Stable identity, for "is this mine?" checks. */
+  localUserId: string;
   roomId: string;
   typingUsers: string[];
   notifyTyping: () => void;
@@ -47,12 +56,17 @@ function extractClipboardImages(clipboardData: DataTransfer | null): File[] {
     .filter((file): file is File => !!file && isImageFile(file) && file.size > 0);
 }
 
-export default function ChatPanel({ socket, chatHistory, localId, roomId, typingUsers, notifyTyping }: Props) {
+const CONNECTION_LOST_ERROR = "Connection lost, please try again.";
+
+export default function ChatPanel({ socket, chatHistory, pinnedMessageId, localId, localUserId, roomId, typingUsers, notifyTyping }: Props) {
   const [text, setText] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showGifPicker, setShowGifPicker] = useState(false);
   const [showPollCreator, setShowPollCreator] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
+  // Read after an upload, when the `replyingTo` a send captured may be outdated.
+  const replyingToRef = useRef(replyingTo);
+  replyingToRef.current = replyingTo;
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
@@ -65,9 +79,12 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [sendLock] = useState(createSendLock);
+  const [sending, setSending] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -96,11 +113,13 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
   }, [notifyTyping]);
 
   const pinnedMessage = useMemo(
-    () => chatHistory.find((entry) => entry.pinned === true) ?? null,
-    [chatHistory],
+    () => chatHistory.find((entry) => entry.id === pinnedMessageId) ?? null,
+    [chatHistory, pinnedMessageId],
   );
 
   function addImages(fileList: FileList | File[]) {
+    // A successful send clears the draft, which would lose images added now.
+    if (sending) return;
     setUploadError(null);
     const accepted: PendingImage[] = [];
     const errors: string[] = [];
@@ -181,42 +200,40 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
     setShowScrollDown(false);
   }
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        void doSend();
-        return;
-      }
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void doSend();
+      return;
+    }
 
-      const textarea = textareaRef.current;
-      if (!textarea) return;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
 
-      let format: { prefix: string; suffix: string } | null = null;
-      if (e.ctrlKey || e.metaKey) {
-        if (e.key === "b") format = { prefix: "**", suffix: "**" };
-        else if (e.key === "i") format = { prefix: "*", suffix: "*" };
-        else if (e.key === "e") format = { prefix: "`", suffix: "`" };
-        else if (e.key === "X" && e.shiftKey) format = { prefix: "~~", suffix: "~~" };
-      }
+    let format: { prefix: string; suffix: string } | null = null;
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === "b") format = { prefix: "**", suffix: "**" };
+      else if (e.key === "i") format = { prefix: "*", suffix: "*" };
+      else if (e.key === "e") format = { prefix: "`", suffix: "`" };
+      else if (e.key === "X" && e.shiftKey) format = { prefix: "~~", suffix: "~~" };
+    }
 
-      if (format) {
-        e.preventDefault();
-        const { newText, cursorStart, cursorEnd } = applyFormat(
-          textarea,
-          text,
-          format.prefix,
-          format.suffix,
-        );
-        setText(newText);
-        requestAnimationFrame(() => {
-          textarea.focus();
-          textarea.setSelectionRange(cursorStart, cursorEnd);
-        });
-      }
-    },
-    [text, pendingImages],
-  );
+    if (format) {
+      e.preventDefault();
+      if (sending) return;
+      const { newText, cursorStart, cursorEnd } = applyFormat(
+        textarea,
+        text,
+        format.prefix,
+        format.suffix,
+      );
+      setText(newText);
+      requestAnimationFrame(() => {
+        textarea.focus();
+        textarea.setSelectionRange(cursorStart, cursorEnd);
+      });
+    }
+  }
 
   async function doSend() {
     if ((!text.trim() && !pendingImages.length) || !socket || !socket.id) return;
@@ -227,32 +244,52 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
       setUploadError(`Message is too long (max ${MAX_CHAT_TEXT_LENGTH} characters).`);
       return;
     }
-    setUploadError(null);
+    const socketId = socket.id;
+    const activeSocket = socket;
+    await sendLock.run(async () => {
+      setSending(true);
+      setUploadError(null);
+      try {
+        await sendDraft(activeSocket, socketId);
+      } finally {
+        setSending(false);
+      }
+    });
+  }
+
+  /** Uploads the draft's images and sends it; a failed upload keeps the draft. */
+  async function sendDraft(activeSocket: Socket, socketId: string) {
     let imageUrls: string[] = [];
     try {
-      if (pendingImages.length) imageUrls = await uploadImages(roomId, socket.id, pendingImages.map((image) => image.file));
+      if (pendingImages.length) imageUrls = await uploadImages(roomId, socketId, pendingImages.map((image) => image.file));
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : "Failed to upload images");
+      return;
+    }
+    if (!isSameConnection(activeSocket, socketId)) {
+      setUploadError(CONNECTION_LOST_ERROR);
       return;
     }
     const payload: { text: string; imageUrls?: string[]; replyTo?: { id: string; senderName: string; text: string; imageUrl?: string } } = {
       text: text.trim(),
     };
     if (imageUrls.length) payload.imageUrls = imageUrls;
-    if (replyingTo) {
+    const reply = replyToSend(replyingTo, replyingToRef.current);
+    if (reply) {
       payload.replyTo = {
-        id: replyingTo.id,
-        senderName: replyingTo.senderName,
-        text: replyingTo.text || (replyingTo.imageUrls?.length ? "[Image]" : ""),
-        imageUrl: replyingTo.imageUrls?.[0],
+        id: reply.id,
+        senderName: reply.senderName,
+        text: reply.text || (reply.imageUrls?.length ? "[Image]" : ""),
+        imageUrl: reply.imageUrls?.[0],
       };
     }
     isAtBottomRef.current = true;
-    socket.emit("chat-message", payload);
+    activeSocket.emit("chat-message", payload);
     pendingImages.forEach((image) => URL.revokeObjectURL(image.previewUrl));
     setPendingImages([]);
     setText("");
-    setReplyingTo(null);
+    // Keep a reply the user started while the upload was running.
+    setReplyingTo((current) => (current === replyingTo ? null : current));
     textareaRef.current?.focus();
   }
 
@@ -278,7 +315,11 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
   }
 
   function handleGifSelect(gifUrl: string, gifTitle: string) {
-    if (!socket) return;
+    if (!socket || sending) return;
+    if (!socket.connected) {
+      setUploadError(CONNECTION_LOST_ERROR);
+      return;
+    }
     const payload: { text: string; gifUrl: string; replyTo?: { id: string; senderName: string; text: string } } = {
       text: gifTitle,
       gifUrl,
@@ -296,6 +337,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
   }
 
   function handleEmojiSelect(emoji: string) {
+    if (sending) return;
     const textarea = textareaRef.current;
     if (textarea) {
       const start = textarea.selectionStart;
@@ -329,6 +371,28 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
     }
   }
 
+  /** The element of a message that takes keyboard focus. */
+  function messageFocusTarget(id: string): HTMLElement | null {
+    const el = messageRefs.current.get(id);
+    if (!el) return null;
+    return el.matches("[tabindex]") ? el : el.querySelector<HTMLElement>("[tabindex]");
+  }
+
+  function closeContextMenu() {
+    if (contextMenu) messageFocusTarget(contextMenu.messageId)?.focus();
+    setContextMenu(null);
+  }
+
+  function handleContextMenuKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Escape" || e.key === "Tab") {
+      // Tab isn't prevented: it carries on from the message the menu belongs to.
+      closeContextMenu();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      cycleFocus([...e.currentTarget.querySelectorAll("button")], e.key === "ArrowUp");
+    }
+  }
+
   function startReply(msg: ChatMessage) {
     setReplyingTo(msg);
     requestAnimationFrame(() => textareaRef.current?.focus());
@@ -352,9 +416,9 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
     setContextMenu({
       messageId: entry.id,
       x,
-      isOwn: entry.senderId === localId,
+      isOwn: entry.senderId === localUserId,
       y,
-      isPinned: !!entry.pinned,
+      isPinned: entry.id === pinnedMessageId,
       isPoll: isPollMessage(entry),
     });
   }
@@ -370,6 +434,8 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
     if (!messageId) return;
     if (editingMessageId === messageId) setEditingMessageId(null);
     socket?.emit("chat-delete", { messageId });
+    // The message is about to disappear, so focus can't go back to it.
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
   function startEdit(msg: ChatMessage) {
@@ -389,19 +455,31 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
   }
 
   function handlePinMessage(messageId: string) {
-    setContextMenu(null);
+    closeContextMenu();
     socket?.emit("chat-pin", { messageId });
   }
 
-  // Close the lightbox with Escape while it is open.
+  // Close the emoji, GIF and poll popovers with Escape while one is open.
+  const popoverOpen = showEmojiPicker || showGifPicker || showPollCreator;
   useEffect(() => {
-    if (!lightboxUrl) return;
+    if (!popoverOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setLightboxUrl(null);
+      if (e.key !== "Escape") return;
+      setShowEmojiPicker(false);
+      setShowGifPicker(false);
+      setShowPollCreator(false);
+      textareaRef.current?.focus();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [lightboxUrl]);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [popoverOpen]);
+
+  // Move focus into the context menu when it opens, so keyboard users land on
+  // it rather than having to Tab past every later message.
+  const contextMenuMessageId = contextMenu?.messageId;
+  useEffect(() => {
+    if (contextMenuMessageId) contextMenuRef.current?.querySelector("button")?.focus();
+  }, [contextMenuMessageId]);
 
   // Close the context menu on any click outside of it.
   useEffect(() => {
@@ -415,33 +493,44 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
 
   function renderChatMessage(msg: ChatMessage) {
     const reactions = msg.reactions || {};
-    const reactionEntries = Object.entries(reactions).filter(([, names]) => names.length > 0);
+    const reactionEntries = Object.entries(reactions).filter(([, users]) => users.length > 0);
     const isEditing = editingMessageId === msg.id;
+    const isPinned = msg.id === pinnedMessageId;
     const editTooLong = isEditing && editText.trim().length > MAX_CHAT_TEXT_LENGTH;
 
     return (
       <div
         key={msg.id}
         ref={(el) => setMessageRef(msg.id, el)}
-        className={`group relative rounded-lg px-2 py-1 -mx-2 transition-colors hover:bg-gray-800/40 ${
-          msg.pinned ? "border-l-2 border-amber-400/70" : ""
+        role="group"
+        aria-label={`Message from ${msg.senderName}`}
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard route to a message; focusing it reveals the action bar and adds its buttons to the Tab order.
+        tabIndex={0}
+        className={`group relative rounded-lg px-2 py-1 -mx-2 transition-colors hover:bg-gray-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${
+          isPinned ? "border-l-2 border-amber-400/70" : ""
         }`}
       >
-        {msg.pinned && (
+        {isPinned && (
           <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 mb-0.5">
             <Pin size={9} /> Pinned
           </span>
         )}
         {/* Reply quote */}
         {msg.replyTo && (
-          <button
-            type="button"
-            onClick={() => scrollToMessage(msg.replyTo!.id)}
-            className="flex items-center gap-1.5 mb-1 pl-2 border-l-2 border-indigo-500/50 cursor-pointer hover:bg-gray-800/60 rounded-r py-0.5 pr-2 transition-colors"
-          >
-            <Reply size={10} className="text-gray-500 shrink-0" />
-            <span className="text-[11px] text-indigo-400 font-medium shrink-0">{msg.replyTo.senderName}</span>
-            {msg.replyTo.imageUrl ? (
+          <div className="flex items-center gap-1.5 mb-1 pl-2 border-l-2 border-indigo-500/50 rounded-r py-0.5 pr-2">
+            <button
+              type="button"
+              onClick={() => scrollToMessage(msg.replyTo!.id)}
+              aria-label={`Go to the message from ${msg.replyTo.senderName} this replies to`}
+              className="flex items-center gap-1.5 min-w-0 cursor-pointer hover:bg-gray-800/60 rounded transition-colors"
+            >
+              <Reply size={10} className="text-gray-500 shrink-0" />
+              <span className="text-[11px] text-indigo-400 font-medium shrink-0">{msg.replyTo.senderName}</span>
+              {!msg.replyTo.imageUrl && (
+                <span className="text-[11px] text-gray-500 truncate max-w-48">{msg.replyTo.text || "[Image]"}</span>
+              )}
+            </button>
+            {msg.replyTo.imageUrl && (
               <button
                 type="button"
                 onClick={() => setLightboxUrl(`${msg.replyTo!.imageUrl}?socketId=${encodeURIComponent(localId)}`)}
@@ -450,14 +539,14 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
               >
                 <img
                   src={`${msg.replyTo.imageUrl}?socketId=${encodeURIComponent(localId)}`}
-                  alt="Replied image"
+                  alt={`Sent by ${msg.replyTo.senderName}`}
                   className="h-8 w-8 rounded object-cover"
+                  // The quoted image may have been deleted since.
+                  onError={(e) => e.currentTarget.parentElement?.classList.add("hidden")}
                 />
               </button>
-            ) : (
-              <span className="text-[11px] text-gray-500 truncate max-w-48">{msg.replyTo.text || "[Image]"}</span>
             )}
-          </button>
+          </div>
         )}
 
         <div className="flex items-baseline gap-2">
@@ -500,7 +589,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
                       className="cursor-zoom-in"
                       title="View image"
                     >
-                      <img src={imageUrl} alt="Shared image" className="rounded-lg max-h-48 w-full object-cover hover:brightness-90 transition-all" loading="lazy" onLoad={scrollPinnedToBottom} />
+                      <img src={imageUrl} alt={`Sent by ${msg.senderName}`} className="rounded-lg max-h-48 w-full object-cover hover:brightness-90 transition-all" loading="lazy" onLoad={scrollPinnedToBottom} />
                     </button>
                   );
                 })}
@@ -519,6 +608,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
                     if (e.key === "Escape") { setEditingMessageId(null); setEditText(""); }
                   }}
                   rows={1}
+                  aria-label="Edit message"
                   className="flex-1 px-2 py-1 rounded bg-gray-800 border border-indigo-500 text-sm text-white focus:outline-none resize-none"
                   autoFocus
                 />
@@ -543,27 +633,33 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
         {/* Reaction badges */}
         {reactionEntries.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-1">
-            {reactionEntries.map(([emoji, names]) => (
-              <button
-                key={emoji}
-                type="button"
-                onClick={() => handleReaction(msg.id, emoji)}
-                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs border transition-colors cursor-pointer ${
-                  names.includes(msg.senderName === localId ? msg.senderName : "")
-                    ? "border-indigo-500/50 bg-indigo-500/10"
-                    : "border-gray-700 bg-gray-800/60 hover:border-gray-600"
-                }`}
-                title={names.join(", ")}
-              >
-                <span>{emoji}</span>
-                <span className="text-gray-400">{names.length}</span>
-              </button>
-            ))}
+            {reactionEntries.map(([emoji, users]) => {
+              const names = users.map((u) => u.name).join(", ");
+              const reacted = hasReacted(users, localUserId);
+              return (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => handleReaction(msg.id, emoji)}
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs border transition-colors cursor-pointer ${
+                    reacted
+                      ? "border-indigo-500/50 bg-indigo-500/10"
+                      : "border-gray-700 bg-gray-800/60 hover:border-gray-600"
+                  }`}
+                  title={names}
+                  aria-pressed={reacted}
+                  aria-label={`${emoji} reaction, ${users.length} ${users.length === 1 ? "person" : "people"}: ${names}`}
+                >
+                  <span>{emoji}</span>
+                  <span className="text-gray-400">{users.length}</span>
+                </button>
+              );
+            })}
           </div>
         )}
 
-        {/* Action bar on hover */}
-        <div className="absolute -top-3 right-0 hidden group-hover:flex items-center bg-gray-800 border border-gray-700 rounded-lg shadow-lg overflow-hidden">
+        {/* Action bar on hover or keyboard focus */}
+        <div className="absolute -top-3 right-0 hidden group-hover:flex group-has-[:focus-visible]:flex items-center bg-gray-800 border border-gray-700 rounded-lg shadow-lg overflow-hidden">
           {REACTION_EMOJIS.map((emoji) => (
             <button
               key={emoji}
@@ -571,6 +667,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
               onClick={() => handleReaction(msg.id, emoji)}
               className="px-1.5 py-1 hover:bg-gray-700 transition-colors cursor-pointer text-sm"
               title={emoji}
+              aria-label={`React with ${emoji}`}
             >
               {emoji}
             </button>
@@ -580,6 +677,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
             onClick={() => startReply(msg)}
             className="px-2 py-1 hover:bg-gray-700 transition-colors cursor-pointer text-gray-400 hover:text-gray-200 border-l border-gray-700"
             title="Reply"
+            aria-label="Reply"
           >
             <Reply size={13} />
           </button>
@@ -588,6 +686,8 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
             onClick={(e) => openContextMenu(msg, e)}
             className="px-1.5 py-1 hover:bg-gray-700 transition-colors cursor-pointer text-gray-400 hover:text-gray-200 border-l border-gray-700"
             title="More actions"
+            aria-label="More actions"
+            aria-haspopup="menu"
           >
             <MoreVertical size={13} />
           </button>
@@ -626,6 +726,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
               onClick={() => handlePinMessage(pinnedMessage.id)}
               className="p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer shrink-0"
               title="Unpin message"
+              aria-label="Unpin message"
             >
               <X size={12} />
             </button>
@@ -645,7 +746,8 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
                 <div key={entry.id} ref={(el) => setMessageRef(entry.id, el)}>
                   <PollDisplay
                     poll={entry}
-                    localId={localId}
+                    isPinned={entry.id === pinnedMessageId}
+                    localUserId={localUserId}
                     onVote={handlePollVote}
                     onContextMenu={openContextMenu}
                   />
@@ -661,13 +763,19 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
         {/* Message context menu */}
         {contextMenu && (
           <div
+            ref={contextMenuRef}
             data-context-menu
+            role="menu"
+            aria-label="Message actions"
+            tabIndex={-1}
+            onKeyDown={handleContextMenuKeyDown}
             style={{ left: contextMenu.x, top: contextMenu.y }}
             className="absolute z-30 min-w-40 py-1 rounded-lg bg-gray-800 border border-gray-700 shadow-xl"
           >
             {contextMenu.isOwn && !contextMenu.isPoll && (
               <button
                 type="button"
+                role="menuitem"
                 onClick={() => {
                   const msg = chatHistory.find((m) => m.id === contextMenu.messageId);
                   if (msg && !isPollMessage(msg) && msg.text) startEdit(msg);
@@ -681,6 +789,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
             {contextMenu.isOwn && (
               <button
                 type="button"
+                role="menuitem"
                 onClick={() => handleDeleteMessage(contextMenu.messageId)}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-gray-700 transition-colors cursor-pointer"
               >
@@ -689,6 +798,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
             )}
             <button
               type="button"
+              role="menuitem"
               onClick={() => handlePinMessage(contextMenu.messageId)}
               className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
             >
@@ -702,6 +812,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
           <button
             type="button"
             onClick={scrollToBottom}
+            aria-label={newMessageCount > 0 ? `Scroll to the ${newMessageCount} new ${newMessageCount === 1 ? "message" : "messages"}` : "Scroll to the latest message"}
             className="absolute bottom-3 right-4 flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium shadow-lg transition-colors cursor-pointer z-10"
           >
             {newMessageCount > 0 && (
@@ -715,61 +826,66 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
 
         {/* Image lightbox */}
         {lightboxUrl && (
-          <div
-            className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
-            onMouseDown={() => setLightboxUrl(null)}
+          <Dialog
+            onClose={() => setLightboxUrl(null)}
+            label="Image preview"
+            closeOnBackdrop
+            overlayClassName="absolute inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
+            panelClassName="relative max-h-full max-w-full focus:outline-none"
           >
-            <div className="relative max-h-full max-w-full" onMouseDown={(e) => e.stopPropagation()}>
-              <button
-                type="button"
-                onClick={() => setLightboxUrl(null)}
-                className="absolute -top-2 -right-2 z-10 rounded-full bg-gray-800 border border-gray-600 p-1.5 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors cursor-pointer shadow-lg"
-                title="Close"
-              >
-                <X size={16} />
-              </button>
-              <img
-                src={lightboxUrl}
-                alt="Shared image"
-                className="max-h-full max-w-full rounded-lg shadow-2xl"
-                onClick={() => setLightboxUrl(null)}
-              />
-            </div>
-          </div>
+            <button
+              type="button"
+              onClick={() => setLightboxUrl(null)}
+              className="absolute -top-2 -right-2 z-10 rounded-full bg-gray-800 border border-gray-600 p-1.5 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors cursor-pointer shadow-lg"
+              title="Close"
+              aria-label="Close image preview"
+            >
+              <X size={16} />
+            </button>
+            {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- click-to-close is a mouse shortcut; the Close button and Escape are the keyboard routes. */}
+            <img
+              src={lightboxUrl}
+              alt="Preview"
+              className="max-h-full max-w-full rounded-lg shadow-2xl"
+              onClick={() => setLightboxUrl(null)}
+            />
+          </Dialog>
         )}
 
         {/* Delete confirmation dialog */}
         {confirmDeleteId && (
-          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60" onMouseDown={() => setConfirmDeleteId(null)}>
-            <div
-              className="mx-4 w-72 rounded-xl bg-gray-800 border border-gray-700 shadow-2xl p-4"
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <Trash2 size={14} className="text-red-400" />
-                <h3 className="text-sm font-semibold text-white">Delete message?</h3>
-              </div>
-              <p className="text-xs text-gray-400 mb-4">
-                This message will be removed for everyone in the room. This cannot be undone.
-              </p>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setConfirmDeleteId(null)}
-                  className="px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmDelete}
-                  className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-xs text-white transition-colors cursor-pointer"
-                >
-                  Delete
-                </button>
-              </div>
+          <Dialog
+            onClose={() => setConfirmDeleteId(null)}
+            labelledBy="delete-dialog-title"
+            closeOnBackdrop
+            returnFocus={() => messageFocusTarget(confirmDeleteId)}
+            overlayClassName="absolute inset-0 z-40 flex items-center justify-center bg-black/60"
+            panelClassName="mx-4 w-72 rounded-xl bg-gray-800 border border-gray-700 shadow-2xl p-4 focus:outline-none"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <Trash2 size={14} className="text-red-400" />
+              <h3 id="delete-dialog-title" className="text-sm font-semibold text-white">Delete message?</h3>
             </div>
-          </div>
+            <p className="text-xs text-gray-400 mb-4">
+              This message will be removed for everyone in the room. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteId(null)}
+                className="px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-xs text-white transition-colors cursor-pointer"
+              >
+                Delete
+              </button>
+            </div>
+          </Dialog>
         )}
       </div>
 
@@ -791,7 +907,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
               {replyingTo.imageUrls?.[0] ? (
                 <img
                   src={`${replyingTo.imageUrls[0]}?socketId=${encodeURIComponent(localId)}`}
-                  alt="Reply image"
+                  alt={`Sent by ${replyingTo.senderName}`}
                   className="mt-1 h-8 w-8 rounded object-cover"
                 />
               ) : (
@@ -801,6 +917,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
             <button
               type="button"
               onClick={() => setReplyingTo(null)}
+              aria-label="Cancel reply"
               className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
             >
               <X size={12} />
@@ -828,7 +945,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
           />
         )}
 
-        <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(event) => {
+        <input ref={fileInputRef} type="file" accept="image/*" multiple aria-label="Choose images to send" className="hidden" onChange={(event) => {
           if (event.target.files) addImages(event.target.files);
           event.target.value = "";
         }} />
@@ -837,18 +954,19 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
           <div className="flex gap-2 overflow-x-auto">
             {pendingImages.map((image) => <div key={image.id} className="relative shrink-0 rounded-md border border-gray-600 bg-gray-900/70 p-1">
               <img src={image.previewUrl} alt={image.file.name} className="h-16 w-16 rounded object-cover" />
-              <button type="button" onClick={() => removeImage(image.id)} className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-900 border border-gray-600 p-0.5 text-gray-300 hover:text-white cursor-pointer" title="Remove image"><X size={11} /></button>
+              <button type="button" onClick={() => removeImage(image.id)} disabled={sending} className="absolute -right-1.5 -top-1.5 rounded-full bg-gray-900 border border-gray-600 p-0.5 text-gray-300 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" title="Remove image" aria-label={`Remove ${image.file.name}`}><X size={11} /></button>
             </div>)}
           </div>
         </div>}
         {uploadError && <p className="mb-1 text-xs text-red-400">{uploadError}</p>}
-        {pendingImages.length > 0 && <p className="mb-1 text-[10px] text-gray-600">Images are temporarily stored and deleted when the room ends. Password-protected rooms encrypt chat messages and images; other rooms do not.</p>}
+        {pendingImages.length > 0 && <p className="mb-1 text-[10px] text-gray-600">Images are temporarily stored and deleted when the room ends. Password-protected rooms encrypt uploaded images at rest; chat messages are not encrypted.</p>}
         <form onSubmit={send} className="space-y-1">
           {/* Formatting toolbar row */}
+          <fieldset disabled={sending} className="min-w-0 disabled:opacity-50">
           <div className="flex items-center justify-between">
             <FormattingToolbar textareaRef={textareaRef} text={text} setText={setText} />
             <div className="flex items-center gap-0.5">
-              <button type="button" onClick={() => fileInputRef.current?.click()} className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer" title="Send images">
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer" title="Send images" aria-label="Send images">
                 <ImageIcon size={14} />
               </button>
               <button
@@ -856,6 +974,7 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
                 onClick={() => { setShowPollCreator((v) => !v); setShowEmojiPicker(false); setShowGifPicker(false); }}
                 className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
                 title="Create poll"
+                aria-label="Create poll"
               >
                 <BarChart3 size={14} />
               </button>
@@ -876,22 +995,26 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
                 onClick={() => { setShowEmojiPicker((v) => !v); setShowPollCreator(false); setShowGifPicker(false); }}
                 className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
                 title="Emoji"
+                aria-label="Emoji"
               >
                 <Smile size={14} />
               </button>
             </div>
           </div>
+          </fieldset>
 
           {/* Textarea + send */}
           <div className="flex gap-2">
             <textarea
               ref={textareaRef}
               value={text}
+              readOnly={sending}
               onChange={(e) => { setText(e.target.value); handleTyping(); }}
               maxLength={MAX_CHAT_TEXT_LENGTH}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder="Type a message..."
+              aria-label="Message"
               rows={1}
               className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors resize-none min-h-[36px] max-h-28 overflow-y-auto"
               style={{ height: "auto" }}
@@ -903,10 +1026,12 @@ export default function ChatPanel({ socket, chatHistory, localId, roomId, typing
             />
             <button
               type="submit"
-              disabled={!text.trim() && !pendingImages.length}
+              disabled={sending || (!text.trim() && !pendingImages.length)}
+              aria-busy={sending}
+              aria-label="Send message"
               className="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer self-end"
             >
-              <Send size={16} />
+              {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
             </button>
           </div>
         </form>

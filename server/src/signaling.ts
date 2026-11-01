@@ -10,6 +10,8 @@ import {
   isRoomFull,
   socketRoomMap,
 } from "./roomManager.js";
+import { deriveUserId } from "./identity.js";
+import { JOIN_ERROR } from "./joinErrors.js";
 import { MAX_PARTICIPANTS } from "./limits.js";
 import { on, onRelay, onRoom } from "./socketRoute.js";
 import { noPayload, parseJoinRoom, parseMute } from "./validation.js";
@@ -36,43 +38,52 @@ export function setupSignaling(io: Server): void {
       // images are deleted via onRoomDestroyed once it is truly gone.
     };
 
-    on(socket, "join-room", parseJoinRoom, ({ roomId, name, password }) => {
+    on(socket, "join-room", parseJoinRoom, ({ roomId, name, password, clientKey }) => {
       // A repeated join for the room this socket is already in (double emit
       // or retry) is a no-op: re-adding it would make peers tear down working
       // connections, and the earlier join already answered with room-joined.
       if (socketRoomMap.get(socket.id) === roomId) return;
       const room = getRoom(roomId);
       if (!room) {
-        socket.emit("error", { message: "Room not found" });
+        socket.emit("error", { code: JOIN_ERROR.ROOM_NOT_FOUND, message: "Room not found" });
         return;
       }
 
       if (!verifyPassword(roomId, password)) {
-        socket.emit("error", { message: "Incorrect password" });
+        socket.emit("error", { code: JOIN_ERROR.INCORRECT_PASSWORD, message: "Incorrect password" });
         return;
       }
 
       // Rejoin race fix: after a network blip the client's socket reconnects
       // with a new socket.id and re-emits join-room, but the server may still
       // hold the participant entry of the OLD socket for up to ~20s (default
-      // pingTimeout). If that stale entry owns the requested name, evict it
-      // instead of rejecting the join — otherwise the user is kicked from the
-      // room by "Name already taken" through no fault of their own.
+      // pingTimeout), and that socket can still look live. A matching userId
+      // proves the entry is the joiner's own, so evict it instead of rejecting
+      // the join with "Name already taken". A dead socket holding the name is
+      // evicted too. Disconnecting a live one stops it reconnecting (it is
+      // server-initiated), so two holders of a key can't keep evicting each other.
+      const userId = clientKey ? deriveUserId(roomId, clientKey) : undefined;
       const lowerName = name.toLowerCase();
       for (const p of room.participants.values()) {
-        if (p.name.toLowerCase() === lowerName && !io.sockets.sockets.has(p.id)) {
-          removeParticipant(roomId, p.id);
-          socket.to(roomId).emit("participant-left", { id: p.id });
+        const nameHeldByDeadSocket = p.name.toLowerCase() === lowerName && !io.sockets.sockets.has(p.id);
+        if (p.userId !== userId && !nameHeldByDeadSocket) continue;
+        if (roomScreenSharer.get(roomId) === p.id) {
+          roomScreenSharer.delete(roomId);
+          socket.to(roomId).emit("screen-share-stopped", { id: p.id });
         }
+        removeParticipant(roomId, p.id);
+        socket.to(roomId).emit("participant-left", { id: p.id });
+        io.sockets.sockets.get(p.id)?.disconnect(true);
       }
 
       if (isNameTaken(roomId, name)) {
-        socket.emit("error", { message: "Name already taken in this room" });
+        socket.emit("error", { code: JOIN_ERROR.NAME_TAKEN, message: "Name already taken in this room" });
         return;
       }
 
       if (isRoomFull(roomId)) {
         socket.emit("error", {
+          code: JOIN_ERROR.ROOM_FULL,
           message: `This room is full (max ${MAX_PARTICIPANTS} participants).`,
         });
         return;
@@ -81,7 +92,7 @@ export function setupSignaling(io: Server): void {
       // Only now that the new join is certain to succeed, leave the previous
       // room; a failed join must not drop the socket from the room it is in.
       leaveCurrentRoom();
-      const participant = addParticipant(roomId, socket.id, name);
+      const participant = addParticipant(roomId, socket.id, name, userId);
       if (!participant) return;
 
       socket.join(roomId);
@@ -90,8 +101,10 @@ export function setupSignaling(io: Server): void {
         (p) => p.id !== socket.id,
       );
       socket.emit("room-joined", {
+        userId: participant.userId,
         participants: existingParticipants,
         chatHistory: room.chatHistory,
+        pinnedMessageId: room.pinnedMessageId,
         screenSharer: roomScreenSharer.get(roomId) || null,
       });
 
@@ -99,7 +112,7 @@ export function setupSignaling(io: Server): void {
     }, () => {
       // Answer an invalid payload (missing/oversized name, non-string fields)
       // instead of dropping it, so the client can leave "Connecting…".
-      socket.emit("error", { message: "Invalid name or room" });
+      socket.emit("error", { code: JOIN_ERROR.INVALID_JOIN, message: "Invalid name or room" });
     });
 
     onRelay(socket, "offer", "offer");

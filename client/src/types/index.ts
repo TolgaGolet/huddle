@@ -1,12 +1,19 @@
 export interface Participant {
   id: string;
+  userId: string;
   name: string;
   isMuted: boolean;
+}
+
+export interface ReactionUser {
+  userId: string;
+  name: string;
 }
 
 // Room and input limits are defined once, in the server's limits.ts, and
 // enforced by its parsers; importing them keeps both sides in sync.
 export * from "../../../server/src/limits.ts";
+export * from "../../../server/src/joinErrors.ts";
 
 export interface ChatMessage {
   id: string;
@@ -14,7 +21,7 @@ export interface ChatMessage {
   senderName: string;
   text: string;
   timestamp: number;
-  reactions: Record<string, string[]>;
+  reactions: Record<string, ReactionUser[]>;
   replyTo?: {
     id: string;
     senderName: string;
@@ -24,7 +31,6 @@ export interface ChatMessage {
   gifUrl?: string;
   imageUrls?: string[];
   edited?: boolean;
-  pinned?: boolean;
 }
 
 export interface PollOption {
@@ -43,7 +49,6 @@ export interface PollMessage {
   options: PollOption[];
   allowMultiple: boolean;
   timestamp: number;
-  pinned?: boolean;
 }
 
 export type ChatEntry = ChatMessage | PollMessage;

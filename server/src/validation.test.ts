@@ -62,6 +62,18 @@ describe("parseJoinRoom", () => {
   it("rejects a non-string password", () => {
     expect(parseJoinRoom({ roomId: "abc123", name: "Ana", password: 1 })).toBeNull();
   });
+
+  it("keeps a well-formed clientKey and treats it as optional", () => {
+    const clientKey = "a".repeat(32);
+    expect(parseJoinRoom({ roomId: "abc123", name: "Ana", clientKey })?.clientKey).toBe(clientKey);
+    expect(parseJoinRoom({ roomId: "abc123", name: "Ana" })?.clientKey).toBeUndefined();
+  });
+
+  it("rejects a malformed clientKey instead of ignoring it", () => {
+    for (const clientKey of [1, "", "short", "a".repeat(65), "has spaces in the key here"]) {
+      expect(parseJoinRoom({ roomId: "abc123", name: "Ana", clientKey })).toBeNull();
+    }
+  });
 });
 
 describe("parseRelay", () => {

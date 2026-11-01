@@ -1,11 +1,11 @@
-import { Router } from "express";
+import { Router, type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import { resolveParticipant } from "./roomManager.js";
+import { resolveParticipant, type ChatEntry, type Room } from "./roomManager.js";
 import { decryptFile, encryptFile, roomImageKey } from "./imageCrypto.js";
-import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE } from "./limits.js";
+import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_UPLOAD_BYTES, MAX_ROOM_IMAGE_BYTES } from "./limits.js";
 import { errorSummary } from "./errorLog.js";
 
 export const uploadsDir = path.resolve(process.cwd(), "uploads");
@@ -41,15 +41,68 @@ function socketId(req: { headers: Record<string, string | string[] | undefined>;
   return (Array.isArray(header) ? header[0] : header) || (typeof req.query.socketId === "string" ? req.query.socketId : undefined);
 }
 
-export const imageRouter = Router();
+function param(value: string | string[]): string {
+  return Array.isArray(value) ? value[0] : value;
+}
 
-imageRouter.post("/rooms/:id/images", upload.array("images", MAX_IMAGES_PER_MESSAGE), async (req, res) => {
-  const roomId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const room = authorizedRoom(roomId, socketId(req));
-  if (!room) {
-    res.status(403).json({ error: "Not authorized for this room" });
+/** The requester's room, or undefined after sending the 403. */
+function requireRoom(req: Request, res: Response) {
+  const room = authorizedRoom(param(req.params.id), socketId(req));
+  if (!room) res.status(403).json({ error: "Not authorized for this room" });
+  return room;
+}
+
+const QUOTA_ERROR = "This room has reached its image storage limit";
+/** Room for the multipart boundaries and part headers around the files. */
+const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
+const MAX_UPLOAD_BYTES = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE + MULTIPART_OVERHEAD_BYTES;
+
+let inFlightUploadBytes = 0;
+
+/**
+ * Rejects before multer reads the body, so a request that will be refused never
+ * gets buffered. Node stops reading at Content-Length, so reserving it bounds
+ * what concurrent uploads can buffer and exceeds what they can store. When the
+ * response closes, however it ended, only the bytes actually stored stay counted.
+ */
+const rejectEarly: RequestHandler = (req, res, next) => {
+  const room = requireRoom(req, res);
+  if (!room) return;
+  const declaredBytes = Number(req.headers["content-length"]);
+  if (!Number.isSafeInteger(declaredBytes) || declaredBytes <= 0) {
+    res.status(411).json({ error: "Content-Length is required" });
     return;
   }
+  if (declaredBytes > MAX_UPLOAD_BYTES) {
+    res.status(413).json({ error: "Upload is too large" });
+    return;
+  }
+  if (room.imageBytes + declaredBytes > MAX_ROOM_IMAGE_BYTES) {
+    res.status(413).json({ error: QUOTA_ERROR });
+    return;
+  }
+  if (inFlightUploadBytes + declaredBytes > MAX_INFLIGHT_UPLOAD_BYTES) {
+    res.status(503).json({ error: "The server is busy, please try again" });
+    return;
+  }
+  room.imageBytes += declaredBytes;
+  inFlightUploadBytes += declaredBytes;
+  res.locals.storedBytes = 0;
+  res.once("close", () => {
+    room.imageBytes -= declaredBytes - (res.locals.storedBytes as number);
+    inFlightUploadBytes -= declaredBytes;
+  });
+  next();
+};
+
+export const imageRouter = Router();
+
+imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IMAGES_PER_MESSAGE), async (req, res) => {
+  // Checked again: a slow upload can outlast the sender's membership or the
+  // room itself, and writing then would leave files no cleanup will remove.
+  const room = requireRoom(req, res);
+  if (!room) return;
+  const roomId = param(req.params.id);
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
   if (!files.length) {
     res.status(400).json({ error: "No valid image files supplied" });
@@ -66,6 +119,8 @@ imageRouter.post("/rooms/:id/images", upload.array("images", MAX_IMAGES_PER_MESS
       const filename = `${nanoid(10).toLowerCase()}.${ext}`;
       const body = key ? encryptFile(file.buffer, key) : file.buffer;
       await writeFile(path.join(roomDir, filename), body, { flag: "wx" });
+      room.imageSizes.set(filename, file.size);
+      res.locals.storedBytes += file.size;
       urls.push(`/api/rooms/${roomId}/images/${filename}`);
     }
     res.json({ urls });
@@ -75,8 +130,8 @@ imageRouter.post("/rooms/:id/images", upload.array("images", MAX_IMAGES_PER_MESS
 });
 
 imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
-  const roomId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const filename = Array.isArray(req.params.filename) ? req.params.filename[0] : req.params.filename;
+  const roomId = param(req.params.id);
+  const filename = param(req.params.filename);
   const room = authorizedRoom(roomId, socketId(req));
   if (!room || !filenamePattern.test(filename)) {
     res.status(404).end();
@@ -100,6 +155,26 @@ imageRouter.get("/rooms/:id/images/:filename", async (req, res) => {
     res.status(404).end();
   }
 });
+
+/**
+ * Deletes a removed message's images and frees their quota. Any member can post
+ * an existing room image URL, so one still used by another message stays.
+ */
+export function releaseMessageImages(room: Room, entry: ChatEntry): void {
+  if ("type" in entry || !entry.imageUrls) return;
+  const stillUsed = new Set(room.chatHistory.flatMap((m) => ("type" in m ? [] : m.imageUrls ?? [])));
+  for (const url of entry.imageUrls) {
+    if (stillUsed.has(url)) continue;
+    const filename = path.basename(url);
+    const size = room.imageSizes.get(filename);
+    if (size === undefined) continue;
+    room.imageSizes.delete(filename);
+    room.imageBytes -= size;
+    rm(path.join(uploadsDir, room.id, filename), { force: true }).catch((err) => {
+      console.error("[images] delete failed", errorSummary(err));
+    });
+  }
+}
 
 /** Best-effort cleanup: never rejects (callers fire and forget it). */
 export async function deleteRoomImages(roomId: string): Promise<void> {

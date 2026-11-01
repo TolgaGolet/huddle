@@ -104,7 +104,7 @@ describe("DirectionalAudioWatchdog", () => {
     wd.observe(peerId, sample({ now: 0 }));
     // Outbound advances every tick; inbound stays flat. This is exactly the
     // Brave->Firefox one-way case the old OR-check masked.
-    let decision = wd.observe(
+    const decision = wd.observe(
       peerId,
       sample({ now: 15000, in: { bytes: 100, packets: 10 }, out: { bytes: 900, packets: 90 } }),
     );

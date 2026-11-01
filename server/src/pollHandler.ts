@@ -19,7 +19,7 @@ export function setupPolls(io: Server): void {
       const poll: PollMessage = {
         id: nanoid(10),
         type: "poll",
-        senderId: socket.id,
+        senderId: participant.userId,
         senderName: participant.name,
         question,
         options: pollOptions,
@@ -39,23 +39,23 @@ export function setupPolls(io: Server): void {
       const option = poll.options.find((o) => o.id === optionId);
       if (!option) return;
 
-      const alreadyVoted = option.voterIds.includes(socket.id);
+      const { userId } = participant;
+      const idx = option.voterIds.indexOf(userId);
 
-      if (alreadyVoted) {
-        const idx = option.voterIds.indexOf(socket.id);
+      if (idx >= 0) {
         option.voterIds.splice(idx, 1);
         option.voterNames.splice(idx, 1);
       } else {
         if (!poll.allowMultiple) {
           for (const opt of poll.options) {
-            const existIdx = opt.voterIds.indexOf(socket.id);
+            const existIdx = opt.voterIds.indexOf(userId);
             if (existIdx >= 0) {
               opt.voterIds.splice(existIdx, 1);
               opt.voterNames.splice(existIdx, 1);
             }
           }
         }
-        option.voterIds.push(socket.id);
+        option.voterIds.push(userId);
         option.voterNames.push(participant.name);
       }
 

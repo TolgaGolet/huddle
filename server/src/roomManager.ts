@@ -5,9 +5,17 @@ import { MAX_PARTICIPANTS, MAX_PASSWORD_LENGTH } from "./limits.js";
 import { parseCreateRoom } from "./validation.js";
 
 export interface Participant {
+  /** socket.id: routing only (signaling, mute, screen share). Changes on reconnect. */
   id: string;
+  /** Identity for ownership, votes and reactions. Survives reconnects (see identity.ts). */
+  userId: string;
   name: string;
   isMuted: boolean;
+}
+
+export interface ReactionUser {
+  userId: string;
+  name: string;
 }
 
 export interface ChatMessage {
@@ -16,7 +24,7 @@ export interface ChatMessage {
   senderName: string;
   text: string;
   timestamp: number;
-  reactions: Record<string, string[]>;
+  reactions: Record<string, ReactionUser[]>;
   replyTo?: {
     id: string;
     senderName: string;
@@ -25,9 +33,7 @@ export interface ChatMessage {
   };
   gifUrl?: string;
   imageUrls?: string[];
-  encrypted?: boolean;
   edited?: boolean;
-  pinned?: boolean;
 }
 
 export interface PollOption {
@@ -58,6 +64,10 @@ export interface Room {
   encryptionSalt: string | null;
   /** Lazily derived image-encryption key (see `roomImageKey` in imageCrypto.ts). */
   imageKey: Promise<Buffer> | null;
+  /** Bytes of uploaded images stored or reserved, checked against MAX_ROOM_IMAGE_BYTES. */
+  imageBytes: number;
+  /** Size of each stored image by filename, released when its message goes. */
+  imageSizes: Map<string, number>;
   pinnedMessageId: string | null;
   /** Set at creation and when the last participant leaves; the room is deleted once this age exceeds ROOM_GRACE_MS. */
   emptySince: number | null;
@@ -100,8 +110,8 @@ export function resolveParticipant(socketId: string): RoomCtx | null {
  * Object.prototype: with a plain `{}`, keys like "constructor" or "__proto__"
  * would read or replace inherited members instead of acting as plain keys.
  */
-export function emptyReactions(): Record<string, string[]> {
-  return Object.create(null) as Record<string, string[]>;
+export function emptyReactions(): Record<string, ReactionUser[]> {
+  return Object.create(null) as Record<string, ReactionUser[]>;
 }
 
 export function createRoom(password?: string): Room {
@@ -113,6 +123,8 @@ export function createRoom(password?: string): Room {
     chatHistory: [],
     pinnedMessageId: null,
     encryptionSalt: password ? randomBytes(16).toString("base64url") : null,
+    imageBytes: 0,
+    imageSizes: new Map(),
     imageKey: null,
     // A new room is empty: if nobody ever joins, it expires like any other.
     emptySince: Date.now(),
@@ -193,11 +205,12 @@ export function getParticipantCount(roomId: string): number {
   return room ? room.participants.size : 0;
 }
 
-export function addParticipant(roomId: string, socketId: string, name: string): Participant | null {
+/** Without a `userId` the identity lasts only as long as this connection. */
+export function addParticipant(roomId: string, socketId: string, name: string, userId = socketId): Participant | null {
   const room = rooms.get(roomId);
   if (!room) return null;
   room.emptySince = null;
-  const participant: Participant = { id: socketId, name, isMuted: false };
+  const participant: Participant = { id: socketId, userId, name, isMuted: false };
   room.participants.set(socketId, participant);
   socketRoomMap.set(socketId, roomId);
   return participant;
@@ -228,8 +241,28 @@ export function addChatMessage(roomId: string, msg: ChatEntry): void {
   if (!room) return;
   room.chatHistory.push(msg);
   if (room.chatHistory.length > MAX_CHAT_HISTORY) {
-    room.chatHistory.shift();
+    removeMessage(roomId, room.chatHistory[0].id);
   }
+}
+
+type MessageRemovedListener = (room: Room, entry: ChatEntry) => void;
+const messageRemovedListeners = new Set<MessageRemovedListener>();
+
+/** Register cleanup for a removed message (e.g. its images). Returns an unsubscribe function. */
+export function onMessageRemoved(fn: MessageRemovedListener): () => void {
+  messageRemovedListeners.add(fn);
+  return () => messageRemovedListeners.delete(fn);
+}
+
+// Every removal goes through here so the pin and listeners can't be skipped.
+export function removeMessage(roomId: string, messageId: string): void {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const index = room.chatHistory.findIndex((m) => m.id === messageId);
+  if (index < 0) return;
+  const [entry] = room.chatHistory.splice(index, 1);
+  if (room.pinnedMessageId === messageId) room.pinnedMessageId = null;
+  messageRemovedListeners.forEach((fn) => fn(room, entry));
 }
 
 export function getChatHistory(roomId: string): ChatEntry[] {

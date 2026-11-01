@@ -7,8 +7,8 @@ import { useMediaDevices } from "../hooks/useMediaDevices";
 import { useCaptureAudio } from "../hooks/useCaptureAudio";
 import { useVoiceActivity } from "../hooks/useVoiceActivity";
 import { useAudioSettings } from "../hooks/useAudioSettings";
-import { useMicTelemetry } from "../hooks/useMicTelemetry";
 import { useTransmissionGate } from "../hooks/useTransmissionGate";
+import Dialog from "../components/Dialog";
 import ParticipantsList from "../components/ParticipantsList";
 import ChatPanel from "../components/ChatPanel";
 import VoiceControls from "../components/VoiceControls";
@@ -16,7 +16,7 @@ import SettingsPopup from "../components/SettingsPopup";
 import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS } from "../types";
-import { huddleLog } from "../lib/huddleLog";
+import { errorName, huddleLog } from "../lib/huddleLog";
 import { stopStreams } from "../lib/micStreams";
 import { playMuteSound, playUnmuteSound } from "../lib/notificationSounds";
 
@@ -28,7 +28,7 @@ export default function RoomPage() {
   const name = state?.name || "Anonymous";
   const password = state?.password;
 
-  const { socket, participants, chatHistory, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
+  const { socket, userId, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
     roomId: roomId || "",
     name,
     password,
@@ -195,7 +195,7 @@ export default function RoomPage() {
           elapsedMs: Math.round(performance.now() - startedAt),
         });
       } catch (err) {
-        huddleLog("capture", { event: "getUserMedia-failed", error: String(err) });
+        huddleLog("capture", { event: "getUserMedia-failed", error: errorName(err) });
       }
     },
     [processStream, buildAudioConstraints],
@@ -206,12 +206,16 @@ export default function RoomPage() {
     return () => {
       // Invalidate any in-flight acquisition so a late getUserMedia resolve
       // stops its own stream instead of reopening the mic after leaving.
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- a counter that must bump its live value.
       acquireGenRef.current++;
       stopStreams(rawStreamRef.current, outboundStreamRef.current);
       rawStreamRef.current = null;
       outboundStreamRef.current = null;
       cleanup();
     };
+    // Mount-only: acquireMic changes with the noise-cancellation setting, and
+    // re-running this effect would tear down the live mic and audio engine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleDeviceChange = useCallback(
@@ -242,7 +246,7 @@ export default function RoomPage() {
         } catch (err) {
           huddleLog("capture", {
             event: "applyConstraints-failed-fallback-reacquire",
-            error: String(err),
+            error: errorName(err),
           });
         }
       }
@@ -271,7 +275,7 @@ export default function RoomPage() {
 
   // Steam-chat style voice transmission threshold gate:
   // Suppresses transmitting slight noises, fan hums, mouse clicks when below threshold.
-  const isTransmitting = useTransmissionGate({
+  const { isTransmitting, gateStateRef } = useTransmissionGate({
     localAnalyser,
     outboundStream: localStream,
     threshold: settings.transmissionThreshold,
@@ -294,14 +298,6 @@ export default function RoomPage() {
       speaking.add(id);
     }
   }
-
-  const telemetry = useMicTelemetry(
-    localAnalyser,
-    isMuted,
-    settings.transmissionThreshold,
-    settings.manualThresholdDb,
-    showSettings,
-  );
 
   const handleToggleMute = useCallback(() => {
     setIsMuted((prev) => {
@@ -349,6 +345,7 @@ export default function RoomPage() {
 
   const localParticipant: Participant = {
     id: socket?.id || "local",
+    userId: userId ?? "",
     name,
     isMuted,
   };
@@ -441,6 +438,7 @@ export default function RoomPage() {
             onClick={() => setShowSettings(true)}
             className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
             title="Settings"
+            aria-label="Settings"
           >
             <Settings size={18} />
           </button>
@@ -448,6 +446,7 @@ export default function RoomPage() {
             onClick={() => setShowLeaveConfirm(true)}
             className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-800 transition-colors cursor-pointer"
             title="Leave room"
+            aria-label="Leave room"
           >
             <LogOut size={18} />
           </button>
@@ -491,7 +490,7 @@ export default function RoomPage() {
                 : "flex-1 flex flex-col"
             }
           >
-            <ChatPanel socket={socket} chatHistory={chatHistory} localId={socket?.id || "local"} roomId={roomId} typingUsers={typingUsers} notifyTyping={notifyTyping} />
+            <ChatPanel socket={socket} chatHistory={chatHistory} pinnedMessageId={pinnedMessageId} localId={socket?.id || "local"} localUserId={userId ?? ""} roomId={roomId} typingUsers={typingUsers} notifyTyping={notifyTyping} />
           </div>
         </main>
       </div>
@@ -510,41 +509,47 @@ export default function RoomPage() {
           onTransmissionThresholdChange={setTransmissionThreshold}
           manualThresholdDb={settings.manualThresholdDb}
           onManualThresholdDbChange={setManualThresholdDb}
-          telemetry={telemetry}
+          localAnalyser={localAnalyser}
+          isMuted={isMuted}
+          isTransmitting={isTransmitting}
+          gateStateRef={gateStateRef}
         />
       )}
 
       {/* Leave room confirmation */}
       {showLeaveConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-sm mx-4 rounded-xl bg-gray-900 border border-gray-700 shadow-2xl p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 rounded-full bg-red-500/10 text-red-400">
-                <AlertTriangle size={22} />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-gray-100">Leave room?</h3>
-                <p className="text-sm text-gray-400 mt-0.5">
-                  You will be disconnected from the call.
-                </p>
-              </div>
+        <Dialog
+          onClose={() => setShowLeaveConfirm(false)}
+          labelledBy="leave-dialog-title"
+          overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          panelClassName="w-full max-w-sm mx-4 rounded-xl bg-gray-900 border border-gray-700 shadow-2xl p-6 focus:outline-none"
+        >
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-full bg-red-500/10 text-red-400">
+              <AlertTriangle size={22} />
             </div>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setShowLeaveConfirm(false)}
-                className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => navigate("/")}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-500 text-white transition-colors cursor-pointer"
-              >
-                Leave
-              </button>
+            <div>
+              <h3 id="leave-dialog-title" className="text-lg font-semibold text-gray-100">Leave room?</h3>
+              <p className="text-sm text-gray-400 mt-0.5">
+                You will be disconnected from the call.
+              </p>
             </div>
           </div>
-        </div>
+          <div className="flex gap-3 justify-end">
+            <button
+              onClick={() => setShowLeaveConfirm(false)}
+              className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => navigate("/")}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-500 text-white transition-colors cursor-pointer"
+            >
+              Leave
+            </button>
+          </div>
+        </Dialog>
       )}
     </div>
   );

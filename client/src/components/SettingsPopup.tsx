@@ -1,7 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState, type RefObject } from "react";
 import { X, Volume2 } from "lucide-react";
 import AudioSettings from "./AudioSettings";
-import type { MicTelemetry, VoiceTransmissionThreshold } from "../types";
+import Dialog from "./Dialog";
+import { useMicTelemetry } from "../hooks/useMicTelemetry";
+import type { GateState } from "../lib/audioLevels";
+import type { VoiceTransmissionThreshold } from "../types";
 
 const CATEGORIES = [
   { id: "audio", label: "Audio Settings", icon: Volume2 },
@@ -21,7 +24,10 @@ interface Props {
   readonly onTransmissionThresholdChange: (threshold: VoiceTransmissionThreshold) => void;
   readonly manualThresholdDb: number;
   readonly onManualThresholdDbChange: (db: number) => void;
-  readonly telemetry: MicTelemetry;
+  readonly localAnalyser: AnalyserNode | null;
+  readonly isMuted: boolean;
+  readonly isTransmitting: boolean;
+  readonly gateStateRef: RefObject<GateState>;
 }
 
 export default function SettingsPopup({
@@ -36,28 +42,23 @@ export default function SettingsPopup({
   onTransmissionThresholdChange,
   manualThresholdDb,
   onManualThresholdDbChange,
-  telemetry,
+  localAnalyser,
+  isMuted,
+  isTransmitting,
+  gateStateRef,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<CategoryId>("audio");
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  // Lives here, not in RoomPage: it updates every 80ms, which would re-render
+  // the whole room (chat included) while this popup is open.
+  const telemetry = useMicTelemetry(localAnalyser, isMuted, transmissionThreshold, manualThresholdDb, isTransmitting, gateStateRef);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="settings-dialog-title"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    <Dialog
+      onClose={onClose}
+      labelledBy="settings-dialog-title"
+      overlayClassName="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      panelClassName="bg-gray-900 border border-gray-800 rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] flex flex-col sm:flex-row overflow-hidden focus:outline-none"
     >
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] flex flex-col sm:flex-row overflow-hidden">
         {/* Left sidebar */}
         <div className="w-full sm:w-48 bg-gray-900 border-b sm:border-b-0 sm:border-r border-gray-800 p-4 flex flex-col">
           <h2 id="settings-dialog-title" className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
@@ -115,7 +116,6 @@ export default function SettingsPopup({
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

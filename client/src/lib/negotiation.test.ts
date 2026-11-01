@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isPoliteFor } from "./negotiation";
+import { isPoliteFor, resolveInboundOffer } from "./negotiation";
 
 // Regression (Q-01): the local id was captured before the socket connected, so
 // `undefined > peerId` made every client impolite and offer collisions deadlocked.
@@ -19,5 +19,25 @@ describe("isPoliteFor", () => {
     const peer = "m0000000000000000000";
     expect(isPoliteFor("a0000000000000000000", peer)).toBe(false);
     expect(isPoliteFor("z0000000000000000000", peer)).toBe(true);
+  });
+});
+
+describe("resolveInboundOffer", () => {
+  it("accepts an offer when there is no collision, whatever the role", () => {
+    for (const isPolite of [true, false]) {
+      expect(resolveInboundOffer({ isPolite, makingOffer: false, signalingState: "stable" })).toBe("accept");
+    }
+  });
+
+  it("treats making an offer and a non-stable state each as a collision", () => {
+    const collisions = [
+      { makingOffer: true, signalingState: "stable" },
+      { makingOffer: false, signalingState: "have-local-offer" },
+      { makingOffer: true, signalingState: "have-local-offer" },
+    ] as const;
+    for (const c of collisions) {
+      expect(resolveInboundOffer({ isPolite: true, ...c })).toBe("rollback");
+      expect(resolveInboundOffer({ isPolite: false, ...c })).toBe("ignore");
+    }
   });
 });

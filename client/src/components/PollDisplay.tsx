@@ -3,7 +3,8 @@ import type { PollMessage } from "../types";
 
 interface Props {
   poll: PollMessage;
-  localId: string;
+  isPinned: boolean;
+  localUserId: string;
   onVote: (pollId: string, optionId: string) => void;
   onContextMenu?: (poll: PollMessage, e: React.MouseEvent) => void;
 }
@@ -12,16 +13,20 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function PollDisplay({ poll, localId, onVote, onContextMenu }: Props) {
+export default function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Props) {
   const totalVotes = poll.options.reduce((sum, o) => sum + o.voterIds.length, 0);
 
   return (
     <div
-      className={`group relative bg-gray-800/60 border border-gray-700 rounded-xl p-3 space-y-2 ${
-        poll.pinned ? "border-l-2 border-l-amber-400/70" : ""
+      role="group"
+      aria-label={`Poll from ${poll.senderName}`}
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard route to a poll; focusing it reveals the action button and adds it to the Tab order.
+      tabIndex={0}
+      className={`group relative bg-gray-800/60 border border-gray-700 rounded-xl p-3 space-y-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+        isPinned ? "border-l-2 border-l-amber-400/70" : ""
       }`}
     >
-      {poll.pinned && (
+      {isPinned && (
         <span className="inline-flex items-center gap-1 text-[10px] text-amber-400">
           <Pin size={9} /> Pinned
         </span>
@@ -35,8 +40,10 @@ export default function PollDisplay({ poll, localId, onVote, onContextMenu }: Pr
         <button
           type="button"
           onClick={(e) => onContextMenu(poll, e)}
-          className="absolute -top-3 right-0 hidden group-hover:flex items-center bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-1.5 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
+          className="absolute -top-3 right-0 hidden group-hover:flex group-has-[:focus-visible]:flex items-center bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-1.5 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
           title="More actions"
+          aria-label="More actions"
+          aria-haspopup="menu"
         >
           <MoreVertical size={13} />
         </button>
@@ -46,7 +53,7 @@ export default function PollDisplay({ poll, localId, onVote, onContextMenu }: Pr
 
       <div className="space-y-1.5">
         {poll.options.map((option) => {
-          const voted = option.voterIds.includes(localId);
+          const voted = option.voterIds.includes(localUserId);
           const count = option.voterIds.length;
           const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
 
@@ -55,6 +62,7 @@ export default function PollDisplay({ poll, localId, onVote, onContextMenu }: Pr
               key={option.id}
               type="button"
               onClick={() => onVote(poll.id, option.id)}
+              aria-pressed={voted}
               className={`w-full text-left rounded-lg p-2 relative overflow-hidden transition-colors cursor-pointer group ${
                 voted
                   ? "border border-indigo-500/50 bg-indigo-500/10"

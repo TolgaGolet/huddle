@@ -17,4 +17,9 @@ export const MAX_POLL_OPTION_LENGTH = 100;
 export const MAX_POLL_OPTIONS = 10;
 export const MAX_IMAGES_PER_MESSAGE = 10;
 export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
+export const MAX_ROOM_IMAGE_BYTES = 200 * 1024 * 1024;
+/** Upload bodies held in memory at once across all rooms; multer buffers them. */
+export const MAX_INFLIGHT_UPLOAD_BYTES = 512 * 1024 * 1024;
 export const MAX_PASSWORD_LENGTH = 128;
+/** Format of the secret key a client proves its identity with (see identity.ts). */
+export const CLIENT_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io, type Socket } from "socket.io-client";
-import type { Participant, ChatMessage, ChatEntry, PollMessage } from "../types";
+import type { Participant, ChatMessage, ChatEntry, PollMessage, JoinErrorCode, ReactionUser } from "../types";
+import { claimClientKey } from "../lib/clientKey";
 import { playJoinSound, playLeaveSound, playMessageSound, playDisconnectedSound } from "../lib/notificationSounds";
-import { huddleLog, huddleWarn } from "../lib/huddleLog";
+import { errorName, huddleLog, huddleWarn } from "../lib/huddleLog";
+import { joinRetryDelay, shouldRetryJoin } from "../lib/joinRetry";
 
 interface UseSocketOptions {
   roomId: string;
@@ -12,8 +14,11 @@ interface UseSocketOptions {
 
 export interface UseSocketReturn {
   socket: Socket | null;
+  /** Our stable identity in this room (see message senderId); null until joined. */
+  userId: string | null;
   participants: Participant[];
   chatHistory: ChatEntry[];
+  pinnedMessageId: string | null;
   connected: boolean;
   joinError: string | null;
   currentScreenSharer: string | null;
@@ -24,20 +29,15 @@ export interface UseSocketReturn {
 
 const MAX_CLIENT_CHAT = 200;
 
-/**
- * Errors that can occur transiently during an automatic rejoin after a
- * network blip (the server may briefly still hold our stale participant
- * entry, or the room may be in its empty-room grace window). These are
- * retried with backoff instead of kicking the user out of the room.
- */
-const TRANSIENT_JOIN_ERRORS = new Set(["Name already taken in this room", "Room not found"]);
-const JOIN_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
-
 export function useSocket({ roomId, name, password }: UseSocketOptions): UseSocketReturn {
   const socketRef = useRef<Socket | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  // Read by listener closures defined inside the connection effect.
+  const userIdRef = useRef<string | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([]);
+  const [pinnedMessageId, setPinnedMessageId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [currentScreenSharer, setCurrentScreenSharer] = useState<string | null>(null);
@@ -57,7 +57,8 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
   joinArgsRef.current = { roomId, name, password };
   const joinedRef = useRef(false);
   const wantsJoinRef = useRef(false);
-  // Retry bookkeeping for transient join errors (see TRANSIENT_JOIN_ERRORS).
+  const hasJoinedRef = useRef(false);
+  // Retry bookkeeping for transient join errors (see isTransientJoinError).
   const joinRetryRef = useRef(0);
   const joinRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -66,18 +67,22 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     const sock = socketRef.current;
     if (!sock || !sock.connected || joinedRef.current) return;
     joinedRef.current = true;
-    const { roomId: rid, name: nm, password: pw } = joinArgsRef.current;
-    huddleLog("socket", { event: "join-room-emit", roomId: rid });
-    sock.emit("join-room", { roomId: rid, name: nm, password: pw });
+    void claimClientKey().then((clientKey) => {
+      // The socket may have dropped during the claim; onConnect joins again.
+      if (socketRef.current !== sock || !sock.connected || !joinedRef.current) return;
+      const { roomId: rid, name: nm, password: pw } = joinArgsRef.current;
+      huddleLog("socket", { event: "join-room-emit", roomId: rid });
+      sock.emit("join-room", { roomId: rid, name: nm, password: pw, clientKey });
+    });
   }, []);
 
   // Re-emit join-room after a backoff delay. Used when the server rejected a
-  // rejoin with a transient error (e.g. our stale entry hadn't been evicted
-  // yet); the situation typically resolves itself within a few seconds.
+  // rejoin with a transient error; the situation typically resolves itself
+  // within a few seconds.
   const scheduleJoinRetry = useCallback(() => {
     const attempt = joinRetryRef.current;
-    if (attempt >= JOIN_RETRY_DELAYS_MS.length) return false;
-    const delay = JOIN_RETRY_DELAYS_MS[attempt];
+    const delay = joinRetryDelay(attempt);
+    if (delay === null) return false;
     joinRetryRef.current = attempt + 1;
     if (joinRetryTimerRef.current) clearTimeout(joinRetryTimerRef.current);
     joinRetryTimerRef.current = setTimeout(() => {
@@ -139,34 +144,37 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
       // network error with no app context. Socket.IO auto-retries; we log
       // enough to correlate with the peer teardown/rejoin timeline.
       socket.on("connect_error", (err: Error) => {
-        huddleWarn("socket", { event: "connect-error", message: err.message });
+        huddleWarn("socket", { event: "connect-error", error: errorName(err) });
       });
 
-      const onError = (data: { message: string }) => {
-        huddleLog("socket", { event: "join-error", message: data.message });
-        // Transient errors during an automatic rejoin (stale participant
-        // entry not yet evicted, room inside its empty-room grace window)
-        // must NOT kick the user — retry with backoff instead. Only surface
-        // the error (and let RoomPage navigate away) once retries are
-        // exhausted or the error is genuinely fatal (bad password, full).
-        if (wantsJoinRef.current && TRANSIENT_JOIN_ERRORS.has(data.message)) {
+      const onError = (data: { code: JoinErrorCode; message: string }) => {
+        huddleLog("socket", { event: "join-error", code: data.code });
+        // Transient errors during an automatic rejoin must NOT kick the user —
+        // retry with backoff instead. Only surface the error (and let RoomPage
+        // navigate away) on a first join, once retries are exhausted, or when
+        // it is genuinely fatal (bad password, full).
+        if (wantsJoinRef.current && shouldRetryJoin(hasJoinedRef.current, data.code)) {
           joinedRef.current = false;
           if (scheduleJoinRetry()) return;
-          huddleLog("socket", { event: "join-retry-exhausted", message: data.message });
+          huddleLog("socket", { event: "join-retry-exhausted", code: data.code });
         }
         setJoinError(data.message);
         socket!.disconnect();
       };
 
-      const onRoomJoined = (data: { participants: Participant[]; chatHistory: ChatEntry[]; screenSharer: string | null }) => {
+      const onRoomJoined = (data: { userId: string; participants: Participant[]; chatHistory: ChatEntry[]; pinnedMessageId: string | null; screenSharer: string | null }) => {
         huddleLog("socket", { event: "room-joined-received", participantCount: data.participants.length });
+        hasJoinedRef.current = true;
         joinRetryRef.current = 0;
         if (joinRetryTimerRef.current) {
           clearTimeout(joinRetryTimerRef.current);
           joinRetryTimerRef.current = null;
         }
+        userIdRef.current = data.userId;
+        setUserId(data.userId);
         setParticipants(data.participants);
         setChatHistory(data.chatHistory.slice(-MAX_CLIENT_CHAT));
+        setPinnedMessageId(data.pinnedMessageId);
         setCurrentScreenSharer(data.screenSharer);
       };
 
@@ -219,9 +227,17 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         });
         // Clear this sender's typing indicator and play a cue only for
         // messages from other participants (server broadcasts to all).
+        // The typing map is keyed by socket id and messages carry the userId,
+        // so match on the name, which is unique among live participants.
         const typingState = typingMapRef.current;
-        if (typingState.delete(msg.senderId)) setTypingFromMap(typingState);
-        if (msg.senderId !== socket!.id) playMessageSound();
+        for (const [id, typing] of typingState) {
+          if (typing.name === msg.senderName) {
+            clearTimeout(typing.timer);
+            typingState.delete(id);
+            setTypingFromMap(typingState);
+          }
+        }
+        if (msg.senderId !== userIdRef.current) playMessageSound();
       };
 
       const onTyping = ({ senderId, senderName }: { senderId: string; senderName: string }) => {
@@ -239,7 +255,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         setTypingFromMap(typingState);
       };
 
-      const onChatReactionUpdate = ({ messageId, reactions }: { messageId: string; reactions: Record<string, string[]> }) => {
+      const onChatReactionUpdate = ({ messageId, reactions }: { messageId: string; reactions: Record<string, ReactionUser[]> }) => {
         setChatHistory((prev) =>
           prev.map((entry) =>
             entry.id === messageId && !("type" in entry)
@@ -274,12 +290,12 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
 
       const onChatMessageDelete = ({ messageId }: { messageId: string }) => {
         setChatHistory((prev) => prev.filter((entry) => entry.id !== messageId));
+        // The server clears the pin on delete without sending a pin update.
+        setPinnedMessageId((prev) => (prev === messageId ? null : prev));
       };
 
-      const onChatPinUpdate = ({ pinnedMessageId, chatHistory: history }: { pinnedMessageId: string | null; chatHistory: ChatEntry[] }) => {
-        setChatHistory(history.slice(-MAX_CLIENT_CHAT).map((entry) =>
-          ({ ...entry, pinned: entry.id === pinnedMessageId }),
-        ));
+      const onChatPinUpdate = ({ pinnedMessageId: id }: { pinnedMessageId: string | null }) => {
+        setPinnedMessageId(id);
       };
 
       socket.on("connect", onConnect);
@@ -319,5 +335,5 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     };
   }, [roomId, name, password, joinRoom, scheduleJoinRetry]);
 
-  return { socket, participants, chatHistory, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
+  return { socket, userId, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
 }

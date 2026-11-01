@@ -2,8 +2,8 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import type { Socket } from "socket.io-client";
 import { RemoteAudioManager } from "../lib/audioEngine";
 import { DirectionalAudioWatchdog, type Direction } from "../lib/audioWatchdog";
-import { huddleLog, huddleWarn } from "../lib/huddleLog";
-import { isPoliteFor } from "../lib/negotiation";
+import { errorName, huddleLog, huddleWarn } from "../lib/huddleLog";
+import { isPoliteFor, resolveInboundOffer } from "../lib/negotiation";
 
 // ICE servers. STUN-only by default, which works for most home/office NATs.
 // For symmetric NATs, carrier-grade NAT, or strict corporate firewalls, set
@@ -335,7 +335,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
             });
             sock.emit("offer", { to: peerId, offer: pc.localDescription });
           } catch (err) {
-            huddleWarn("negotiate", { peerId, event: "offer-error", error: String(err) });
+            huddleWarn("negotiate", { peerId, event: "offer-error", error: errorName(err) });
           } finally {
             makingOfferRef.current.set(peerId, false);
           }
@@ -406,41 +406,46 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
           if (!pc) return;
 
           const isPolite = isPoliteFor(selfId, from);
-          const offerCollision = makingOfferRef.current.get(from) || pc.signalingState !== "stable";
+          const action = resolveInboundOffer({
+            isPolite,
+            makingOffer: !!makingOfferRef.current.get(from),
+            signalingState: pc.signalingState,
+          });
 
-          if (offerCollision) {
-            if (!isPolite) {
-              // Impolite side: keep our offer, ignore the conflicting inbound offer
-              // and any candidates that belong to it.
-              huddleLog("negotiate", { from, event: "ignore-offer", isPolite, signalingState: pc.signalingState });
-              // Recovery: if our own offer is never answered (the remote may
-              // have given up), force a renegotiation after a grace period so
-              // the peer cannot dead-end in `have-local-offer` forever.
-              const gen = peerGenRef.current.get(from) ?? 0;
-              setTimeout(() => {
-                const current = peersRef.current.get(from);
-                if (
-                  current &&
-                  peerGenRef.current.get(from) === gen &&
-                  current.signalingState === "have-local-offer" &&
-                  current.connectionState !== "connected"
-                ) {
-                  huddleWarn("negotiate", { peerId: from, event: "ignore-offer-recovery" });
-                  try {
-                    current.restartIce();
-                  } catch {
-                    /* negotiation may be in flight */
-                  }
+          if (action === "ignore") {
+            // Impolite side: keep our offer, ignore the conflicting inbound offer
+            // and any candidates that belong to it.
+            huddleLog("negotiate", { from, event: "ignore-offer", isPolite, signalingState: pc.signalingState });
+            // Recovery: if our own offer is never answered (the remote may
+            // have given up), force a renegotiation after a grace period so
+            // the peer cannot dead-end in `have-local-offer` forever.
+            const gen = peerGenRef.current.get(from) ?? 0;
+            setTimeout(() => {
+              const current = peersRef.current.get(from);
+              if (
+                current &&
+                peerGenRef.current.get(from) === gen &&
+                current.signalingState === "have-local-offer" &&
+                current.connectionState !== "connected"
+              ) {
+                huddleWarn("negotiate", { peerId: from, event: "ignore-offer-recovery" });
+                try {
+                  current.restartIce();
+                } catch {
+                  /* negotiation may be in flight */
                 }
-              }, 5000);
-              return;
-            }
+              }
+            }, 5000);
+            return;
+          }
+
+          if (action === "rollback") {
             // Polite side: roll back our local offer so we can accept theirs.
             try {
               await pc.setLocalDescription({ type: "rollback" });
             } catch (err) {
               // Rollback can fail if state is already stable/closed; continue best-effort.
-              huddleWarn("negotiate", { from, event: "rollback-failed", error: String(err) });
+              huddleWarn("negotiate", { from, event: "rollback-failed", error: errorName(err) });
             }
           }
 
@@ -456,7 +461,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
           });
           socket.emit("answer", { to: from, answer: pc.localDescription });
         } catch (err) {
-          console.error("Error handling offer from", from, ":", err);
+          huddleWarn("negotiate", { from, event: "offer-handling-error", error: errorName(err) });
         }
       });
     };
@@ -475,7 +480,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
           await flushRetryCandidates(from);
           huddleLog("negotiate", { from, event: "answer-applied", signalingState: pc.signalingState });
         } catch (err) {
-          huddleWarn("negotiate", { from, event: "answer-error", error: String(err) });
+          huddleWarn("negotiate", { from, event: "answer-error", error: errorName(err) });
         }
       });
     };
@@ -570,6 +575,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       socket.off("room-joined", handleRoomJoined);
       socket.off("screen-share-stopped", handleScreenShareStopped);
       socket.off("disconnect", handleLocalDisconnect);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- must see peers created after this effect ran.
       for (const [id] of peersRef.current) {
         removePeer(id);
       }
@@ -657,7 +663,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
         audioWatchdogRef.current.rebaseline(peerId, dir);
         pc.restartIce();
       } catch (err) {
-        huddleWarn("watchdog", { peerId, event: "renegotiate-error", dir, error: String(err) });
+        huddleWarn("watchdog", { peerId, event: "renegotiate-error", dir, error: errorName(err) });
       }
     },
     [createPeer, removePeer],
@@ -692,14 +698,14 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
         // succeeds without renegotiation.
         huddleLog("audio", { peerId, event: "replaceTrack" });
         audioSender.replaceTrack(newTrack).catch((err) => {
-          huddleWarn("audio", { peerId, event: "replaceTrack-error", error: String(err) });
+          huddleWarn("audio", { peerId, event: "replaceTrack-error", error: errorName(err) });
         });
       } else {
         try {
           pc.addTrack(newTrack, localStream);
           huddleLog("audio", { peerId, event: "addTrack" });
         } catch (err) {
-          huddleWarn("audio", { peerId, event: "addTrack-error", error: String(err) });
+          huddleWarn("audio", { peerId, event: "addTrack-error", error: errorName(err) });
         }
       }
     }

@@ -44,13 +44,14 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, isCo
         )}
       </span>
       {participant.isMuted ? (
-        <MicOff size={16} className="text-red-400 flex-shrink-0" />
+        <MicOff size={16} role="img" aria-label="Muted" className="text-red-400 flex-shrink-0" />
       ) : (
-        <Mic size={16} className="text-gray-400 flex-shrink-0" />
+        <Mic size={16} role="img" aria-label="Not muted" className="text-gray-400 flex-shrink-0" />
       )}
       {onMenuClick && (
         <button
           onClick={onMenuClick}
+          aria-label={`Options for ${participant.name}`}
           className="flex-shrink-0 p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors cursor-pointer"
         >
           <EllipsisVertical size={16} />

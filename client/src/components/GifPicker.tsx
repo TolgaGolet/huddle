@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Search, X } from "lucide-react";
 import type { GifItem } from "../lib/giphyClient";
 import { fetchTrending, fetchSearch } from "../lib/giphyClient";
@@ -14,7 +14,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const query = search.trim();
 
   // Close on outside click
   useEffect(() => {
@@ -27,35 +27,31 @@ export default function GifPicker({ onSelect, onClose }: Props) {
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [onClose]);
 
-  const load = useCallback(async (query: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const results = query.trim()
-        ? await fetchSearch(query.trim())
-        : await fetchTrending();
-      setGifs(results);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load GIFs");
-      setGifs([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Load trending on mount
+  // Trending (empty query) loads immediately; searches are debounced.
   useEffect(() => {
-    load("");
-  }, [load]);
-
-  // Debounced search
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => load(search), 400);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
+    const controller = new AbortController();
+    const { signal } = controller;
+    const load = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const results = query ? await fetchSearch(query, signal) : await fetchTrending(signal);
+        if (!signal.aborted) setGifs(results);
+      } catch (err) {
+        // An aborted request was replaced by a newer one, which owns the UI state.
+        if (signal.aborted) return;
+        setError(err instanceof Error ? err.message : "Failed to load GIFs");
+        setGifs([]);
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
     };
-  }, [search, load]);
+    const timer = setTimeout(load, query ? 400 : 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
 
   return (
     <div
@@ -72,6 +68,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search GIFs..."
+            aria-label="Search GIFs"
             className="flex-1 bg-transparent text-sm text-white placeholder-gray-500 focus:outline-none"
             autoFocus
           />
@@ -79,6 +76,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
             <button
               type="button"
               onClick={() => setSearch("")}
+              aria-label="Clear search"
               className="text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
             >
               <X size={12} />
@@ -90,7 +88,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
       {/* Section label */}
       <div className="px-3 pt-2 pb-1">
         <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">
-          {search.trim() ? `Results for "${search.trim()}"` : "Trending"}
+          {query ? `Results for "${query}"` : "Trending"}
         </span>
       </div>
 

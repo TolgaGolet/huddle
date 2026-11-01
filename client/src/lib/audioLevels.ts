@@ -1,6 +1,6 @@
 /**
- * Pure audio level calculations and dB conversions.
- * Shared between useVoiceActivity and useMicTelemetry.
+ * Pure audio level calculations, dB conversions and the voice-gate state
+ * machine. Shared by useTransmissionGate, useMicTelemetry and useVoiceActivity.
  */
 
 export const NOISE_FLOOR_LEARN_RATE = 0.02;
@@ -83,6 +83,57 @@ export function updateAdaptiveNoiseFloor(currentFloorDb: number, levelDb: number
     newFloor += (levelDb - newFloor) * NOISE_FLOOR_LEARN_RATE;
   }
   return Math.max(Math.min(newFloor, NOISE_FLOOR_MAX_DB), NOISE_FLOOR_MIN_DB);
+}
+
+/** Advances a noise floor; `null` means no sample has been measured yet. */
+export function stepNoiseFloor(floorDb: number | null, levelDb: number): number {
+  if (floorDb === null) return Math.max(Math.min(levelDb, NOISE_FLOOR_MAX_DB), NOISE_FLOOR_MIN_DB);
+  return updateAdaptiveNoiseFloor(floorDb, levelDb);
+}
+
+/** Consecutive samples above the open threshold needed before the gate opens. */
+export const REQUIRED_ATTACK_SAMPLES = 2;
+/** The gate's thresholds never sit closer to the ambient noise floor than this. */
+const GATE_OPEN_FLOOR_MARGIN_DB = 8;
+const GATE_CLOSE_FLOOR_MARGIN_DB = 4;
+
+export interface GateState {
+  /** Timestamp the gate last opened or heard speech (0 = closed). */
+  openSince: number;
+  consecutiveHigh: number;
+  noiseFloorDb: number | null;
+}
+
+export const INITIAL_GATE_STATE: GateState = { openSince: 0, consecutiveHigh: 0, noiseFloorDb: null };
+
+/** Closes the gate without forgetting the measured noise floor. */
+export function closeGate(state: GateState): GateState {
+  return { ...state, openSince: 0, consecutiveHigh: 0 };
+}
+
+/** Advances the voice gate by one level sample. */
+export function stepGate(
+  state: GateState,
+  levelDb: number,
+  now: number,
+  limits: { openDb: number; closeDb: number },
+): GateState {
+  const noiseFloorDb = stepNoiseFloor(state.noiseFloorDb, levelDb);
+  const next = { ...state, noiseFloorDb };
+
+  if (state.openSince > 0) {
+    // Speech refreshes the release window; otherwise hold until it expires.
+    if (levelDb >= Math.max(limits.closeDb, noiseFloorDb + GATE_CLOSE_FLOOR_MARGIN_DB)) {
+      return { ...next, openSince: now };
+    }
+    return now - state.openSince < RELEASE_MS ? next : closeGate(next);
+  }
+
+  if (levelDb < Math.max(limits.openDb, noiseFloorDb + GATE_OPEN_FLOOR_MARGIN_DB)) {
+    return { ...next, consecutiveHigh: 0 };
+  }
+  const consecutiveHigh = state.consecutiveHigh + 1;
+  return { ...next, consecutiveHigh, openSince: consecutiveHigh >= REQUIRED_ATTACK_SAMPLES ? now : 0 };
 }
 
 /**

@@ -1,6 +1,6 @@
 import type { Server, Socket } from "socket.io";
 import { nanoid } from "nanoid";
-import { addChatMessage, emptyReactions, type ChatMessage } from "./roomManager.js";
+import { addChatMessage, emptyReactions, removeMessage, type ChatMessage } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
 import { onRoom } from "./socketRoute.js";
 import {
@@ -51,7 +51,7 @@ export function setupChat(io: Server): void {
 
       const msg: ChatMessage = {
         id: nanoid(10),
-        senderId: socket.id,
+        senderId: participant.userId,
         senderName: participant.name,
         text,
         timestamp: Date.now(),
@@ -86,7 +86,7 @@ export function setupChat(io: Server): void {
 
       const msg = entry as ChatMessage;
       const list = msg.reactions[emoji] ?? [];
-      const idx = list.indexOf(participant.name);
+      const idx = list.findIndex((u) => u.userId === participant.userId);
       if (idx >= 0) {
         list.splice(idx, 1);
         if (list.length === 0) {
@@ -96,7 +96,7 @@ export function setupChat(io: Server): void {
         }
       } else {
         if (!(emoji in msg.reactions) && Object.keys(msg.reactions).length >= MAX_REACTION_KEYS) return;
-        msg.reactions[emoji] = [...list, participant.name];
+        msg.reactions[emoji] = [...list, { userId: participant.userId, name: participant.name }];
       }
 
       io.to(roomId).emit("chat-reaction-update", {
@@ -105,14 +105,14 @@ export function setupChat(io: Server): void {
       });
     });
 
-    onRoom(socket, "chat-edit", parseChatEdit, ({ roomId, room }, { messageId, text }) => {
+    onRoom(socket, "chat-edit", parseChatEdit, ({ roomId, room, participant }, { messageId, text }) => {
       const entry = room.chatHistory.find((m) => m.id === messageId);
       if (!entry || "type" in entry) return;
       const msg = entry as ChatMessage;
 
       // Only the sender can edit their own message. GIFs and image-only
       // messages cannot be edited to text.
-      if (msg.senderId !== socket.id) return;
+      if (msg.senderId !== participant.userId) return;
       if (msg.gifUrl || msg.imageUrls?.length) return;
 
       msg.text = text;
@@ -120,13 +120,12 @@ export function setupChat(io: Server): void {
       io.to(roomId).emit("chat-message-edit", { messageId, text });
     });
 
-    onRoom(socket, "chat-delete", parseMessageId, ({ roomId, room }, { messageId }) => {
+    onRoom(socket, "chat-delete", parseMessageId, ({ roomId, room, participant }, { messageId }) => {
       const entry = room.chatHistory.find((m) => m.id === messageId);
       if (!entry) return;
-      if (entry.senderId !== socket.id) return;
+      if (entry.senderId !== participant.userId) return;
 
-      if (room.pinnedMessageId === messageId) room.pinnedMessageId = null;
-      room.chatHistory = room.chatHistory.filter((m) => m.id !== messageId);
+      removeMessage(roomId, messageId);
       io.to(roomId).emit("chat-message-delete", { messageId });
     });
 
@@ -136,10 +135,7 @@ export function setupChat(io: Server): void {
 
       // Toggle: pinning a different message unpins the previous one.
       room.pinnedMessageId = room.pinnedMessageId === messageId ? null : messageId;
-      io.to(roomId).emit("chat-pin-update", {
-        pinnedMessageId: room.pinnedMessageId,
-        chatHistory: room.chatHistory,
-      });
+      io.to(roomId).emit("chat-pin-update", { pinnedMessageId: room.pinnedMessageId });
     });
   });
 }

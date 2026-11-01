@@ -1,9 +1,14 @@
-import { Router } from "express";
-import https from "node:https";
+import { Router, type Response } from "express";
+import { TtlCache } from "./ttlCache.js";
 
 const GIPHY_BASE = "https://api.giphy.com/v1/gifs";
 const LIMIT = 24;
 const RATING = "pg";
+const UPSTREAM_TIMEOUT_MS = 5000;
+// API keys are rate-limited, so most picker opens should not reach Giphy.
+const TRENDING_TTL_MS = 5 * 60_000;
+const SEARCH_TTL_MS = 60_000;
+const MAX_CACHED_RESULTS = 100;
 
 interface GiphyRendition {
   url: string;
@@ -27,24 +32,6 @@ export interface GifItem {
   url: string;
 }
 
-function fetchJson(url: string): Promise<{ data: RawGiphyGif[] }> {
-  return new Promise((resolve, reject) => {
-    https
-      .get(url, (res) => {
-        let raw = "";
-        res.on("data", (chunk: string) => (raw += chunk));
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(raw) as { data: RawGiphyGif[] });
-          } catch (e) {
-            reject(e);
-          }
-        });
-      })
-      .on("error", reject);
-  });
-}
-
 function mapGif(gif: RawGiphyGif): GifItem | null {
   const preview =
     gif.images.fixed_width_downsampled?.url ||
@@ -58,41 +45,42 @@ function mapGif(gif: RawGiphyGif): GifItem | null {
   return { id: gif.id, title: gif.title || "GIF", preview, url };
 }
 
-export const giphyRouter = Router();
+/** `url` contains the API key, so it must never reach logs or error messages. */
+async function fetchGifs(url: string): Promise<GifItem[]> {
+  const upstream = await fetch(url, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
+  if (!upstream.ok) throw new Error(`GIPHY responded with ${upstream.status}`);
+  const raw = (await upstream.json()) as { data?: unknown };
+  if (!Array.isArray(raw.data)) throw new Error("Unexpected GIPHY response");
+  return (raw.data as RawGiphyGif[]).map(mapGif).filter((gif): gif is GifItem => gif !== null);
+}
 
-giphyRouter.get("/trending", async (_req, res) => {
+const cache = new TtlCache<GifItem[]>(MAX_CACHED_RESULTS);
+
+async function sendGifs(res: Response, cacheKey: string, ttlMs: number, endpoint: string, params = ""): Promise<void> {
   const apiKey = process.env.GIPHY_API_KEY;
   if (!apiKey) {
     res.status(503).json({ error: "GIPHY_API_KEY not configured on server" });
     return;
   }
+  const url = `${GIPHY_BASE}/${endpoint}?api_key=${apiKey}${params}&limit=${LIMIT}&rating=${RATING}`;
   try {
-    const raw = await fetchJson(
-      `${GIPHY_BASE}/trending?api_key=${apiKey}&limit=${LIMIT}&rating=${RATING}`,
-    );
-    res.json({ data: raw.data.map(mapGif).filter(Boolean) });
+    res.json({ data: await cache.getOrLoad(cacheKey, ttlMs, () => fetchGifs(url)) });
   } catch {
     res.status(502).json({ error: "Failed to fetch from GIPHY" });
   }
+}
+
+export const giphyRouter = Router();
+
+giphyRouter.get("/trending", async (_req, res) => {
+  await sendGifs(res, "trending", TRENDING_TTL_MS, "trending");
 });
 
 giphyRouter.get("/search", async (req, res) => {
-  const apiKey = process.env.GIPHY_API_KEY;
-  if (!apiKey) {
-    res.status(503).json({ error: "GIPHY_API_KEY not configured on server" });
-    return;
-  }
-  const q = (req.query.q as string | undefined)?.trim();
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   if (!q) {
     res.status(400).json({ error: "Missing q parameter" });
     return;
   }
-  try {
-    const raw = await fetchJson(
-      `${GIPHY_BASE}/search?api_key=${apiKey}&q=${encodeURIComponent(q)}&limit=${LIMIT}&rating=${RATING}`,
-    );
-    res.json({ data: raw.data.map(mapGif).filter(Boolean) });
-  } catch {
-    res.status(502).json({ error: "Failed to fetch from GIPHY" });
-  }
+  await sendGifs(res, `search:${q.toLowerCase()}`, SEARCH_TTL_MS, "search", `&q=${encodeURIComponent(q)}`);
 });

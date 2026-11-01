@@ -125,6 +125,7 @@ export default function LandingPage() {
         {mode === "join" && (
           <form onSubmit={handleJoin} className="flex flex-col gap-4">
             <input
+              aria-label="Your name"
               type="text"
               placeholder="Your name"
               value={name}
@@ -134,6 +135,7 @@ export default function LandingPage() {
               className="w-full px-4 py-3 rounded-lg bg-gray-800 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
             />
             <input
+              aria-label="Room ID"
               type="text"
               placeholder="Room ID"
               value={roomId}
@@ -148,6 +150,7 @@ export default function LandingPage() {
               <div className="flex items-center gap-2">
                 <Lock size={16} className="text-amber-400 flex-shrink-0" />
                 <input
+                  aria-label="Room password"
                   type="password"
                   placeholder="Room password"
                   value={password}
@@ -181,6 +184,7 @@ export default function LandingPage() {
         {mode === "create" && (
           <form onSubmit={handleCreate} className="flex flex-col gap-4">
             <input
+              aria-label="Your name"
               type="text"
               placeholder="Your name"
               value={name}
@@ -192,6 +196,7 @@ export default function LandingPage() {
             <div className="flex items-center gap-2">
               <Lock size={16} className="text-gray-500 flex-shrink-0" />
               <input
+                aria-label="Password (optional)"
                 type="password"
                 placeholder="Password (optional)"
                 value={password}

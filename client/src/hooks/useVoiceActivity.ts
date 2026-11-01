@@ -3,10 +3,9 @@ import {
   ATTACK_MS,
   calculateAnalyserLevel,
   CLOSE_THRESHOLD_DB,
-  NOISE_FLOOR_MAX_DB,
-  NOISE_FLOOR_MIN_DB,
   OPEN_THRESHOLD_DB,
   RELEASE_MS,
+  stepNoiseFloor,
   updateAdaptiveNoiseFloor,
 } from "../lib/audioLevels";
 
@@ -79,7 +78,7 @@ export function useVoiceActivity(
         if (!st) {
           st = {
             levelDb,
-            noiseFloorDb: Math.max(Math.min(levelDb, NOISE_FLOOR_MAX_DB), NOISE_FLOOR_MIN_DB),
+            noiseFloorDb: stepNoiseFloor(null, levelDb),
             openSince: 0,
             closedSince: now,
           };

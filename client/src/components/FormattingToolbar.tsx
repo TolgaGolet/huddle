@@ -75,6 +75,7 @@ export default function FormattingToolbar({ textareaRef, text, setText }: Props)
           onClick={() => handleFormat(format)}
           className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
           title={`${format.label} (${format.shortcutLabel})`}
+          aria-label={format.label}
         >
           {format.icon}
         </button>

@@ -16,6 +16,14 @@ export default function ParticipantContextMenu({ x, y, name, volume, onVolumeCha
   // Clamp the menu inside the viewport so it never renders off-screen
   // (which was making it appear as if "nothing happens").
   const [pos, setPos] = useState({ x, y });
+  const sliderRef = useRef<HTMLInputElement>(null);
+
+  // Keyboard users land on the slider, and go back to the menu button on close.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    sliderRef.current?.focus();
+    return () => opener?.focus();
+  }, []);
 
   useEffect(() => {
     const el = ref.current;
@@ -55,7 +63,9 @@ export default function ParticipantContextMenu({ x, y, name, volume, onVolumeCha
       <div className="flex items-center gap-2">
         <Volume2 size={14} className="text-gray-400 flex-shrink-0" />
         <input
+          ref={sliderRef}
           type="range"
+          aria-label={`Volume for ${name}`}
           min={0}
           max={200}
           value={Math.round(volume * 100)}

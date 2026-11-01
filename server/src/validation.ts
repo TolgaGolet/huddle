@@ -8,6 +8,7 @@
 
 import type { ChatMessage } from "./roomManager.js";
 import {
+  CLIENT_KEY_PATTERN,
   MAX_CHAT_TEXT_LENGTH,
   MAX_IMAGES_PER_MESSAGE,
   MAX_NAME_LENGTH,
@@ -54,13 +55,18 @@ export function noPayload(): Record<string, never> {
 
 const password = (v: unknown) => str(v, MAX_PASSWORD_LENGTH);
 
-export function parseJoinRoom(raw: unknown): { roomId: string; name: string; password?: string } | null {
+const clientKey = (v: unknown) => (typeof v === "string" && CLIENT_KEY_PATTERN.test(v) ? v : null);
+
+export function parseJoinRoom(
+  raw: unknown,
+): { roomId: string; name: string; password?: string; clientKey?: string } | null {
   if (!isRecord(raw)) return null;
   const roomId = id(raw.roomId);
   const name = trimmedStr(raw.name, MAX_NAME_LENGTH);
   const pw = optional(raw.password, password);
-  if (!roomId || !name || pw === null) return null;
-  return { roomId, name, password: pw };
+  const key = optional(raw.clientKey, clientKey);
+  if (!roomId || !name || pw === null || key === null) return null;
+  return { roomId, name, password: pw, clientKey: key };
 }
 
 /**

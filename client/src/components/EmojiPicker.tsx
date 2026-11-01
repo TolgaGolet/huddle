@@ -54,6 +54,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search emojis..."
+          aria-label="Search emojis"
           className="w-full px-2 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           autoFocus
         />
@@ -95,6 +96,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
                 i === activeCategory ? "bg-gray-700 rounded-t-lg" : "hover:bg-gray-700/40"
               }`}
               title={cat.name}
+              aria-label={cat.name}
             >
               {cat.icon}
             </button>

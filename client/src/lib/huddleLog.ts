@@ -28,7 +28,6 @@ export function huddleDebugEnabled(): boolean {
  */
 export function huddleLog(scope: string, ...args: unknown[]): void {
   // `console.log` (info) so it is visible in production console + log shippers.
-  // eslint-disable-next-line no-console
   console.log(`[huddle:${scope}]`, ...args);
 }
 
@@ -36,6 +35,14 @@ export function huddleLog(scope: string, ...args: unknown[]): void {
  * Emit an always-on warning log line.
  */
 export function huddleWarn(scope: string, ...args: unknown[]): void {
-  // eslint-disable-next-line no-console
   console.warn(`[huddle:${scope}]`, ...args);
+}
+
+/**
+ * Loggable form of a caught error: its name only. Browser messages can quote
+ * input (Chromium's setRemoteDescription errors include the offending SDP line,
+ * which may hold ICE candidates and so IP addresses).
+ */
+export function errorName(err: unknown): string {
+  return err instanceof Error ? err.name : "UnknownError";
 }

@@ -1,62 +1,37 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { MicTelemetry, VoiceTransmissionThreshold } from "../types";
 import {
   calculateAnalyserLevel,
   getThresholdDb,
-  NOISE_FLOOR_MAX_DB,
-  NOISE_FLOOR_MIN_DB,
-  RELEASE_MS,
-  updateAdaptiveNoiseFloor,
+  stepNoiseFloor,
+  type GateState,
 } from "../lib/audioLevels";
 
 const TELEMETRY_INTERVAL_MS = 80;
 
+/**
+ * Data for the settings meter. Whether voice is transmitting comes from the
+ * real gate (useTransmissionGate), never a second calculation, so the meter
+ * always matches what peers hear.
+ */
 export function useMicTelemetry(
   localAnalyser: AnalyserNode | null,
   isMuted: boolean,
   threshold: VoiceTransmissionThreshold,
-  manualThresholdDb = -36,
-  active: boolean,
+  manualThresholdDb: number,
+  isTransmitting: boolean,
+  gateStateRef: RefObject<GateState>,
 ): MicTelemetry {
-  const [telemetry, setTelemetry] = useState<MicTelemetry>({
-    levelDb: -100,
-    noiseFloorDb: -60,
-    thresholdDb: threshold === "off" ? null : getThresholdDb(threshold, manualThresholdDb)?.openDb ?? null,
-    isTransmitting: false,
-    isMuted,
-    hasInput: false,
-  });
+  const [levels, setLevels] = useState({ levelDb: -100, noiseFloorDb: -60 });
 
-  const noiseFloorRef = useRef<number>(-60);
-  const openSinceRef = useRef<number>(0);
+  // The gate doesn't measure while the threshold is off, but the meter still
+  // shows the ambient floor.
+  const ownNoiseFloorRef = useRef<number | null>(null);
   const bufferRef = useRef<Uint8Array | null>(null);
 
   useEffect(() => {
-    const limits = getThresholdDb(threshold, manualThresholdDb);
-    const configuredThresholdDb = limits?.openDb ?? null;
-
-    // If not active or no analyser, update state and don't poll
-    if (!active || !localAnalyser) {
-      setTelemetry((prev) => ({
-        ...prev,
-        levelDb: -100,
-        thresholdDb: configuredThresholdDb,
-        isTransmitting: false,
-        isMuted,
-        hasInput: Boolean(localAnalyser),
-      }));
-      return;
-    }
-
-    if (isMuted) {
-      setTelemetry((prev) => ({
-        ...prev,
-        levelDb: -100,
-        thresholdDb: configuredThresholdDb,
-        isTransmitting: false,
-        isMuted: true,
-        hasInput: true,
-      }));
+    if (!localAnalyser || isMuted) {
+      setLevels((prev) => ({ ...prev, levelDb: -100 }));
       return;
     }
 
@@ -67,51 +42,25 @@ export function useMicTelemetry(
       }
 
       const { levelDb } = calculateAnalyserLevel(localAnalyser, bufferRef.current);
-      const now = performance.now();
 
-      // Initialize floor if at baseline
-      if (noiseFloorRef.current === -60 && levelDb > -100) {
-        noiseFloorRef.current = Math.max(Math.min(levelDb, NOISE_FLOOR_MAX_DB), NOISE_FLOOR_MIN_DB);
-      } else {
-        noiseFloorRef.current = updateAdaptiveNoiseFloor(noiseFloorRef.current, levelDb);
-      }
+      const ownNoiseFloorDb = stepNoiseFloor(ownNoiseFloorRef.current, levelDb);
+      ownNoiseFloorRef.current = ownNoiseFloorDb;
 
-      let isTransmitting = false;
-
-      if (threshold === "off") {
-        isTransmitting = true;
-      } else if (limits) {
-        const openThr = Math.max(limits.openDb, noiseFloorRef.current + 8);
-        const closeThr = Math.max(limits.closeDb, noiseFloorRef.current + 4);
-
-        if (openSinceRef.current > 0) {
-          const sinceOpen = now - openSinceRef.current;
-          if (sinceOpen < RELEASE_MS || levelDb >= closeThr) {
-            isTransmitting = true;
-            if (levelDb >= closeThr) {
-              openSinceRef.current = now;
-            }
-          } else {
-            openSinceRef.current = 0;
-          }
-        } else if (levelDb >= openThr) {
-          openSinceRef.current = now;
-          isTransmitting = true;
-        }
-      }
-
-      setTelemetry({
+      setLevels({
         levelDb,
-        noiseFloorDb: noiseFloorRef.current,
-        thresholdDb: configuredThresholdDb,
-        isTransmitting,
-        isMuted: false,
-        hasInput: true,
+        noiseFloorDb: threshold === "off" ? ownNoiseFloorDb : gateStateRef.current.noiseFloorDb ?? ownNoiseFloorDb,
       });
     }, TELEMETRY_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [localAnalyser, isMuted, threshold, manualThresholdDb, active]);
+  }, [localAnalyser, isMuted, threshold, gateStateRef]);
 
-  return telemetry;
+  const hasInput = Boolean(localAnalyser);
+  return {
+    ...levels,
+    thresholdDb: getThresholdDb(threshold, manualThresholdDb)?.openDb ?? null,
+    isMuted,
+    hasInput,
+    isTransmitting: hasInput && isTransmitting,
+  };
 }

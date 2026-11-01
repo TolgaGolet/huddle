@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { VoiceTransmissionThreshold } from "../types";
 import {
   calculateAnalyserLevel,
+  closeGate,
   getThresholdDb,
-  NOISE_FLOOR_MAX_DB,
-  NOISE_FLOOR_MIN_DB,
-  RELEASE_MS,
-  updateAdaptiveNoiseFloor,
+  INITIAL_GATE_STATE,
+  stepGate,
+  type GateState,
 } from "../lib/audioLevels";
 import { createWorkerInterval } from "../lib/workerTimer";
 
@@ -15,9 +15,6 @@ import { createWorkerInterval } from "../lib/workerTimer";
  * 25ms provides snappy speech onset detection to avoid clipping initial consonants.
  */
 const GATE_POLL_INTERVAL_MS = 25;
-
-/** Attack requirement: consecutive samples above threshold before gate opens */
-const REQUIRED_ATTACK_SAMPLES = 2; // ~50ms of sustained energy
 
 interface UseTransmissionGateOptions {
   localAnalyser: AnalyserNode | null;
@@ -49,13 +46,11 @@ export function useTransmissionGate({
   threshold,
   manualThresholdDb = -36,
   isMuted,
-}: UseTransmissionGateOptions): boolean {
+}: UseTransmissionGateOptions): { isTransmitting: boolean; gateStateRef: RefObject<GateState> } {
   // If threshold is 'off', gate is always considered open
   const [gateOpen, setGateOpen] = useState<boolean>(true);
 
-  const consecutiveHighRef = useRef<number>(0);
-  const openSinceRef = useRef<number>(0);
-  const noiseFloorRef = useRef<number>(-60);
+  const gateStateRef = useRef<GateState>(INITIAL_GATE_STATE);
   const bufferRef = useRef<Uint8Array | null>(null);
   // Tracks the previous isMuted value so the unmute transition can re-arm
   // the gate (close it once) — otherwise the fail-open state from the muted
@@ -77,6 +72,11 @@ export function useTransmissionGate({
   }, [outboundStream, isMuted, threshold, gateOpen]);
 
   useEffect(() => {
+    const failOpen = () => {
+      setGateOpen(true);
+      gateStateRef.current = closeGate(gateStateRef.current);
+    };
+
     if (threshold === "off") {
       setGateOpen(true);
       return;
@@ -87,21 +87,7 @@ export function useTransmissionGate({
       // measure the level, so the gate must fail OPEN — a closed gate here
       // would silently disable the outbound track and cause one-way audio
       // whenever the analyser's AudioContext is autoplay-blocked.
-      setGateOpen(true);
-      consecutiveHighRef.current = 0;
-      openSinceRef.current = 0;
-      return;
-    }
-
-    // A non-null analyser whose AudioContext is suspended/interrupted produces
-    // only silence. Treating that as "below threshold" would keep the gate
-    // closed and mute an otherwise healthy outbound track (one-way audio). If
-    // we cannot actually measure, fail OPEN just like the missing-analyser case.
-    const analyserCtxState = (localAnalyser.context as BaseAudioContext | undefined)?.state;
-    if (analyserCtxState && analyserCtxState !== "running") {
-      setGateOpen(true);
-      consecutiveHighRef.current = 0;
-      openSinceRef.current = 0;
+      failOpen();
       return;
     }
 
@@ -112,8 +98,7 @@ export function useTransmissionGate({
       // muted period.
       if (!prevMutedRef.current) {
         setGateOpen(false);
-        consecutiveHighRef.current = 0;
-        openSinceRef.current = 0;
+        gateStateRef.current = closeGate(gateStateRef.current);
       }
       prevMutedRef.current = true;
       return;
@@ -126,18 +111,15 @@ export function useTransmissionGate({
       return;
     }
 
-    const { openDb, closeDb } = limits;
-
     const onTick = () => {
-      // Re-check every tick: the AudioContext can be suspended mid-session
-      // (autoplay policy, OS interruption, device switch) while the analyser
-      // object stays the same. A suspended context yields only silence, which
-      // would otherwise read as "below threshold" and keep the gate closed.
+      // Checked every tick: the AudioContext can be suspended at the start or
+      // mid-session (autoplay policy, OS interruption, device switch) while the
+      // analyser object stays the same. A suspended context yields only silence,
+      // which would otherwise read as "below threshold" and mute an otherwise
+      // healthy outbound track (one-way audio), so fail OPEN until it resumes.
       const ctxState = (localAnalyser.context as BaseAudioContext | undefined)?.state;
       if (ctxState && ctxState !== "running") {
-        setGateOpen(true);
-        consecutiveHighRef.current = 0;
-        openSinceRef.current = 0;
+        failOpen();
         return;
       }
 
@@ -146,46 +128,13 @@ export function useTransmissionGate({
         bufferRef.current = new Uint8Array(binCount);
       }
 
-      const now = performance.now();
       const { levelDb } = calculateAnalyserLevel(localAnalyser, bufferRef.current);
 
-      // Adaptive ambient floor tracker
-      if (noiseFloorRef.current === -60 && levelDb > -100) {
-        noiseFloorRef.current = Math.max(Math.min(levelDb, NOISE_FLOOR_MAX_DB), NOISE_FLOOR_MIN_DB);
-      } else {
-        noiseFloorRef.current = updateAdaptiveNoiseFloor(noiseFloorRef.current, levelDb);
-      }
-
-      // Dynamic thresholds that account for ambient floor
-      const effectiveOpen = Math.max(openDb, noiseFloorRef.current + 8);
-      const effectiveClose = Math.max(closeDb, noiseFloorRef.current + 4);
-
-      if (openSinceRef.current > 0) {
-        // Gate is currently OPEN
-        const timeOpen = now - openSinceRef.current;
-        if (timeOpen < RELEASE_MS || levelDb >= effectiveClose) {
-          // Keep open and refresh release window if still speaking
-          if (levelDb >= effectiveClose) {
-            openSinceRef.current = now;
-          }
-        } else {
-          // Energy dropped below close threshold and release time expired -> close
-          openSinceRef.current = 0;
-          consecutiveHighRef.current = 0;
-          setGateOpen(false);
-        }
-      } else {
-        // Gate is currently CLOSED
-        if (levelDb >= effectiveOpen) {
-          consecutiveHighRef.current += 1;
-          if (consecutiveHighRef.current >= REQUIRED_ATTACK_SAMPLES) {
-            openSinceRef.current = now;
-            setGateOpen(true);
-          }
-        } else {
-          consecutiveHighRef.current = 0;
-        }
-      }
+      gateStateRef.current = stepGate(gateStateRef.current, levelDb, performance.now(), limits);
+      // Set every tick, not only on a change: gateOpen starts true and failOpen
+      // leaves it true while the state machine is closed, so a closed state
+      // machine would otherwise never close the real gate. Same value = no render.
+      setGateOpen(gateStateRef.current.openSince > 0);
     };
 
     // Use Web Worker timer so background-tab throttling does not freeze or delay gating
@@ -196,5 +145,5 @@ export function useTransmissionGate({
     };
   }, [localAnalyser, threshold, manualThresholdDb, isMuted]);
 
-  return threshold === "off" ? !isMuted : !isMuted && gateOpen;
+  return { isTransmitting: threshold === "off" ? !isMuted : !isMuted && gateOpen, gateStateRef };
 }

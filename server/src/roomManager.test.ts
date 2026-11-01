@@ -1,15 +1,62 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  addChatMessage,
   addParticipant,
   createRoom,
   emptyReactions,
   getRoom,
+  onMessageRemoved,
   onRoomDestroyed,
   purgeExpiredRooms,
+  removeMessage,
   removeParticipant,
   resolveParticipant,
   ROOM_GRACE_MS,
 } from "./roomManager.js";
+
+describe("removeMessage", () => {
+  const message = (id: string) => ({
+    id,
+    senderId: "u",
+    senderName: "Ana",
+    text: "hi",
+    timestamp: 0,
+    reactions: emptyReactions(),
+  });
+  const listener = vi.fn();
+  let unsubscribe: () => void;
+
+  beforeEach(() => {
+    listener.mockClear();
+    unsubscribe = onMessageRemoved(listener);
+  });
+
+  afterEach(() => unsubscribe());
+
+  it("removes the message, clears its pin and notifies listeners", () => {
+    const room = createRoom();
+    addChatMessage(room.id, message("a"));
+    room.pinnedMessageId = "a";
+
+    removeMessage(room.id, "a");
+
+    expect(room.chatHistory).toEqual([]);
+    expect(room.pinnedMessageId).toBeNull();
+    expect(listener).toHaveBeenCalledWith(room, expect.objectContaining({ id: "a" }));
+  });
+
+  it("does the same for a message pushed out by the history cap", () => {
+    const room = createRoom();
+    for (let i = 0; i < 200; i++) addChatMessage(room.id, message(`m${i}`));
+    room.pinnedMessageId = "m0";
+
+    addChatMessage(room.id, message("newest"));
+
+    expect(room.chatHistory).toHaveLength(200);
+    expect(room.pinnedMessageId).toBeNull();
+    expect(listener).toHaveBeenCalledWith(room, expect.objectContaining({ id: "m0" }));
+  });
+});
 
 describe("room destruction", () => {
   const listener = vi.fn();
@@ -96,9 +143,10 @@ describe("emptyReactions", () => {
       const reactions = emptyReactions();
       expect(reactions[emoji]).toBeUndefined();
 
-      reactions[emoji] = ["Ana"];
+      const users = [{ userId: "u1", name: "Ana" }];
+      reactions[emoji] = users;
       expect(Object.keys(reactions)).toEqual([emoji]);
-      expect(JSON.parse(JSON.stringify(reactions))).toEqual({ [emoji]: ["Ana"] });
+      expect(JSON.parse(JSON.stringify(reactions))).toEqual({ [emoji]: users });
     },
   );
 });

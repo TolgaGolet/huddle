@@ -96,6 +96,7 @@ export default function AudioSettings({
             </div>
             <input
               type="range"
+              aria-label="Custom threshold in decibels"
               min={-60}
               max={-10}
               step={1}

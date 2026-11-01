@@ -3,9 +3,10 @@ import React from "react";
 // Matches strings composed entirely of emoji + modifier/ZWJ/variation characters.
 // This lets us detect "emoji-only" messages like 😂 or 🍕🍕 for big rendering.
 const ONLY_EMOJI_RE =
+  // eslint-disable-next-line no-misleading-character-class -- a set of individual code points, not a sequence.
   /^[\p{Extended_Pictographic}\uFE0F\u20E3\u200D\u{1F3FB}-\u{1F3FF}]+$/u;
 
-function detectEmojiOnly(text: string): boolean {
+export function detectEmojiOnly(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || !ONLY_EMOJI_RE.test(trimmed)) return false;
   // Count grapheme clusters so ZWJ sequences (e.g. 🐻‍❄️) count as one emoji.
@@ -23,7 +24,7 @@ interface Token {
   content: string;
 }
 
-function tokenize(text: string): Token[] {
+export function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
   // Order matters: **bold** before *italic*, ~~strike~~, `code`, then URLs
   const COMBINED = /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)|(~~(.+?)~~)|(https?:\/\/[^\s<>'")\]]+)/g;

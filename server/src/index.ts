@@ -4,12 +4,12 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
-import { router as roomRouter, onRoomDestroyed, purgeExpiredRooms } from "./roomManager.js";
+import { router as roomRouter, onMessageRemoved, onRoomDestroyed, purgeExpiredRooms } from "./roomManager.js";
 import { giphyRouter } from "./giphyRouter.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
-import { clearStaleImages, deleteRoomImages, imageRouter } from "./imageRouter.js";
+import { clearStaleImages, deleteRoomImages, imageRouter, releaseMessageImages } from "./imageRouter.js";
 import { errorSummary } from "./errorLog.js";
 
 // Socket handlers catch their own errors (socketRoute.ts), so client input
@@ -72,6 +72,7 @@ setInterval(() => {
 // Delete a room's uploaded images whenever the room is destroyed, whether by
 // the lazy purge in getRoom() or the sweep below.
 onRoomDestroyed((roomId) => void deleteRoomImages(roomId));
+onMessageRemoved(releaseMessageImages);
 
 // Periodically destroy rooms that stayed empty past their grace period. This
 // is the backstop for the lazy purge in getRoom(); without it, abandoned rooms

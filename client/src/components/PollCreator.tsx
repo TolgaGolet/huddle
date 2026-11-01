@@ -59,6 +59,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
         <button
           type="button"
           onClick={onClose}
+          aria-label="Close poll creator"
           className="p-1 rounded hover:bg-gray-700 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
         >
           <X size={14} />
@@ -71,6 +72,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           placeholder="Ask a question..."
+          aria-label="Poll question"
           className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-600 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           autoFocus
           maxLength={MAX_POLL_QUESTION_LENGTH}
@@ -84,6 +86,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
                 value={option}
                 onChange={(e) => updateOption(i, e.target.value)}
                 placeholder={`Option ${i + 1}`}
+                aria-label={`Option ${i + 1}`}
                 className="flex-1 px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
                 maxLength={MAX_POLL_OPTION_LENGTH}
               />
@@ -91,6 +94,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
                 <button
                   type="button"
                   onClick={() => removeOption(i)}
+                  aria-label={`Remove option ${i + 1}`}
                   className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-gray-700 transition-colors cursor-pointer"
                 >
                   <Trash2 size={14} />
@@ -112,6 +116,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
         )}
 
         <label className="flex items-center gap-2 cursor-pointer">
+          {/* eslint-disable-next-line jsx-a11y/control-has-associated-label -- labelled by the wrapping <label>, which the rule can't see. */}
           <input
             type="checkbox"
             checked={allowMultiple}
