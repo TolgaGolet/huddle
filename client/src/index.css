@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/* 40px minimum on touch screens. Sets no display, so `hidden` still works. */
+@utility touch-target {
+  @media (pointer: coarse) {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+
+    & > svg {
+      margin-inline: auto;
+    }
+  }
+}
+
 ::-webkit-scrollbar {
   width: 6px;
 }

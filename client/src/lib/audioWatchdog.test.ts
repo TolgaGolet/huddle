@@ -98,15 +98,12 @@ describe("evaluateDirection", () => {
 describe("DirectionalAudioWatchdog", () => {
   it("detects a stalled INBOUND direction even while OUTBOUND keeps flowing (one-way audio)", () => {
     const wd = new DirectionalAudioWatchdog(15000);
-    const peerId = "p1";
 
     // Baseline.
-    wd.observe(peerId, sample({ now: 0 }));
+    wd.observe(sample({ now: 0 }));
     // Outbound advances every tick; inbound stays flat. This is exactly the
     // Brave->Firefox one-way case the old OR-check masked.
-    const decision = wd.observe(
-      peerId,
-      sample({ now: 15000, in: { bytes: 100, packets: 10 }, out: { bytes: 900, packets: 90 } }),
+    const decision = wd.observe(sample({ now: 15000, in: { bytes: 100, packets: 10 }, out: { bytes: 900, packets: 90 } }),
     );
     expect(decision.out.status).toBe("progressing");
     expect(decision.in.status).toBe("stalled");
@@ -116,11 +113,8 @@ describe("DirectionalAudioWatchdog", () => {
 
   it("detects a stalled OUTBOUND direction even while INBOUND keeps flowing", () => {
     const wd = new DirectionalAudioWatchdog(15000);
-    const peerId = "p1";
-    wd.observe(peerId, sample({ now: 0 }));
-    const decision = wd.observe(
-      peerId,
-      sample({ now: 15000, in: { bytes: 900, packets: 90 }, out: { bytes: 100, packets: 10 } }),
+    wd.observe(sample({ now: 0 }));
+    const decision = wd.observe(sample({ now: 15000, in: { bytes: 900, packets: 90 }, out: { bytes: 100, packets: 10 } }),
     );
     expect(decision.in.status).toBe("progressing");
     expect(decision.out.status).toBe("stalled");
@@ -130,11 +124,8 @@ describe("DirectionalAudioWatchdog", () => {
 
   it("does not flag outbound when the local track is muted / gate-closed (intentional silence)", () => {
     const wd = new DirectionalAudioWatchdog(15000);
-    const peerId = "p1";
-    wd.observe(peerId, sample({ now: 0, outboundTrackActive: true }));
-    const decision = wd.observe(
-      peerId,
-      sample({
+    wd.observe(sample({ now: 0, outboundTrackActive: true }));
+    const decision = wd.observe(sample({
         now: 20000,
         outboundTrackActive: false,
         in: { bytes: 500, packets: 50 },
@@ -147,11 +138,8 @@ describe("DirectionalAudioWatchdog", () => {
 
   it("does not flag inbound on a recv-only-inactive (idle) direction", () => {
     const wd = new DirectionalAudioWatchdog(15000);
-    const peerId = "p1";
-    wd.observe(peerId, sample({ now: 0, expectsInbound: true }));
-    const decision = wd.observe(
-      peerId,
-      sample({ now: 20000, expectsInbound: false, in: { bytes: 100, packets: 10 } }),
+    wd.observe(sample({ now: 0, expectsInbound: true }));
+    const decision = wd.observe(sample({ now: 20000, expectsInbound: false, in: { bytes: 100, packets: 10 } }),
     );
     expect(decision.in.status).toBe("idle");
     expect(decision.in.shouldRecover).toBe(false);
@@ -159,11 +147,8 @@ describe("DirectionalAudioWatchdog", () => {
 
   it("never recovers when the browser exposes no audio stats", () => {
     const wd = new DirectionalAudioWatchdog(15000);
-    const peerId = "p1";
-    wd.observe(peerId, sample({ now: 0 }));
-    const decision = wd.observe(
-      peerId,
-      sample({
+    wd.observe(sample({ now: 0 }));
+    const decision = wd.observe(sample({
         now: 30000,
         in: { bytes: null, packets: null },
         out: { bytes: null, packets: null },
@@ -175,32 +160,11 @@ describe("DirectionalAudioWatchdog", () => {
     expect(decision.out.shouldRecover).toBe(false);
   });
 
-  it("tracks multiple peers independently", () => {
-    const wd = new DirectionalAudioWatchdog(15000);
-    wd.observe("a", sample({ now: 0 }));
-    wd.observe("b", sample({ now: 0 }));
-    const a = wd.observe("a", sample({ now: 15000, in: { bytes: 100, packets: 10 }, out: { bytes: 900, packets: 90 } }));
-    const b = wd.observe("b", sample({ now: 15000, in: { bytes: 900, packets: 90 }, out: { bytes: 900, packets: 90 } }));
-    expect(a.in.shouldRecover).toBe(true);
-    expect(b.in.shouldRecover).toBe(false);
-    expect(b.out.shouldRecover).toBe(false);
-  });
-
-  it("reset() clears a peer's tracking", () => {
-    const wd = new DirectionalAudioWatchdog(15000);
-    wd.observe("a", sample({ now: 0 }));
-    wd.reset("a");
-    // After reset the next sample is a fresh baseline, not a 15s stall.
-    const d = wd.observe("a", sample({ now: 999999, in: { bytes: 100, packets: 10 }, out: { bytes: 100, packets: 10 } }));
-    expect(d.in.status).toBe("measuring");
-    expect(d.in.shouldRecover).toBe(false);
-  });
-
   it("rebaseline() restarts a single direction's window", () => {
     const wd = new DirectionalAudioWatchdog(15000);
-    wd.observe("a", sample({ now: 0 }));
-    wd.rebaseline("a", "in");
-    const d = wd.observe("a", sample({ now: 20000, in: { bytes: 100, packets: 10 }, out: { bytes: 900, packets: 90 } }));
+    wd.observe(sample({ now: 0 }));
+    wd.rebaseline("in");
+    const d = wd.observe(sample({ now: 20000, in: { bytes: 100, packets: 10 }, out: { bytes: 900, packets: 90 } }));
     expect(d.in.status).toBe("measuring");
     expect(d.in.shouldRecover).toBe(false);
   });

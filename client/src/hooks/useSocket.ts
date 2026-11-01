@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { io, type Socket } from "socket.io-client";
-import type { Participant, ChatMessage, ChatEntry, PollMessage, JoinErrorCode, ReactionUser } from "../types";
+import { io } from "socket.io-client";
+import type { AppSocket, Participant, ChatMessage, ChatEntry, PollMessage, JoinErrorCode, ReactionUser } from "../types";
 import { claimClientKey } from "../lib/clientKey";
 import { playJoinSound, playLeaveSound, playMessageSound, playDisconnectedSound } from "../lib/notificationSounds";
 import { errorName, huddleLog, huddleWarn } from "../lib/huddleLog";
@@ -13,9 +13,11 @@ interface UseSocketOptions {
 }
 
 export interface UseSocketReturn {
-  socket: Socket | null;
+  socket: AppSocket | null;
   /** Our stable identity in this room (see message senderId); null until joined. */
   userId: string | null;
+  /** The socket id the server last accepted into the room, which authorizes image requests. */
+  joinedSocketId: string | null;
   participants: Participant[];
   chatHistory: ChatEntry[];
   pinnedMessageId: string | null;
@@ -30,9 +32,10 @@ export interface UseSocketReturn {
 const MAX_CLIENT_CHAT = 200;
 
 export function useSocket({ roomId, name, password }: UseSocketOptions): UseSocketReturn {
-  const socketRef = useRef<Socket | null>(null);
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const socketRef = useRef<AppSocket | null>(null);
+  const [socket, setSocket] = useState<AppSocket | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [joinedSocketId, setJoinedSocketId] = useState<string | null>(null);
   // Read by listener closures defined inside the connection effect.
   const userIdRef = useRef<string | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -101,7 +104,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
   useEffect(() => {
     if (!roomId || !name) return;
 
-    let socket: Socket | null = null;
+    let socket: AppSocket | null = null;
 
     // Defer socket creation by one macrotask so React StrictMode cleanup
     // can cancel before a WebSocket is actually opened.
@@ -172,6 +175,7 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
         }
         userIdRef.current = data.userId;
         setUserId(data.userId);
+        setJoinedSocketId(socket!.id ?? null);
         setParticipants(data.participants);
         setChatHistory(data.chatHistory.slice(-MAX_CLIENT_CHAT));
         setPinnedMessageId(data.pinnedMessageId);
@@ -335,5 +339,5 @@ export function useSocket({ roomId, name, password }: UseSocketOptions): UseSock
     };
   }, [roomId, name, password, joinRoom, scheduleJoinRetry]);
 
-  return { socket, userId, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
+  return { socket, userId, joinedSocketId, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom };
 }

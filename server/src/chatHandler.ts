@@ -1,8 +1,7 @@
-import type { Server, Socket } from "socket.io";
 import { nanoid } from "nanoid";
 import { addChatMessage, emptyReactions, removeMessage, type ChatMessage } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
-import { onRoom } from "./socketRoute.js";
+import { onRoom, type AppServer } from "./socketRoute.js";
 import {
   noPayload,
   parseChatEdit,
@@ -28,8 +27,8 @@ function isGiphyUrl(url: string): boolean {
   }
 }
 
-export function setupChat(io: Server): void {
-  io.on("connection", (socket: Socket) => {
+export function setupChat(io: AppServer): void {
+  io.on("connection", (socket) => {
     // Typing indicator relay: broadcast to the room so others can show
     // "X is typing...". Clients auto-expire the indicator themselves.
     onRoom(socket, "typing", noPayload, ({ roomId, participant }) => {

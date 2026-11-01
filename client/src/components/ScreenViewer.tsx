@@ -37,6 +37,7 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
+      if (!document.fullscreenEnabled) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (e.key === "f" || e.key === "F") {
@@ -50,21 +51,24 @@ export default function ScreenViewer({ stream, sharerName, onClose }: Props) {
   return (
     <div
       ref={containerRef}
-      className={`flex flex-col bg-gray-950 min-w-0 ${isFullscreen ? "h-full" : "flex-1"}`}
+      className={`flex flex-col bg-gray-950 min-w-0 ${isFullscreen ? "h-full" : "h-[35dvh] shrink-0 md:h-auto md:shrink md:flex-1"}`}
     >
       <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900/60 shrink-0">
         <span className="text-xs text-gray-400">
           {sharerName}&apos;s screen
         </span>
         <div className="flex items-center gap-1">
-          <button
-            onClick={toggleFullscreen}
-            className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
-            title={isFullscreen ? "Exit fullscreen (F / Esc)" : "Fullscreen (F)"}
-            aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-          >
-            {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
-          </button>
+          {/* iPhone Safari has no element fullscreen. */}
+          {document.fullscreenEnabled && (
+            <button
+              onClick={toggleFullscreen}
+              className="touch-target p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
+              title={isFullscreen ? "Exit fullscreen (F / Esc)" : "Fullscreen (F)"}
+              aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            >
+              {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
+            </button>
+          )}
           {onClose && (
             <button
               onClick={onClose}

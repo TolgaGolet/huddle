@@ -3,25 +3,126 @@ import type { Socket } from "socket.io";
 import { on, onRelay, onRoom } from "./socketRoute.js";
 import { isRoomImageUrl } from "./imageRouter.js";
 import { addParticipant, createRoom, socketRoomMap } from "./roomManager.js";
-import { parseMute } from "./validation.js";
+import { noPayload, parseMute } from "./validation.js";
+import { RATE_LIMITS } from "./rateLimit.js";
 
 /** Minimal stand-in for a Socket.IO socket: records listeners so tests can fire them. */
 function fakeSocket(id: string) {
   const listeners = new Map<string, (raw: unknown) => void>();
   const sent: { to: string; event: string; payload: unknown }[] = [];
+  const notices: { event: string; payload: unknown }[] = [];
   const socket = {
     id,
     on(event: string, fn: (raw: unknown) => void) {
       listeners.set(event, fn);
       return socket;
     },
+    emit(event: string, payload: unknown) {
+      notices.push({ event, payload });
+    },
     to(target: string) {
       return { emit: (event: string, payload: unknown) => sent.push({ to: target, event, payload }) };
     },
   };
   const fire = (event: string, raw?: unknown) => listeners.get(event)?.(raw);
-  return { socket: socket as unknown as Socket, fire, sent };
+  return { socket: socket as unknown as Socket, fire, sent, notices };
 }
+
+describe("rate limiting", () => {
+  const accept = (raw: unknown) => raw as never;
+  afterEach(() => vi.useRealTimers());
+
+  it("drops events over the limit before parsing them", () => {
+    const { socket, fire } = fakeSocket("s1");
+    const parse = vi.fn(accept);
+    const handler = vi.fn();
+    on(socket, "typing", parse, handler);
+
+    for (let i = 0; i < 50; i++) fire("typing", {});
+    expect(parse).toHaveBeenCalledTimes(RATE_LIMITS.typing.burst);
+    expect(handler).toHaveBeenCalledTimes(RATE_LIMITS.typing.burst);
+  });
+
+  it("never limits an event outside the table, such as disconnect", () => {
+    const { socket, fire } = fakeSocket("s1");
+    const handler = vi.fn();
+    on(socket, "disconnect", noPayload, handler);
+
+    for (let i = 0; i < 1000; i++) fire("disconnect");
+    expect(handler).toHaveBeenCalledTimes(1000);
+  });
+
+  it("gives each socket its own limit, shared across the events of a group", () => {
+    const a = fakeSocket("a");
+    const b = fakeSocket("b");
+    const onA = vi.fn();
+    const onB = vi.fn();
+    on(a.socket, "chat-edit", accept, onA);
+    on(a.socket, "chat-delete", accept, onA);
+    on(b.socket, "chat-edit", accept, onB);
+
+    for (let i = 0; i < 50; i++) {
+      a.fire("chat-edit", {});
+      a.fire("chat-delete", {});
+    }
+    expect(onA).toHaveBeenCalledTimes(RATE_LIMITS.messageActions.burst);
+
+    b.fire("chat-edit", {});
+    expect(onB).toHaveBeenCalledOnce();
+  });
+
+  it("recovers as the bucket refills", () => {
+    vi.useFakeTimers();
+    const { socket, fire } = fakeSocket("s1");
+    const handler = vi.fn();
+    on(socket, "typing", accept, handler);
+
+    for (let i = 0; i < 50; i++) fire("typing", {});
+    handler.mockClear();
+    vi.advanceTimersByTime(1000);
+    fire("typing", {});
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("sends at most one notice per second, however large the flood", () => {
+    vi.useFakeTimers();
+    const { socket, fire, notices } = fakeSocket("s1");
+    on(socket, "chat-message", accept, vi.fn());
+
+    for (let i = 0; i < 1000; i++) fire("chat-message", {});
+    expect(notices).toEqual([{ event: "rate-limited", payload: { event: "chat-message" } }]);
+
+    vi.advanceTimersByTime(1000);
+    for (let i = 0; i < 1000; i++) fire("chat-message", {});
+    expect(notices).toHaveLength(2);
+  });
+
+  it("sends no notice for groups dropped silently", () => {
+    const { socket, fire, notices } = fakeSocket("s1");
+    on(socket, "typing", accept, vi.fn());
+
+    for (let i = 0; i < 50; i++) fire("typing", {});
+    expect(notices).toEqual([]);
+  });
+
+  it("sends a notice for a dropped call-state event, so the client can resync", () => {
+    const { socket, fire, notices } = fakeSocket("s1");
+    on(socket, "mute-toggle", accept, vi.fn());
+
+    for (let i = 0; i < RATE_LIMITS.callState.burst + 1; i++) fire("mute-toggle", {});
+    expect(notices).toEqual([{ event: "rate-limited", payload: { event: "mute-toggle" } }]);
+  });
+
+  it("runs onLimited instead of the notice", () => {
+    const { socket, fire, notices } = fakeSocket("s1");
+    const onLimited = vi.fn();
+    on(socket, "join-room", accept, vi.fn(), undefined, onLimited);
+
+    for (let i = 0; i < RATE_LIMITS.join.burst + 1; i++) fire("join-room", {});
+    expect(onLimited).toHaveBeenCalledOnce();
+    expect(notices).toEqual([]);
+  });
+});
 
 describe("on", () => {
   let errorSpy: ReturnType<typeof vi.spyOn>;

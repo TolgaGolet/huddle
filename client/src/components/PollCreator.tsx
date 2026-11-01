@@ -3,7 +3,8 @@ import { X, Plus, Trash2 } from "lucide-react";
 import { MAX_POLL_OPTION_LENGTH, MAX_POLL_OPTIONS, MAX_POLL_QUESTION_LENGTH } from "../types";
 
 interface Props {
-  onSubmit: (data: { question: string; options: string[]; allowMultiple: boolean }) => void;
+  /** Returns false if the poll wasn't sent, which keeps the form and what's typed in it. */
+  onSubmit: (data: { question: string; options: string[]; allowMultiple: boolean }) => boolean;
   onClose: () => void;
 }
 
@@ -43,8 +44,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
     const trimmedQ = question.trim();
     const validOptions = options.map((o) => o.trim()).filter(Boolean);
     if (!trimmedQ || validOptions.length < 2) return;
-    onSubmit({ question: trimmedQ, options: validOptions, allowMultiple });
-    onClose();
+    if (onSubmit({ question: trimmedQ, options: validOptions, allowMultiple })) onClose();
   }
 
   const canSubmit = question.trim() && options.filter((o) => o.trim()).length >= 2;
@@ -52,7 +52,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
   return (
     <div
       ref={ref}
-      className="absolute bottom-full mb-2 left-0 right-0 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden"
+      className="absolute bottom-full mb-2 left-0 right-0 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 max-h-[70dvh] overflow-y-auto"
     >
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
         <h3 className="text-sm font-semibold text-gray-200">Create Poll</h3>
@@ -73,7 +73,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
           onChange={(e) => setQuestion(e.target.value)}
           placeholder="Ask a question..."
           aria-label="Poll question"
-          className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-600 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+          className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           autoFocus
           maxLength={MAX_POLL_QUESTION_LENGTH}
         />
@@ -87,7 +87,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
                 onChange={(e) => updateOption(i, e.target.value)}
                 placeholder={`Option ${i + 1}`}
                 aria-label={`Option ${i + 1}`}
-                className="flex-1 px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+                className="flex-1 px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
                 maxLength={MAX_POLL_OPTION_LENGTH}
               />
               {options.length > 2 && (

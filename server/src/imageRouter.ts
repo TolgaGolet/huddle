@@ -5,11 +5,10 @@ import path from "node:path";
 import { nanoid } from "nanoid";
 import { resolveParticipant, type ChatEntry, type Room } from "./roomManager.js";
 import { decryptFile, encryptFile, roomImageKey } from "./imageCrypto.js";
-import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_UPLOAD_BYTES, MAX_ROOM_IMAGE_BYTES } from "./limits.js";
+import { IMAGE_EXTENSIONS, isAllowedImage, MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_UPLOAD_BYTES, MAX_ROOM_IMAGE_BYTES } from "./limits.js";
 import { errorSummary } from "./errorLog.js";
 
 export const uploadsDir = path.resolve(process.cwd(), "uploads");
-const EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif", "heic", "heif"]);
 // nanoid filenames may contain letters, digits, `_`, and `-`. Keep the
 // complete filename constrained to this allowlist so path traversal remains
 // impossible while every generated filename can be served.
@@ -26,7 +25,7 @@ const upload = multer({
   limits: { fileSize: MAX_IMAGE_SIZE, files: MAX_IMAGES_PER_MESSAGE },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).slice(1).toLowerCase();
-    cb(null, EXTENSIONS.has(ext) && (!file.mimetype || file.mimetype.startsWith("image/") || file.mimetype === "application/octet-stream"));
+    cb(null, isAllowedImage(ext, file.mimetype));
   },
 });
 
@@ -115,7 +114,7 @@ imageRouter.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IM
     const urls: string[] = [];
     for (const file of files) {
       const ext = path.extname(file.originalname).slice(1).toLowerCase();
-      if (!EXTENSIONS.has(ext)) continue;
+      if (!IMAGE_EXTENSIONS.has(ext)) continue;
       const filename = `${nanoid(10).toLowerCase()}.${ext}`;
       const body = key ? encryptFile(file.buffer, key) : file.buffer;
       await writeFile(path.join(roomDir, filename), body, { flag: "wx" });

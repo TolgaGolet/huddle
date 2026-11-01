@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Users, Plus, Lock } from "lucide-react";
 import { MAX_NAME_LENGTH, MAX_PASSWORD_LENGTH } from "../types";
+import { lookupRoom } from "../lib/roomLookup";
 
 type Mode = "idle" | "join" | "create";
 
@@ -34,8 +35,11 @@ export default function LandingPage() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch(`/api/rooms/${roomId.trim()}`);
-      const data = await res.json();
+      const data = await lookupRoom(roomId.trim());
+      if ("error" in data) {
+        setError(data.error);
+        return;
+      }
       if (!data.exists) {
         setError("Room not found. Check the ID and try again.");
         setRoomNeedsPassword(false);

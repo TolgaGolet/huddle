@@ -1,5 +1,7 @@
+import { memo } from "react";
 import { Check, MoreVertical, Pin } from "lucide-react";
 import type { PollMessage } from "../types";
+import { formatTime } from "../lib/formatTime";
 
 interface Props {
   poll: PollMessage;
@@ -9,11 +11,7 @@ interface Props {
   onContextMenu?: (poll: PollMessage, e: React.MouseEvent) => void;
 }
 
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-export default function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Props) {
+function PollDisplay({ poll, isPinned, localUserId, onVote, onContextMenu }: Props) {
   const totalVotes = poll.options.reduce((sum, o) => sum + o.voterIds.length, 0);
 
   return (
@@ -40,7 +38,7 @@ export default function PollDisplay({ poll, isPinned, localUserId, onVote, onCon
         <button
           type="button"
           onClick={(e) => onContextMenu(poll, e)}
-          className="absolute -top-3 right-0 hidden group-hover:flex group-has-[:focus-visible]:flex items-center bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-1.5 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
+          className="touch-target absolute -top-3 right-0 hidden group-hover:flex group-has-[:focus-visible]:flex pointer-coarse:group-focus-within:flex items-center bg-gray-800 border border-gray-700 rounded-lg shadow-lg p-1.5 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
           title="More actions"
           aria-label="More actions"
           aria-haspopup="menu"
@@ -97,3 +95,5 @@ export default function PollDisplay({ poll, isPinned, localUserId, onVote, onCon
     </div>
   );
 }
+
+export default memo(PollDisplay);

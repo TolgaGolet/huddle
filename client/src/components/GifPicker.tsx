@@ -56,8 +56,8 @@ export default function GifPicker({ onSelect, onClose }: Props) {
   return (
     <div
       ref={ref}
-      className="absolute bottom-full mb-2 right-0 w-80 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden"
-      style={{ maxHeight: "360px" }}
+      className="absolute bottom-full mb-2 right-0 w-80 max-w-full bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden"
+      style={{ maxHeight: "min(360px, 60dvh)" }}
     >
       {/* Header */}
       <div className="flex items-center gap-2 p-2 border-b border-gray-700">
@@ -69,7 +69,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search GIFs..."
             aria-label="Search GIFs"
-            className="flex-1 bg-transparent text-sm text-white placeholder-gray-500 focus:outline-none"
+            className="flex-1 bg-transparent text-base md:text-sm text-white placeholder-gray-500 focus:outline-none"
             autoFocus
           />
           {search && (

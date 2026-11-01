@@ -4,8 +4,10 @@ import type { AddressInfo } from "node:net";
 import { Server } from "socket.io";
 import { io as connect, type Socket as ClientSocket } from "socket.io-client";
 import { setupSignaling } from "./signaling.js";
+import { IP_LIMITS } from "./ipRateLimit.js";
 import { JOIN_ERROR } from "./joinErrors.js";
 import { MAX_PARTICIPANTS } from "./limits.js";
+import { RATE_LIMITS } from "./rateLimit.js";
 import { addParticipant, createRoom, getRoom, socketRoomMap } from "./roomManager.js";
 
 let httpServer: HttpServer;
@@ -31,6 +33,44 @@ function joined(client: ClientSocket, payload: object): Promise<void> {
     client.emit("join-room", payload);
   });
 }
+
+describe("password guessing", () => {
+  /** Tries one password on a fresh connection, as an attacker dodging per-socket limits would. */
+  async function attempt(roomId: string, password: string): Promise<string> {
+    const client = connect(url, { transports: ["websocket"] });
+    try {
+      await joined(client, { roomId, name: "Ana", password });
+      return "joined";
+    } catch (err) {
+      return (err as Error).message;
+    } finally {
+      client.disconnect();
+    }
+  }
+
+  it("limits wrong passwords across connections, and then rejects a correct one too", async () => {
+    const room = createRoom("secret");
+    for (let i = 0; i < IP_LIMITS.passwordGuesses.burst; i++) {
+      expect(await attempt(room.id, "wrong")).toBe("Incorrect password");
+    }
+    expect(await attempt(room.id, "wrong")).toMatch(/too many attempts/i);
+    expect(await attempt(room.id, "secret")).toMatch(/too many attempts/i);
+  });
+
+  it("counts guesses per room", async () => {
+    const guessed = createRoom("secret");
+    const other = createRoom("secret");
+    for (let i = 0; i < IP_LIMITS.passwordGuesses.burst; i++) await attempt(guessed.id, "wrong");
+    expect(await attempt(other.id, "wrong")).toBe("Incorrect password");
+  });
+
+  it("doesn't count correct passwords", async () => {
+    const room = createRoom("secret");
+    for (let i = 0; i < IP_LIMITS.passwordGuesses.burst + 1; i++) {
+      expect(await attempt(room.id, "secret")).toBe("joined");
+    }
+  });
+});
 
 describe("join-room", () => {
   it("leaves the previous room instead of leaving a ghost participant there", async () => {
@@ -186,6 +226,23 @@ describe("join-room error codes", () => {
     } finally {
       client.disconnect();
       peer.disconnect();
+    }
+  });
+
+  it("answers a flood of joins with RATE_LIMITED, which also stops password guessing", async () => {
+    const locked = createRoom("secret");
+    const client = connect(url, { transports: ["websocket"] });
+    const codes: string[] = [];
+    client.on("error", (e: { code: string }) => codes.push(e.code));
+    try {
+      const attempts = RATE_LIMITS.join.burst + 5;
+      for (let i = 0; i < attempts; i++) client.emit("join-room", { roomId: locked.id, name: "Bo", password: `guess${i}` });
+      await vi.waitFor(() => expect(codes).toHaveLength(attempts));
+
+      expect(codes.filter((c) => c === JOIN_ERROR.INCORRECT_PASSWORD)).toHaveLength(RATE_LIMITS.join.burst);
+      expect(codes.filter((c) => c === JOIN_ERROR.RATE_LIMITED)).toHaveLength(5);
+    } finally {
+      client.disconnect();
     }
   });
 });

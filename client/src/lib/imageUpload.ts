@@ -1,11 +1,12 @@
-const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif", "heic", "heif"]);
+import { isAllowedImage } from "../types";
 
 export function isImageFile(file: File): boolean {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  // Some browsers report an empty or non-standard MIME type for HEIC files.
-  // The extension is the authoritative check; the server applies the same
-  // allowlist before storing the file.
-  return ALLOWED_EXTENSIONS.has(extension) && (!file.type || file.type.startsWith("image/") || file.type === "application/octet-stream");
+  return isAllowedImage(file.name.split(".").pop()?.toLowerCase() ?? "", file.type);
+}
+
+/** An uploaded image's URL, authorized for this socket. */
+export function roomImageUrl(url: string, socketId: string): string {
+  return `${url}?socketId=${encodeURIComponent(socketId)}`;
 }
 
 async function compressImage(file: File): Promise<Blob> {

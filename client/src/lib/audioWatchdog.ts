@@ -26,8 +26,8 @@
  *
  * This module is intentionally pure (no DOM types) so it can be unit-tested in
  * isolation. `evaluateDirection` is the pure per-direction primitive;
- * `DirectionalAudioWatchdog` wraps it with per-peer state for use by
- * `useWebRTC`.
+ * `DirectionalAudioWatchdog` wraps it with the state of one peer, for use by
+ * its `PeerSession`.
  */
 
 export type Direction = "in" | "out";
@@ -160,17 +160,17 @@ export function evaluateDirection(
 }
 
 /**
- * Per-peer wrapper around {@link evaluateDirection}. Tracks inbound and outbound
+ * Stateful wrapper around {@link evaluateDirection}. Tracks inbound and outbound
  * audio progress independently so a flowing direction can never mask a stalled
  * one.
  */
 export class DirectionalAudioWatchdog {
-  private peers = new Map<string, { in: DirectionState; out: DirectionState }>();
+  private state = { in: freshState(), out: freshState() };
 
   constructor(private readonly stallWindowMs: number = DEFAULT_STALL_WINDOW_MS) {}
 
-  observe(peerId: string, sample: WatchdogSample): WatchdogDecision {
-    const prev = this.peers.get(peerId) ?? { in: freshState(), out: freshState() };
+  observe(sample: WatchdogSample): WatchdogDecision {
+    const prev = this.state;
 
     const inExpected = sample.expectsInbound;
     // Outbound is only watched while we actually intend to send (track live and
@@ -180,27 +180,15 @@ export class DirectionalAudioWatchdog {
     const inResult = evaluateDirection(prev.in, sample.in, inExpected, sample.now, this.stallWindowMs);
     const outResult = evaluateDirection(prev.out, sample.out, outExpected, sample.now, this.stallWindowMs);
 
-    this.peers.set(peerId, { in: inResult.state, out: outResult.state });
+    this.state = { in: inResult.state, out: outResult.state };
     return { in: inResult.decision, out: outResult.decision };
-  }
-
-  /** Forget all tracking for a peer (peer removed / recreated). */
-  reset(peerId: string): void {
-    this.peers.delete(peerId);
-  }
-
-  /** Forget all tracking for every peer (e.g. full reconnect). */
-  resetAll(): void {
-    this.peers.clear();
   }
 
   /**
    * Re-baseline one direction after a recovery/negotiation so the effect of the
    * recovery is measured over a fresh window rather than re-triggering at once.
    */
-  rebaseline(peerId: string, direction: Direction): void {
-    const s = this.peers.get(peerId);
-    if (!s) return;
-    s[direction] = freshState();
+  rebaseline(direction: Direction): void {
+    this.state[direction] = freshState();
   }
 }

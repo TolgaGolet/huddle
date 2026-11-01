@@ -1,4 +1,3 @@
-import type { Server, Socket } from "socket.io";
 import {
   addParticipant,
   removeParticipant,
@@ -11,15 +10,22 @@ import {
   socketRoomMap,
 } from "./roomManager.js";
 import { deriveUserId } from "./identity.js";
+import { createIpLimiter, IP_LIMITS, requestIp } from "./ipRateLimit.js";
 import { JOIN_ERROR } from "./joinErrors.js";
 import { MAX_PARTICIPANTS } from "./limits.js";
-import { on, onRelay, onRoom } from "./socketRoute.js";
+import { on, onRelay, onRoom, type AppServer } from "./socketRoute.js";
 import { noPayload, parseJoinRoom, parseMute } from "./validation.js";
 
 const roomScreenSharer = new Map<string, string>();
 
-export function setupSignaling(io: Server): void {
-  io.on("connection", (socket: Socket) => {
+export function setupSignaling(io: AppServer, proxyHops = 0): void {
+  const passwordGuesses = createIpLimiter(IP_LIMITS.passwordGuesses);
+
+  io.on("connection", (socket) => {
+    const rejectAsLimited = () => {
+      socket.emit("error", { code: JOIN_ERROR.RATE_LIMITED, message: "Too many attempts to join, please try again shortly" });
+    };
+
     // Remove this socket from the room it has joined (if any) and tell the
     // others. Used on disconnect, and by a successful join-room into another
     // room so the socket never leaves a ghost participant behind.
@@ -49,7 +55,16 @@ export function setupSignaling(io: Server): void {
         return;
       }
 
+      // Only wrong passwords spend a token, so people who know the password are
+      // unaffected. Checked first: once limited, even a correct guess must not
+      // get a different answer.
+      const guesser = `${roomId}|${requestIp(socket.request, proxyHops)}`;
+      if (!passwordGuesses.canTake(guesser)) {
+        rejectAsLimited();
+        return;
+      }
       if (!verifyPassword(roomId, password)) {
+        passwordGuesses.take(guesser);
         socket.emit("error", { code: JOIN_ERROR.INCORRECT_PASSWORD, message: "Incorrect password" });
         return;
       }
@@ -113,7 +128,7 @@ export function setupSignaling(io: Server): void {
       // Answer an invalid payload (missing/oversized name, non-string fields)
       // instead of dropping it, so the client can leave "Connecting…".
       socket.emit("error", { code: JOIN_ERROR.INVALID_JOIN, message: "Invalid name or room" });
-    });
+    }, rejectAsLimited); // Answered for the same reason as above.
 
     onRelay(socket, "offer", "offer");
     onRelay(socket, "answer", "answer");

@@ -17,6 +17,14 @@ export const MAX_POLL_OPTION_LENGTH = 100;
 export const MAX_POLL_OPTIONS = 10;
 export const MAX_IMAGES_PER_MESSAGE = 10;
 export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
+export const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif", "heic", "heif"]);
+/**
+ * The extension is the authoritative check: some browsers report an empty or
+ * non-standard MIME type for HEIC files.
+ */
+export function isAllowedImage(extension: string, mimeType: string): boolean {
+  return IMAGE_EXTENSIONS.has(extension) && (!mimeType || mimeType.startsWith("image/") || mimeType === "application/octet-stream");
+}
 export const MAX_ROOM_IMAGE_BYTES = 200 * 1024 * 1024;
 /** Upload bodies held in memory at once across all rooms; multer buffers them. */
 export const MAX_INFLIGHT_UPLOAD_BYTES = 512 * 1024 * 1024;

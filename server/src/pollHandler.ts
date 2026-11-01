@@ -1,11 +1,10 @@
-import type { Server, Socket } from "socket.io";
 import { nanoid } from "nanoid";
 import { addChatMessage, type PollMessage } from "./roomManager.js";
-import { onRoom } from "./socketRoute.js";
+import { onRoom, type AppServer } from "./socketRoute.js";
 import { parsePollCreate, parsePollVote } from "./validation.js";
 
-export function setupPolls(io: Server): void {
-  io.on("connection", (socket: Socket) => {
+export function setupPolls(io: AppServer): void {
+  io.on("connection", (socket) => {
     // The parser has already trimmed the question and options, dropped blank
     // options, and enforced 2..MAX_POLL_OPTIONS of them.
     onRoom(socket, "poll-create", parsePollCreate, ({ roomId, participant }, { question, options, allowMultiple }) => {

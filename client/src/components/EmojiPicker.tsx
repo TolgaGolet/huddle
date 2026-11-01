@@ -45,7 +45,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
   return (
     <div
       ref={ref}
-      className="absolute bottom-full mb-2 right-0 w-72 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col"
+      className="absolute bottom-full mb-2 right-0 w-72 max-w-full bg-gray-800 border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col"
     >
       {/* Search */}
       <div className="p-2 border-b border-gray-700">
@@ -55,7 +55,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search emojis..."
           aria-label="Search emojis"
-          className="w-full px-2 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+          className="w-full px-2 py-1.5 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           autoFocus
         />
       </div>

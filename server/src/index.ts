@@ -11,6 +11,8 @@ import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
 import { clearStaleImages, deleteRoomImages, imageRouter, releaseMessageImages } from "./imageRouter.js";
 import { errorSummary } from "./errorLog.js";
+import { connectionRateLimit, httpRateLimit, IP_LIMITS, proxyHopsFor } from "./ipRateLimit.js";
+import type { AppServer } from "./socketRoute.js";
 
 // Socket handlers catch their own errors (socketRoute.ts), so client input
 // cannot crash the process. Anything reaching here is a real bug or a startup
@@ -31,7 +33,9 @@ const PORT = process.env.PORT || 3001;
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, {
+const proxyHops = proxyHopsFor(process.env);
+const io: AppServer = new Server(httpServer, {
+  allowRequest: connectionRateLimit(IP_LIMITS.connections, proxyHops),
   cors: {
     origin: process.env.NODE_ENV === "production" ? false : "http://localhost:4173",
   },
@@ -46,11 +50,21 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
+// Image downloads stay unlimited: a chat can load many at once, and they
+// already require room membership.
+app.post("/api/rooms", httpRateLimit(IP_LIMITS.createRoom, proxyHops));
+app.get("/api/rooms/:id", httpRateLimit(IP_LIMITS.lookupRoom, proxyHops));
+app.post("/api/rooms/:id/images", httpRateLimit(IP_LIMITS.uploadImages, proxyHops));
+app.use("/api/giphy", httpRateLimit(IP_LIMITS.giphy, proxyHops));
+
+// TEMPORARY: confirms RENDER_PROXY_HOPS on Render. Remove after checking.
+app.get("/debug-xff", (req, res) => { res.json({ xff: req.headers["x-forwarded-for"] }); });
+
 app.use("/api", roomRouter);
 app.use("/api/giphy", giphyRouter);
 app.use("/api", imageRouter);
 
-setupSignaling(io);
+setupSignaling(io, proxyHops);
 setupChat(io);
 setupPolls(io);
 

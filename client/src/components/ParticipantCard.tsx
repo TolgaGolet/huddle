@@ -52,7 +52,7 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, isCo
         <button
           onClick={onMenuClick}
           aria-label={`Options for ${participant.name}`}
-          className="flex-shrink-0 p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors cursor-pointer"
+          className="touch-target flex-shrink-0 p-0.5 rounded text-gray-500 hover:text-gray-200 transition-colors cursor-pointer"
         >
           <EllipsisVertical size={16} />
         </button>

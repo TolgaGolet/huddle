@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
-import { Settings, LogOut, Copy, Check, AlertTriangle, Volume2 } from "lucide-react";
+import { Settings, LogOut, Copy, Check, AlertTriangle, Volume2, ChevronDown, Link } from "lucide-react";
 import { useSocket } from "../hooks/useSocket";
 import { useWebRTC } from "../hooks/useWebRTC";
 import { useMediaDevices } from "../hooks/useMediaDevices";
@@ -17,6 +17,7 @@ import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS } from "../types";
 import { errorName, huddleLog } from "../lib/huddleLog";
+import { resyncCallStateWhenLimited } from "../lib/callStateResync";
 import { stopStreams } from "../lib/micStreams";
 import { playMuteSound, playUnmuteSound } from "../lib/notificationSounds";
 
@@ -28,7 +29,7 @@ export default function RoomPage() {
   const name = state?.name || "Anonymous";
   const password = state?.password;
 
-  const { socket, userId, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
+  const { socket, userId, joinedSocketId, participants, chatHistory, pinnedMessageId, connected, joinError, currentScreenSharer, typingUsers, notifyTyping, joinRoom } = useSocket({
     roomId: roomId || "",
     name,
     password,
@@ -57,6 +58,7 @@ export default function RoomPage() {
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [participantsOpen, setParticipantsOpen] = useState(false);
 
   // Warn when trying to close the tab
   useEffect(() => {
@@ -81,6 +83,17 @@ export default function RoomPage() {
   const outboundStreamRef = useRef<MediaStream | null>(null);
   const isMutedRef = useRef(isMuted);
   isMutedRef.current = isMuted;
+  const isScreenSharingRef = useRef(isScreenSharing);
+  isScreenSharingRef.current = isScreenSharing;
+
+  useEffect(() => {
+    if (!socket) return;
+    return resyncCallStateWhenLimited(socket, () => ({
+      isMuted: isMutedRef.current,
+      isScreenSharing: isScreenSharingRef.current,
+    }));
+  }, [socket]);
+
   // Generation guard: only the newest acquisition may install its stream.
   // Stale getUserMedia completions (e.g. from a superseded device switch)
   // are stopped instead of overwriting the active capture.
@@ -364,6 +377,8 @@ export default function RoomPage() {
   const anyRemoteConnecting = connecting.size > 0;
   if (anyRemoteConnecting) connecting.add(socket?.id || "local");
 
+  const speakingNames = allParticipants.filter((p) => speaking.has(p.id) && !p.isMuted).map((p) => p.name);
+
   const firstScreenStream = screenStreams.entries().next().value;
   const screenSharerName =
     firstScreenStream && allParticipants.find((p) => p.id === firstScreenStream[0])?.name;
@@ -372,8 +387,16 @@ export default function RoomPage() {
     return null;
   }
 
+  const voiceControlsProps = {
+    isMuted,
+    isScreenSharing,
+    screenShareDisabled: someoneElseSharing,
+    onToggleMute: handleToggleMute,
+    onToggleScreenShare: handleToggleScreenShare,
+  };
+
   return (
-    <div className="h-screen flex flex-col bg-gray-950 text-gray-100">
+    <div className="h-dvh flex flex-col bg-gray-950 text-gray-100">
       {/* Audio enable banner: shown when the browser blocked AudioContext
           resume / autoplay (notably Safari/iOS after backgrounding). The
           action must be triggered by a user gesture. */}
@@ -385,7 +408,7 @@ export default function RoomPage() {
           </span>
           <button
             onClick={resumeAudio}
-            className="px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
+            className="shrink-0 px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
           >
             Enable audio
           </button>
@@ -402,38 +425,40 @@ export default function RoomPage() {
           </span>
           <button
             onClick={resumeRemotePlayback}
-            className="px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
+            className="shrink-0 px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors cursor-pointer"
           >
             Enable audio
           </button>
         </div>
       )}
       {/* Top bar */}
-      <header className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-900/50 shrink-0">
-        <div className="flex items-center gap-3">
-          <h1 className="text-sm font-bold tracking-tight">Huddle</h1>
-          <div className="h-4 w-px bg-gray-700" />
+      <header className="flex items-center justify-between gap-2 px-4 py-2 border-b border-gray-800 bg-gray-900/50 shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <h1 className="sr-only sm:not-sr-only text-sm font-bold tracking-tight">Huddle</h1>
+          <div className="hidden sm:block h-4 w-px bg-gray-700" />
           <button
             onClick={handleCopyRoomId}
-            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
+            className="touch-target flex items-center gap-1.5 min-w-0 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
             title="Copy room ID"
           >
-            <span className="font-mono">{roomId}</span>
-            {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+            <span className="font-mono truncate">{roomId}</span>
+            {copied ? <Check size={12} className="shrink-0 text-green-400" /> : <Copy size={12} className="shrink-0" />}
           </button>
           <button
             onClick={handleCopyLink}
-            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
+            className="touch-target flex items-center gap-1.5 shrink-0 text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer"
             title="Copy room link"
+            aria-label="Copy room link"
           >
-            <span>Copy Link</span>
-            {linkCopied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+            <span className="hidden sm:inline">Copy Link</span>
+            {linkCopied ? <Check size={12} className="text-green-400" /> : <Link size={12} className="sm:hidden" />}
+            {!linkCopied && <Copy size={12} className="hidden sm:block" />}
           </button>
           {!connected && (
-            <span className="text-xs text-amber-400 animate-pulse">Connecting...</span>
+            <span className="truncate text-xs text-amber-400 animate-pulse">Connecting...</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setShowSettings(true)}
             className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors cursor-pointer"
@@ -454,29 +479,47 @@ export default function RoomPage() {
       </header>
 
       {/* Main content */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left panel: participants + voice controls */}
-        <aside className="w-64 flex flex-col border-r border-gray-800 bg-gray-900/30 shrink-0">
-          <ParticipantsList
-            participants={allParticipants}
-            localId={socket?.id || "local"}
-            speaking={speaking}
-            peerVolumes={peerVolumes}
-            onSetPeerVolume={handleSetPeerVolume}
-            maxParticipants={MAX_PARTICIPANTS}
-            connecting={connecting}
-          />
-          <VoiceControls
-            isMuted={isMuted}
-            isScreenSharing={isScreenSharing}
-            screenShareDisabled={someoneElseSharing}
-            onToggleMute={handleToggleMute}
-            onToggleScreenShare={handleToggleScreenShare}
-          />
+      <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
+        {/* Participants + voice controls: a collapsible top strip below md, a sidebar from md.
+            VoiceControls renders twice so the tab order matches each layout; the hidden copy is display:none. */}
+        <aside className="w-full md:w-64 flex flex-col border-b md:border-b-0 md:border-r border-gray-800 bg-gray-900/30 shrink-0 md:min-h-0">
+          <div className="md:hidden flex items-center gap-2 px-3 py-1.5">
+            <button
+              type="button"
+              onClick={() => setParticipantsOpen((open) => !open)}
+              aria-expanded={participantsOpen}
+              aria-controls="room-participants"
+              className="flex flex-1 items-center gap-1.5 min-w-0 min-h-10 rounded-lg text-left text-xs text-gray-300 cursor-pointer"
+            >
+              <ChevronDown size={14} className={`shrink-0 transition-transform ${participantsOpen ? "rotate-180" : ""}`} />
+              <span className="shrink-0">Participants {allParticipants.length}/{MAX_PARTICIPANTS}</span>
+              {speakingNames.length > 0 && (
+                <span className="truncate text-green-400">{speakingNames.join(", ")}</span>
+              )}
+            </button>
+            <VoiceControls compact {...voiceControlsProps} />
+          </div>
+          <div
+            id="room-participants"
+            className={`${participantsOpen ? "flex" : "hidden"} md:flex flex-col flex-1 min-h-0 max-h-[40dvh] md:max-h-none overflow-hidden border-t md:border-t-0 border-gray-800`}
+          >
+            <ParticipantsList
+              participants={allParticipants}
+              localId={socket?.id || "local"}
+              speaking={speaking}
+              peerVolumes={peerVolumes}
+              onSetPeerVolume={handleSetPeerVolume}
+              maxParticipants={MAX_PARTICIPANTS}
+              connecting={connecting}
+            />
+          </div>
+          <div className="hidden md:block">
+            <VoiceControls {...voiceControlsProps} />
+          </div>
         </aside>
 
-        {/* Right panel: screen share (theater) + chat */}
-        <main className="flex-1 flex overflow-hidden min-w-0">
+        {/* Screen share (theater) + chat: stacked below md, side by side from md */}
+        <main className="flex-1 flex flex-col md:flex-row overflow-hidden min-w-0 min-h-0">
           {firstScreenStream && (
             <ScreenViewer
               stream={firstScreenStream[1]}
@@ -486,11 +529,11 @@ export default function RoomPage() {
           <div
             className={
               firstScreenStream
-                ? "w-80 shrink-0 flex flex-col border-l border-gray-800"
-                : "flex-1 flex flex-col"
+                ? "flex-1 min-h-0 md:flex-none md:w-80 md:shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-gray-800"
+                : "flex-1 min-h-0 flex flex-col"
             }
           >
-            <ChatPanel socket={socket} chatHistory={chatHistory} pinnedMessageId={pinnedMessageId} localId={socket?.id || "local"} localUserId={userId ?? ""} roomId={roomId} typingUsers={typingUsers} notifyTyping={notifyTyping} />
+            <ChatPanel socket={socket} chatHistory={chatHistory} pinnedMessageId={pinnedMessageId} localId={joinedSocketId ?? "local"} localUserId={userId ?? ""} roomId={roomId} typingUsers={typingUsers} notifyTyping={notifyTyping} />
           </div>
         </main>
       </div>

@@ -9,6 +9,7 @@ export const JOIN_ERROR = {
   NAME_TAKEN: "NAME_TAKEN",
   ROOM_FULL: "ROOM_FULL",
   INVALID_JOIN: "INVALID_JOIN",
+  RATE_LIMITED: "RATE_LIMITED",
 } as const;
 
 export type JoinErrorCode = (typeof JOIN_ERROR)[keyof typeof JOIN_ERROR];

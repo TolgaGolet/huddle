@@ -2,59 +2,10 @@ import { Router } from "express";
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
 import { MAX_PARTICIPANTS, MAX_PASSWORD_LENGTH } from "./limits.js";
+import type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry } from "./protocol.js";
 import { parseCreateRoom } from "./validation.js";
 
-export interface Participant {
-  /** socket.id: routing only (signaling, mute, screen share). Changes on reconnect. */
-  id: string;
-  /** Identity for ownership, votes and reactions. Survives reconnects (see identity.ts). */
-  userId: string;
-  name: string;
-  isMuted: boolean;
-}
-
-export interface ReactionUser {
-  userId: string;
-  name: string;
-}
-
-export interface ChatMessage {
-  id: string;
-  senderId: string;
-  senderName: string;
-  text: string;
-  timestamp: number;
-  reactions: Record<string, ReactionUser[]>;
-  replyTo?: {
-    id: string;
-    senderName: string;
-    text: string;
-    imageUrl?: string;
-  };
-  gifUrl?: string;
-  imageUrls?: string[];
-  edited?: boolean;
-}
-
-export interface PollOption {
-  id: string;
-  text: string;
-  voterIds: string[];
-  voterNames: string[];
-}
-
-export interface PollMessage {
-  id: string;
-  type: "poll";
-  senderId: string;
-  senderName: string;
-  question: string;
-  options: PollOption[];
-  allowMultiple: boolean;
-  timestamp: number;
-}
-
-export type ChatEntry = ChatMessage | PollMessage;
+export type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry };
 
 export interface Room {
   id: string;
