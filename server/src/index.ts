@@ -57,9 +57,6 @@ app.get("/api/rooms/:id", httpRateLimit(IP_LIMITS.lookupRoom, proxyHops));
 app.post("/api/rooms/:id/images", httpRateLimit(IP_LIMITS.uploadImages, proxyHops));
 app.use("/api/giphy", httpRateLimit(IP_LIMITS.giphy, proxyHops));
 
-// TEMPORARY: confirms RENDER_PROXY_HOPS on Render. Remove after checking.
-app.get("/debug-xff", (req, res) => { res.json({ xff: req.headers["x-forwarded-for"] }); });
-
 app.use("/api", roomRouter);
 app.use("/api/giphy", giphyRouter);
 app.use("/api", imageRouter);

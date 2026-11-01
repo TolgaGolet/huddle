@@ -29,8 +29,9 @@ export function clientIp(remoteAddress: string | undefined, forwardedFor: string
   return list[list.length - hops] || fallback;
 }
 
-// Proxies in front of a Render web service. Not documented by Render, so it can
-// change: if normal users get "Too many requests", or limits stop working,
+// Proxies in front of a Render web service, confirmed on the live service on
+// 2026-11-01 (client, Cloudflare, Render internal). Not documented by Render, so it
+// can change: if normal users get "Too many requests", or limits stop working,
 // re-check the position of a real client IP in X-Forwarded-For, counted from the end.
 const RENDER_PROXY_HOPS = 3;
 
