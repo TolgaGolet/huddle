@@ -17,7 +17,7 @@ npm run build                    # client (tsc -b && vite build) then server (ts
 npm start                        # node server/dist/index.js — serves API, Socket.IO and client/dist
 npm run format                   # prettier --write . (config exists, but the repo hasn't been bulk-formatted; expect a large diff)
 npm run lint                     # eslint . (config in eslint.config.mjs); hooks and jsx-a11y rules are errors
-npm run test -w client           # vitest run (client tests are colocated as *.test.ts; DOM tests opt in with `// @vitest-environment jsdom`)
+npm run test -w client           # vitest run (client tests are colocated as *.test.ts(x); DOM tests opt in with `// @vitest-environment jsdom`; shared fakes in client/src/test/)
 npm run test:e2e -w client       # Playwright: two Chromium pages with fake mics, real audio, chat and a reconnect (client/e2e/*.e2e.ts; first run `npx -w client playwright install chromium`)
 npx -w client vitest run <path/to/file.test.ts> -t "<test name>"   # single test
 npm run test -w server           # type-checks tests (tsconfig.test.json), then vitest run (server/src/*.test.ts; excluded from the tsc build)

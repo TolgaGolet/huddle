@@ -7,7 +7,8 @@ async function fetchGifs(endpoint: string, signal: AbortSignal): Promise<GifItem
     const res = await fetch(endpoint, { signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error((body as { error?: string }).error ?? "GIPHY request failed");
+      // `||`: statusText is empty over HTTP/2, and GifPicker reads an empty message as no error.
+      throw new Error((body as { error?: string }).error || "GIPHY request failed");
     }
     const json = (await res.json()) as { data: (GifItem | null)[] };
     return (json.data ?? []).filter((g): g is GifItem => g !== null);

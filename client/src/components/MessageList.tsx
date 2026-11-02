@@ -33,7 +33,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const prevHistoryLenRef = useRef(chatHistory.length);
+  const seenIdsRef = useRef<Set<string> | null>(null);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(highlightTimerRef.current), []);
@@ -67,17 +67,19 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
   }, [isAtBottomRef]);
 
   useEffect(() => {
-    const prevLen = prevHistoryLenRef.current;
-    const newLen = chatHistory.length;
-    prevHistoryLenRef.current = newLen;
-    if (newLen <= prevLen) return;
+    // By id, not length: at MAX_CHAT_HISTORY each new message pushes out the oldest.
+    const seen = seenIdsRef.current;
+    seenIdsRef.current = new Set(chatHistory.map((entry) => entry.id));
+    if (!seen) return;
+    const added = chatHistory.filter((entry) => !seen.has(entry.id)).length;
+    if (added === 0) return;
 
     if (isAtBottomRef.current) {
       requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }));
     } else {
-      setNewMessageCount((c) => c + (newLen - prevLen));
+      setNewMessageCount((c) => c + added);
     }
-  }, [chatHistory.length, isAtBottomRef]);
+  }, [chatHistory, isAtBottomRef]);
 
   // Observe the inner content column (not the overflow viewport): the scroll
   // container's box stays fixed height, so RO on it never fires when GIFs load

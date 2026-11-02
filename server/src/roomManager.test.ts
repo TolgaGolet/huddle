@@ -2,22 +2,31 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
-import { MAX_ROOMS, MAX_ROOMS_PER_IP } from "./limits.js";
+import { MAX_PARTICIPANTS, MAX_ROOMS, MAX_ROOMS_PER_IP } from "./limits.js";
 import {
   addChatMessage,
   addParticipant,
   createRoom,
   emptyReactions,
+  findEntry,
+  getParticipantsArray,
   getRoom,
+  httpTokenFor,
+  isNameTaken,
+  isRoomFull,
   onMessageRemoved,
   onRoomDestroyed,
   purgeExpiredRooms,
   removeMessage,
   removeParticipant,
   resolveParticipant,
+  resolveParticipantByHttpToken,
   ROOM_GRACE_MS,
   roomCount,
+  roomCountForIp,
+  setMuted,
   totalImageBytes,
+  verifyPassword,
 } from "./roomManager.js";
 import { createRoomRouter } from "./roomRouter.js";
 
@@ -226,4 +235,164 @@ describe("emptyReactions", () => {
       expect(JSON.parse(JSON.stringify(reactions))).toEqual({ [emoji]: users });
     },
   );
+});
+
+describe("verifyPassword", () => {
+  it("lets anyone into an open room", () => {
+    expect(verifyPassword(createRoom())).toBe(true);
+    expect(verifyPassword(createRoom(), "anything")).toBe(true);
+  });
+
+  it("requires the exact password otherwise", () => {
+    const room = createRoom("secret");
+
+    expect(verifyPassword(room, "secret")).toBe(true);
+    expect(verifyPassword(room, "Secret")).toBe(false);
+    expect(verifyPassword(room, "")).toBe(false);
+    expect(verifyPassword(room)).toBe(false);
+  });
+});
+
+describe("isNameTaken", () => {
+  it("ignores case", () => {
+    const room = createRoom();
+    addParticipant(room, "name-1", "Ana");
+
+    expect(isNameTaken(room, "ANA", [])).toBe(true);
+    expect(isNameTaken(room, "Bo", [])).toBe(false);
+  });
+
+  it("frees the name of someone about to be evicted", () => {
+    const room = createRoom();
+    const ana = addParticipant(room, "name-2", "Ana");
+
+    expect(isNameTaken(room, "Ana", [ana])).toBe(false);
+  });
+});
+
+describe("isRoomFull", () => {
+  const fill = () => {
+    const room = createRoom();
+    return { room, people: Array.from({ length: MAX_PARTICIPANTS }, (_, i) => addParticipant(room, `full-${room.id}-${i}`, `P${i}`)) };
+  };
+
+  it("is full only at the cap", () => {
+    const { room, people } = fill();
+    expect(isRoomFull(room, [])).toBe(true);
+
+    removeParticipant(room.id, people[0].id);
+    expect(isRoomFull(room, [])).toBe(false);
+  });
+
+  it("doesn't count someone about to be evicted", () => {
+    const { room, people } = fill();
+
+    expect(isRoomFull(room, [people[0]])).toBe(false);
+  });
+});
+
+describe("participant state", () => {
+  it("defaults the identity to the socket and to unmuted", () => {
+    const room = createRoom();
+
+    expect(addParticipant(room, "state-1", "Ana")).toEqual({ id: "state-1", userId: "state-1", name: "Ana", isMuted: false });
+  });
+
+  it("carries the announced mute state and later changes", () => {
+    const room = createRoom();
+    addParticipant(room, "state-2", "Ana", "user-2", true);
+    expect(getParticipantsArray(room)[0].isMuted).toBe(true);
+
+    setMuted(room, "state-2", false);
+
+    expect(getParticipantsArray(room)[0].isMuted).toBe(false);
+  });
+
+  it("ignores a mute change for someone not in the room", () => {
+    const room = createRoom();
+
+    expect(() => setMuted(room, "ghost", true)).not.toThrow();
+  });
+
+  it("clears the empty timer when someone joins", () => {
+    const room = createRoom();
+    addParticipant(room, "state-3", "Ana");
+
+    expect(room.emptySince).toBeNull();
+  });
+
+  it("ignores removal from a room that no longer exists", () => {
+    expect(() => removeParticipant("no-such-room", "ghost")).not.toThrow();
+  });
+
+  it("counts rooms by creator IP only", () => {
+    const ip = "198.51.100.77";
+    createRoom(undefined, ip);
+    createRoom(undefined, ip);
+    createRoom(undefined, "198.51.100.78");
+
+    expect(roomCountForIp(ip)).toBe(2);
+  });
+
+  it("finds a chat entry by id", () => {
+    const room = createRoom();
+    const entry = { id: "m1", senderId: "u", senderName: "Ana", text: "hi", timestamp: 0, reactions: emptyReactions() };
+    addChatMessage(room, entry);
+
+    expect(findEntry(room, "m1")).toBe(entry);
+    expect(findEntry(room, "m2")).toBeUndefined();
+  });
+});
+
+describe("HTTP tokens", () => {
+  it("resolves the token to its owner", () => {
+    const room = createRoom();
+    const ana = addParticipant(room, "token-1", "Ana");
+
+    const ctx = resolveParticipantByHttpToken(httpTokenFor("token-1")!);
+
+    expect(ctx?.room).toBe(room);
+    expect(ctx?.participant).toBe(ana);
+  });
+
+  it("gives every membership its own token", () => {
+    const room = createRoom();
+    addParticipant(room, "token-2", "Ana");
+    addParticipant(room, "token-3", "Bo");
+
+    expect(httpTokenFor("token-2")).not.toBe(httpTokenFor("token-3"));
+  });
+
+  it("isn't on the participant, which is broadcast to the room", () => {
+    const room = createRoom();
+    const ana = addParticipant(room, "token-4", "Ana");
+
+    expect(JSON.stringify(ana)).not.toContain(httpTokenFor("token-4")!);
+  });
+
+  it("ends with the membership", () => {
+    const room = createRoom();
+    addParticipant(room, "token-5", "Ana");
+    const token = httpTokenFor("token-5")!;
+
+    removeParticipant(room.id, "token-5");
+
+    expect(httpTokenFor("token-5")).toBeUndefined();
+    expect(resolveParticipantByHttpToken(token)).toBeNull();
+  });
+
+  it("replaces the old token when the same socket joins again", () => {
+    const room = createRoom();
+    addParticipant(room, "token-6", "Ana");
+    const first = httpTokenFor("token-6")!;
+
+    addParticipant(room, "token-6", "Ana");
+
+    expect(resolveParticipantByHttpToken(first)).toBeNull();
+    expect(resolveParticipantByHttpToken(httpTokenFor("token-6")!)).not.toBeNull();
+  });
+
+  it("rejects an unknown token", () => {
+    expect(resolveParticipantByHttpToken("made-up")).toBeNull();
+  });
 });

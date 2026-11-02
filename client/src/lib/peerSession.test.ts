@@ -403,3 +403,190 @@ describe("dispose", () => {
     expect(host.requestRecreate).not.toHaveBeenCalled();
   });
 });
+
+describe("audio m-line at creation", () => {
+  it("adds the mic track when it is ready", () => {
+    const { pc, track } = setup();
+
+    expect(pc.addTrack).toHaveBeenCalledWith(track, expect.anything());
+    expect(pc.addTransceiver).not.toHaveBeenCalled();
+  });
+
+  it("adds an empty sendrecv transceiver when it isn't, so audio can attach later", () => {
+    const pc = new FakePeerConnection();
+    const host = {
+      emit: vi.fn(),
+      getLocalStream: vi.fn(() => null),
+      onTrack: vi.fn(),
+      onConnectionState: vi.fn(),
+      requestRecreate: vi.fn(),
+    } satisfies PeerSessionHost;
+
+    new PeerSession("b", pc as unknown as RTCPeerConnection, host);
+
+    expect(pc.addTransceiver).toHaveBeenCalledWith("audio", { direction: "sendrecv" });
+    expect(pc.addTrack).not.toHaveBeenCalled();
+  });
+
+  it("adds an in-progress screen share to a new peer", () => {
+    const screenTrack = { kind: "video" } as unknown as MediaStreamTrack;
+    const { pc } = setup({ screenTrack });
+
+    expect(pc.addTrack).toHaveBeenCalledWith(screenTrack, expect.anything());
+  });
+});
+
+describe("browser events", () => {
+  it("relays local candidates to the peer", () => {
+    const { pc, host } = setup();
+    const candidate = { toJSON: () => ({ candidate: "c" }) };
+
+    (pc.onicecandidate as (e: unknown) => void)({ candidate });
+
+    expect(emitted(host, "ice-candidate")).toEqual([["ice-candidate", { to: "b", candidate: { candidate: "c" } }]]);
+  });
+
+  it("doesn't relay the end-of-candidates event", () => {
+    const { pc, host } = setup();
+
+    (pc.onicecandidate as (e: unknown) => void)({ candidate: null });
+
+    expect(emitted(host, "ice-candidate")).toEqual([]);
+  });
+
+  it("hands remote tracks to the host", () => {
+    const { pc, host } = setup();
+    const event = { track: { kind: "audio" } };
+
+    (pc.ontrack as (e: unknown) => void)(event);
+
+    expect(host.onTrack).toHaveBeenCalledWith(event);
+  });
+});
+
+describe("attachLocalTrack", () => {
+  const newTrack = { kind: "audio" } as unknown as MediaStreamTrack;
+  const stream = {} as MediaStream;
+  const emptyAudioTransceiver = (direction = "sendrecv") => ({
+    direction,
+    sender: { track: null, replaceTrack: vi.fn(async () => {}) },
+    receiver: { track: { kind: "audio" } },
+  });
+
+  // Regression: an empty transceiver's sender has no track to match on, which fell
+  // through to addTrack, added a second m-line and left the first one dead.
+  it("fills an empty audio transceiver instead of adding a second m-line", () => {
+    const { pc, session } = setup();
+    const transceiver = emptyAudioTransceiver();
+    pc.transceivers = [transceiver];
+    pc.addTrack.mockClear();
+
+    session.attachLocalTrack(newTrack, stream);
+
+    expect(transceiver.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(pc.addTrack).not.toHaveBeenCalled();
+  });
+
+  it("restores sendrecv on a transceiver left in another direction", () => {
+    const { pc, session } = setup();
+    const transceiver = emptyAudioTransceiver("recvonly");
+    pc.transceivers = [transceiver];
+
+    session.attachLocalTrack(newTrack, stream);
+
+    expect(transceiver.direction).toBe("sendrecv");
+  });
+
+  it("replaces the track on an existing audio sender when the device changes", () => {
+    const { pc, session } = setup();
+    const sender = { track: { kind: "audio" }, replaceTrack: vi.fn(async () => {}) };
+    pc.getSenders = (() => [sender]) as unknown as typeof pc.getSenders;
+    pc.addTrack.mockClear();
+
+    session.attachLocalTrack(newTrack, stream);
+
+    expect(sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(pc.addTrack).not.toHaveBeenCalled();
+  });
+
+  it("doesn't mistake the screen-share sender for the audio one", () => {
+    const { pc, session } = setup();
+    const screenSender = { track: { kind: "video" }, replaceTrack: vi.fn(async () => {}) };
+    pc.getSenders = (() => [screenSender]) as unknown as typeof pc.getSenders;
+    pc.addTrack.mockClear();
+
+    session.attachLocalTrack(newTrack, stream);
+
+    expect(screenSender.replaceTrack).not.toHaveBeenCalled();
+    expect(pc.addTrack).toHaveBeenCalledWith(newTrack, stream);
+  });
+
+  it("adds the track when there is nothing to reuse", () => {
+    const { pc, session } = setup();
+    pc.addTrack.mockClear();
+
+    session.attachLocalTrack(newTrack, stream);
+
+    expect(pc.addTrack).toHaveBeenCalledWith(newTrack, stream);
+  });
+
+  it("survives a failure from either path", async () => {
+    const { pc, session } = setup();
+    pc.addTrack.mockImplementationOnce(() => {
+      throw new Error("closed");
+    });
+    expect(() => session.attachLocalTrack(newTrack, stream)).not.toThrow();
+
+    const transceiver = emptyAudioTransceiver();
+    transceiver.sender.replaceTrack.mockRejectedValueOnce(new Error("bad"));
+    pc.transceivers = [transceiver];
+    session.attachLocalTrack(newTrack, stream);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("does nothing once the connection has closed", () => {
+    const { pc, session } = setup();
+    pc.connectionState = "closed";
+    pc.addTrack.mockClear();
+
+    session.attachLocalTrack(newTrack, stream);
+
+    expect(pc.addTrack).not.toHaveBeenCalled();
+  });
+});
+
+describe("screen track", () => {
+  const screenTrack = { kind: "video" } as unknown as MediaStreamTrack;
+
+  it("removes the sender it added, once", () => {
+    const { pc, session } = setup();
+    session.addScreenTrack(screenTrack, {} as MediaStream);
+    const sender = pc.addTrack.mock.results.at(-1)!.value;
+
+    session.removeScreenTrack();
+    session.removeScreenTrack();
+
+    expect(pc.removeTrack).toHaveBeenCalledTimes(1);
+    expect(pc.removeTrack).toHaveBeenCalledWith(sender);
+  });
+
+  it("has nothing to remove when no share was added", () => {
+    const { pc, session } = setup();
+
+    session.removeScreenTrack();
+
+    expect(pc.removeTrack).not.toHaveBeenCalled();
+  });
+
+  it("survives a sender that is already gone", () => {
+    const { pc, session } = setup();
+    session.addScreenTrack(screenTrack, {} as MediaStream);
+    pc.removeTrack.mockImplementationOnce(() => {
+      throw new Error("gone");
+    });
+
+    expect(() => session.removeScreenTrack()).not.toThrow();
+  });
+});
