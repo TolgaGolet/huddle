@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { roomEntryFor } from "../lib/roomEntry";
 import LandingPage from "./LandingPage";
 
 function RoomProbe() {
@@ -171,7 +172,8 @@ describe("joining", () => {
     fireEvent.change(field, { target: { value: "  secret  " } });
     submit();
 
-    expect(await arrivedAt()).toEqual({ roomId: "abc123", state: { name: "Ana", password: "secret" } });
+    expect(await arrivedAt()).toEqual({ roomId: "abc123", state: { name: "Ana" } });
+    expect(roomEntryFor("abc123").password).toBe("secret");
   });
 
   it("refuses a blank password", async () => {
@@ -198,6 +200,19 @@ describe("joining", () => {
 });
 
 describe("arriving from a redirect", () => {
+  it("explains why a room closed, on the main screen", () => {
+    setup({ notice: "That room closed." });
+
+    expect(screen.getByRole("alert").textContent).toBe("That room closed.");
+    expect(screen.getByRole("button", { name: "Create a Room" })).toBeTruthy();
+  });
+
+  it("links to the privacy page", () => {
+    setup();
+
+    expect(screen.getByRole("link", { name: "Privacy" }).getAttribute("href")).toBe("/privacy");
+  });
+
   it("opens the join form for a shared link", () => {
     setup({ roomId: "shared" });
 
@@ -205,22 +220,24 @@ describe("arriving from a redirect", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("shows why a join failed, with everything still filled in", () => {
+  it("shows why a join failed, keeping the name but never a password", () => {
     setup({ error: "Incorrect password", roomId: "abc", name: "Ana", password: "wrong" });
 
     expect(screen.getByRole("alert").textContent).toBe("Incorrect password");
     expect((screen.getByLabelText("Your name") as HTMLInputElement).value).toBe("Ana");
-    expect((screen.getByLabelText("Room password") as HTMLInputElement).value).toBe("wrong");
+    expect(screen.queryByLabelText("Room password")).toBeNull();
   });
 
-  it("can retry with a corrected password straight away", async () => {
+  it("can retry with a corrected password", async () => {
     stubFetch(roomInfo({ hasPassword: true }));
-    setup({ error: "Incorrect password", roomId: "abc", name: "Ana", password: "wrong" });
-    type("Room password", "right");
+    setup({ error: "Incorrect password", roomId: "abc", name: "Ana" });
 
     submit();
+    fireEvent.change(await screen.findByLabelText("Room password"), { target: { value: "right" } });
+    submit();
 
-    expect((await arrivedAt()).state.password).toBe("right");
+    await arrivedAt();
+    expect(roomEntryFor("abc").password).toBe("right");
   });
 });
 
@@ -251,23 +268,56 @@ describe("creating", () => {
   it("creates a protected room with the trimmed password and carries it in", async () => {
     const mock = stubFetch({ roomId: "new" });
     openCreate();
-    type("Password (optional)", "  secret  ");
+    type("Password (optional)", "  long-secret  ");
 
     submit();
 
-    expect((await arrivedAt()).state.password).toBe("secret");
-    expect(JSON.parse((mock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ password: "secret" });
+    // Regression: router state goes into browser history, so it must not hold the password.
+    expect((await arrivedAt()).state).toEqual({ name: "Ana" });
+    expect(roomEntryFor("new").password).toBe("long-secret");
+    expect(JSON.parse((mock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ password: "long-secret" });
   });
 
-  it("treats a blank password as none", async () => {
+  // Regression: spaces silently created an open room for someone who wanted a password.
+  it.each([["only spaces", "   "], ["too short", "short"]])("refuses a password that is %s, without a request", async (_name, password) => {
     const mock = stubFetch({ roomId: "new" });
     openCreate();
-    type("Password (optional)", "   ");
+    type("Password (optional)", password);
 
     submit();
 
-    expect((await arrivedAt()).state.password).toBeUndefined();
-    expect(JSON.parse((mock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({});
+    expect((await screen.findByRole("alert")).textContent).toContain("at least 8 characters");
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the owner token for the first join, out of router state", async () => {
+    stubFetch({ roomId: "new", ownerToken: "owner-token" });
+    openCreate();
+
+    submit();
+
+    expect((await arrivedAt()).state).toEqual({ name: "Ana" });
+    expect(roomEntryFor("new").ownerToken).toBe("owner-token");
+  });
+
+  it("defaults to everyone and no waiting room, and sends chosen settings", async () => {
+    const mock = stubFetch({ roomId: "new" });
+    openCreate();
+    expect((screen.getByLabelText("Who can pin messages") as HTMLSelectElement).value).toBe("everyone");
+    expect((screen.getByLabelText("Who can share their screen") as HTMLSelectElement).value).toBe("everyone");
+    expect((screen.getByLabelText("Waiting room") as HTMLInputElement).checked).toBe(false);
+
+    type("Who can pin messages", "owners");
+    type("Who can share their screen", "owners");
+    fireEvent.click(screen.getByLabelText("Waiting room"));
+    submit();
+
+    await arrivedAt();
+    expect(JSON.parse((mock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({
+      pinPermission: "owners",
+      screenSharePermission: "owners",
+      waitingRoom: true,
+    });
   });
 
   it("shows the server's reason for refusing", async () => {

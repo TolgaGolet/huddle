@@ -325,6 +325,7 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
       )}
       {openPopover === "gif" && (
         <GifPicker
+          httpToken={httpToken}
           onSelect={handleGifSelect}
           onClose={() => setOpenPopover(null)}
         />

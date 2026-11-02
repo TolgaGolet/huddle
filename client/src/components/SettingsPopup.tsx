@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import { X } from "lucide-react";
 import AudioSettings from "./AudioSettings";
 import Dialog from "./Dialog";
@@ -8,6 +8,7 @@ import type { VoiceTransmissionThreshold } from "../types";
 
 interface Props {
   readonly onClose: () => void;
+  readonly roomPanel?: ReactNode;
   readonly audioInputs: MediaDeviceInfo[];
   readonly selectedDeviceId: string;
   readonly onDeviceChange: (deviceId: string) => void;
@@ -26,6 +27,7 @@ interface Props {
 
 export default function SettingsPopup({
   onClose,
+  roomPanel,
   audioInputs,
   selectedDeviceId,
   onDeviceChange,
@@ -60,7 +62,9 @@ export default function SettingsPopup({
       >
         <X size={18} />
       </button>
-      <h2 id="settings-dialog-title" className="text-lg font-semibold text-white mb-6">Audio Settings</h2>
+      <h2 id="settings-dialog-title" className="text-lg font-semibold text-white mb-6">Settings</h2>
+      {roomPanel}
+      <h3 className="text-sm font-semibold text-white mb-3">Audio</h3>
       <AudioSettings
         audioInputs={audioInputs}
         selectedDeviceId={selectedDeviceId}

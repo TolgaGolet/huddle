@@ -6,6 +6,8 @@ interface Props {
   micUnavailable: boolean;
   isScreenSharing: boolean;
   screenShareDisabled?: boolean;
+  /** Why it's disabled, as the button's label. */
+  screenShareDisabledLabel?: string;
   onToggleMute: () => void;
   onToggleScreenShare: () => void;
   /** Smaller buttons with no border, for the mobile top strip. */
@@ -17,6 +19,7 @@ export default function VoiceControls({
   micUnavailable,
   isScreenSharing,
   screenShareDisabled,
+  screenShareDisabledLabel = "Someone is already sharing",
   onToggleMute,
   onToggleScreenShare,
   compact,
@@ -31,7 +34,7 @@ export default function VoiceControls({
     micLabel = "Microphone unavailable, retry";
     micColors = "bg-amber-500/20 text-amber-300 hover:bg-amber-500/30";
   }
-  const screenLabel = screenDisabled ? "Someone is already sharing" : isScreenSharing ? "Stop sharing" : "Share screen";
+  const screenLabel = screenDisabled ? screenShareDisabledLabel : isScreenSharing ? "Stop sharing" : "Share screen";
 
   return (
     <div className={compact ? "flex items-center gap-2 shrink-0" : "flex items-center justify-center gap-3 px-4 py-3 border-t border-gray-800"}>

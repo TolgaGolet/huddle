@@ -3,7 +3,7 @@ import type { Socket } from "socket.io";
 import { on, onRelay, onRoom } from "./socketRoute.js";
 import { isRoomImageUrl } from "./imageRouter.js";
 import { addParticipant, createRoom, socketRoomMap } from "./roomManager.js";
-import { noPayload, parseMute } from "./validation.js";
+import { parseDisconnect, parseMute } from "./validation.js";
 import { RATE_LIMITS } from "./rateLimit.js";
 
 /** Minimal stand-in for a Socket.IO socket: records listeners so tests can fire them. */
@@ -13,6 +13,7 @@ function fakeSocket(id: string) {
   const notices: { event: string; payload: unknown }[] = [];
   const socket = {
     id,
+    nsp: { sockets: new Map<string, unknown>() },
     on(event: string, fn: (raw: unknown) => void) {
       listeners.set(event, fn);
       return socket;
@@ -46,7 +47,7 @@ describe("rate limiting", () => {
   it("never limits an event outside the table, such as disconnect", () => {
     const { socket, fire } = fakeSocket("s1");
     const handler = vi.fn();
-    on(socket, "disconnect", noPayload, handler);
+    on(socket, "disconnect", parseDisconnect, handler);
 
     for (let i = 0; i < 1000; i++) fire("disconnect");
     expect(handler).toHaveBeenCalledTimes(1000);
@@ -242,13 +243,44 @@ describe("onRelay", () => {
     expect(sent).toEqual([]);
     expect(lonely.sent).toEqual([]);
   });
+
+  // Regression: relaying to a client that stopped reading crashed the server (out of memory).
+  it("evicts a peer that has stopped reading instead of queueing more for it", () => {
+    socketRoomMap.set("a", "r1").set("b", "r1");
+    const { socket, fire, sent } = fakeSocket("a");
+    const destroy = vi.fn();
+    socket.nsp.sockets.set("b", {
+      conn: { writeBuffer: new Array(257), request: { socket: { writableLength: 0, destroy } } },
+    } as unknown as Socket);
+    onRelay(socket, "ice-candidate", "candidate");
+
+    fire("ice-candidate", { to: "b", candidate: null });
+
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(sent).toEqual([]);
+  });
+
+  it("keeps relaying to a peer that is reading", () => {
+    socketRoomMap.set("a", "r1").set("b", "r1");
+    const { socket, fire, sent } = fakeSocket("a");
+    const destroy = vi.fn();
+    socket.nsp.sockets.set("b", {
+      conn: { writeBuffer: new Array(10), request: { socket: { writableLength: 4096, destroy } } },
+    } as unknown as Socket);
+    onRelay(socket, "ice-candidate", "candidate");
+
+    fire("ice-candidate", { to: "b", candidate: null });
+
+    expect(destroy).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+  });
 });
 
 describe("isRoomImageUrl", () => {
   it("accepts only uploaded-image paths of the given room", () => {
-    expect(isRoomImageUrl("r1", "/api/rooms/r1/images/abcdefghij.png")).toBe(true);
-    expect(isRoomImageUrl("r1", "/api/rooms/r2/images/abcdefghij.png")).toBe(false);
+    expect(isRoomImageUrl("r1", "/api/rooms/r1/images/abcdefghij.webp")).toBe(true);
+    expect(isRoomImageUrl("r1", "/api/rooms/r2/images/abcdefghij.webp")).toBe(false);
     expect(isRoomImageUrl("r1", "/api/rooms/r1/images/abcdefghij.exe")).toBe(false);
-    expect(isRoomImageUrl("r1", "/api/rooms/r1/images/../x/abcdefghij.png")).toBe(false);
+    expect(isRoomImageUrl("r1", "/api/rooms/r1/images/../x/abcdefghij.webp")).toBe(false);
   });
 });

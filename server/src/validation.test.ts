@@ -4,6 +4,7 @@ import {
   MAX_IMAGES_PER_MESSAGE,
   MAX_NAME_LENGTH,
   MAX_PASSWORD_LENGTH,
+  MIN_PASSWORD_LENGTH,
   MAX_POLL_OPTION_LENGTH,
   MAX_POLL_OPTIONS,
   MAX_POLL_QUESTION_LENGTH,
@@ -19,6 +20,11 @@ import {
   parsePollCreate,
   parsePollVote,
   parseRelay,
+  parseAdmitWaiting,
+  parseChangePassword,
+  parseKick,
+  parseRoomPermissions,
+  parseSetOwner,
 } from "./validation.js";
 
 // Non-object payloads every parser must reject. These used to crash the
@@ -97,6 +103,10 @@ describe("parseRelay", () => {
   it("allows a null end-of-candidates signal only for ICE", () => {
     expect(parseRelay("candidate")({ to: "s1", candidate: null })).toEqual({ to: "s1", body: null });
     expect(parseRelay("offer")({ to: "s1", offer: null })).toBeNull();
+    // Regression: 64 KB candidates and offers could be relayed at 50 per second.
+    expect(parseRelay("candidate")({ to: "s1", candidate: { candidate: "c".repeat(2100) } })).toBeNull();
+    expect(parseRelay("offer")({ to: "s1", offer: { type: "offer", sdp: "v".repeat(33 * 1024) } })).toBeNull();
+    expect(parseRelay("offer")({ to: "s1", offer: { type: "offer", sdp: "v".repeat(20 * 1024) } })).not.toBeNull();
   });
 });
 
@@ -108,11 +118,38 @@ describe("parseMute", () => {
   });
 });
 
+describe("room settings", () => {
+  it("takes only known permission values when creating a room", () => {
+    expect(parseCreateRoom({ pinPermission: "owners", waitingRoom: true, extra: "x" })?.permissions).toEqual({ pinPermission: "owners", waitingRoom: true });
+    expect(parseCreateRoom({ pinPermission: "nobody" })).toBeNull();
+    expect(parseCreateRoom({ waitingRoom: "yes" })).toBeNull();
+  });
+
+  it("rebuilds an update, so that nothing else can be assigned to the room", () => {
+    expect(parseRoomPermissions({ screenSharePermission: "everyone", __proto__: { polluted: true }, password: "x" })).toEqual({ screenSharePermission: "everyone" });
+    expect(parseRoomPermissions({ screenSharePermission: 5 })).toBeNull();
+  });
+
+  it("applies the new-room rule to a password change, and allows removing it", () => {
+    expect(parseChangePassword({ password: " long-secret " })).toEqual({ password: "long-secret" });
+    expect(parseChangePassword({ password: "" })).toEqual({ password: "" });
+    expect(parseChangePassword({ password: "short" })).toBeNull();
+    expect(parseChangePassword({ password: "      " })).toBeNull();
+  });
+
+  it("requires a target for owner changes and kicks", () => {
+    expect(parseSetOwner({ userId: "u", isOwner: false })).toEqual({ userId: "u", isOwner: false });
+    expect(parseSetOwner({ userId: "u" })).toBeNull();
+    expect(parseKick({})).toBeNull();
+    expect(parseAdmitWaiting({ id: "s" })).toEqual({ id: "s" });
+  });
+});
+
 describe("parseCreateRoom", () => {
   it("applies the same password limit as join-room", () => {
     const pw = "p".repeat(MAX_PASSWORD_LENGTH);
-    expect(parseCreateRoom({})).toEqual({});
-    expect(parseCreateRoom({ password: pw })).toEqual({ password: pw });
+    expect(parseCreateRoom({})?.password).toBeUndefined();
+    expect(parseCreateRoom({ password: pw })?.password).toBe(pw);
     expect(parseJoinRoom({ roomId: "r1", name: "Ana", password: pw })).not.toBeNull();
     expect(parseCreateRoom({ password: pw + "p" })).toBeNull();
     expect(parseCreateRoom({ password: 5 })).toBeNull();
@@ -120,11 +157,28 @@ describe("parseCreateRoom", () => {
 
   // Regression: a pasted trailing space spent a password guess on a correct password.
   it("trims passwords the same way as join-room, before the limit", () => {
-    expect(parseCreateRoom({ password: " pw " })).toEqual({ password: "pw" });
-    expect(parseJoinRoom({ roomId: "r1", name: "Ana", password: " pw " })?.password).toBe("pw");
+    expect(parseCreateRoom({ password: " password " })?.password).toBe("password");
+    expect(parseJoinRoom({ roomId: "r1", name: "Ana", password: " password " })?.password).toBe("password");
 
     const padded = ` ${"p".repeat(MAX_PASSWORD_LENGTH)} `;
-    expect(parseCreateRoom({ password: padded })).toEqual({ password: padded.trim() });
+    expect(parseCreateRoom({ password: padded })?.password).toBe(padded.trim());
+  });
+
+  // Regression: spaces created an open room with no warning, and any length was accepted.
+  it("requires a minimum length for a new room's password, after trimming", () => {
+    expect(parseCreateRoom({ password: "p".repeat(MIN_PASSWORD_LENGTH) })).not.toBeNull();
+    expect(parseCreateRoom({ password: "p".repeat(MIN_PASSWORD_LENGTH - 1) })).toBeNull();
+    expect(parseCreateRoom({ password: ` ${"p".repeat(MIN_PASSWORD_LENGTH - 1)} ` })).toBeNull();
+    expect(parseCreateRoom({ password: "        " })).toBeNull();
+  });
+
+  it("still means an open room for no password or an empty one", () => {
+    expect(parseCreateRoom({})?.password).toBeUndefined();
+    expect(parseCreateRoom({ password: "" })?.password).toBe("");
+  });
+
+  it("doesn't apply the minimum to a join, whose answer must not depend on the guess", () => {
+    expect(parseJoinRoom({ roomId: "r1", name: "Ana", password: "x" })?.password).toBe("x");
   });
 });
 

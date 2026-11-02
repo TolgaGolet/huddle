@@ -6,6 +6,7 @@ import { useWebRTC } from "../hooks/useWebRTC";
 import { useMediaDevices } from "../hooks/useMediaDevices";
 import { useCaptureAudio } from "../hooks/useCaptureAudio";
 import { useMicrophone } from "../hooks/useMicrophone";
+import { useVoiceActivityReport } from "../hooks/useVoiceActivityReport";
 import { useVoiceActivity } from "../hooks/useVoiceActivity";
 import { useAudioSettings } from "../hooks/useAudioSettings";
 import { useTransmissionGate } from "../hooks/useTransmissionGate";
@@ -13,7 +14,9 @@ import LeaveRoomDialog from "../components/LeaveRoomDialog";
 import ParticipantsList from "../components/ParticipantsList";
 import RoomBanners from "../components/RoomBanners";
 import RoomChat from "../components/RoomChat";
+import RoomSettingsPanel from "../components/RoomSettingsPanel";
 import RoomHeader from "../components/RoomHeader";
+import WaitingScreen from "../components/WaitingScreen";
 import VoiceControls from "../components/VoiceControls";
 import SettingsPopup from "../components/SettingsPopup";
 import ScreenViewer from "../components/ScreenViewer";
@@ -31,7 +34,7 @@ export default function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const state = location.state as { name?: string; password?: string } | null;
+  const state = location.state as { name?: string } | null;
   const name = state?.name;
 
   useEffect(() => {
@@ -39,10 +42,10 @@ export default function RoomPage() {
   }, [name, navigate, roomId]);
 
   if (!roomId || !name) return null;
-  return <RoomCall roomId={roomId} name={name} password={state?.password} />;
+  return <RoomCall roomId={roomId} name={name} />;
 }
 
-function RoomCall({ roomId, name, password }: { roomId: string; name: string; password?: string }) {
+function RoomCall({ roomId, name }: { roomId: string; name: string }) {
   const navigate = useNavigate();
 
   const [isMuted, setIsMuted] = useState(false);
@@ -74,21 +77,17 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
   // own mute choice (which is kept, and applies again once the mic is back).
   const announcedMuted = isMuted || micUnavailable;
 
-  const { socket, userId, httpToken, imageSession, participants, connected, joinError, currentScreenSharer, joinRoom } = useSocket({
+  const { socket, userId, httpToken, imageSession, participants, connected, exit, currentScreenSharer, closing, settings: roomSettings, isWaiting, waitingList, admitRefusedId, joinRoom } = useSocket({
     roomId,
     name,
-    password,
     isMuted: announcedMuted,
   });
 
   useEffect(() => {
-    if (joinError) {
-      navigate("/", {
-        replace: true,
-        state: { error: joinError, roomId, name, password },
-      });
-    }
-  }, [joinError, navigate, roomId, name, password]);
+    if (!exit) return;
+    // Only a failed join returns to the form with its details filled in.
+    navigate("/", { replace: true, state: "error" in exit ? { ...exit, roomId, name } : exit });
+  }, [exit, navigate, roomId, name]);
 
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -178,16 +177,39 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
 
   const someoneElseSharing = !!currentScreenSharer && currentScreenSharer !== socket?.id;
 
+  const ownerIds = useMemo(() => new Set(roomSettings?.ownerIds), [roomSettings]);
+  const isOwner = !!userId && ownerIds.has(userId);
+  const canPin = roomSettings?.pinPermission !== "owners" || isOwner;
+  const canShareScreen = roomSettings?.screenSharePermission !== "owners" || isOwner;
+
+  // The server stops a share the settings no longer allow; the capture ends here.
+  useEffect(() => {
+    if (isScreenSharing && !canShareScreen) {
+      stopScreenShare();
+      setIsScreenSharing(false);
+    }
+  }, [isScreenSharing, canShareScreen, stopScreenShare]);
+
+  const handleSetOwner = useCallback((targetUserId: string, makeOwner: boolean) => {
+    socket?.emit("set-owner", { userId: targetUserId, isOwner: makeOwner });
+  }, [socket]);
+  const handleKick = useCallback((targetUserId: string) => {
+    socket?.emit("kick-participant", { userId: targetUserId });
+  }, [socket]);
+  const handleAdmit = useCallback((id: string) => {
+    socket?.emit("admit-waiting", { id });
+  }, [socket]);
+
   const handleToggleScreenShare = useCallback(async () => {
     if (isScreenSharing) {
       stopScreenShare();
       setIsScreenSharing(false);
     } else {
-      if (someoneElseSharing) return;
+      if (someoneElseSharing || !canShareScreen) return;
       const ok = await startScreenShare();
       setIsScreenSharing(ok);
     }
-  }, [isScreenSharing, startScreenShare, stopScreenShare, someoneElseSharing]);
+  }, [isScreenSharing, startScreenShare, stopScreenShare, someoneElseSharing, canShareScreen]);
 
   const handleSetPeerVolume = useCallback((userId: string, volume: number) => {
     setPeerVolumes((prev) => new Map(prev).set(userId, volume));
@@ -222,6 +244,8 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
   const anyRemoteConnecting = connecting.size > 0;
   if (anyRemoteConnecting) connecting.add(localId);
 
+  useVoiceActivityReport(socket, speaking.has(localId));
+
   const speakingNames = allParticipants.filter((p) => speaking.has(p.id) && !p.isMuted).map((p) => p.name);
 
   const firstScreenStream = screenStreams.entries().next().value;
@@ -232,14 +256,23 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
     isMuted: announcedMuted,
     micUnavailable,
     isScreenSharing,
-    screenShareDisabled: someoneElseSharing,
+    screenShareDisabled: someoneElseSharing || !canShareScreen,
+    screenShareDisabledLabel: canShareScreen ? undefined : "Only owners can share their screen",
     onToggleMute: micUnavailable ? retryMic : handleToggleMute,
     onToggleScreenShare: handleToggleScreenShare,
   };
 
   return (
-    <div className="h-dvh flex flex-col bg-gray-950 text-gray-100">
+    <>
+    {isWaiting && <WaitingScreen onLeave={() => navigate("/")} />}
+    {/* Hidden, not removed: RoomChat must already be listening for the room-joined
+        that ends the wait, as that carries the chat history. */}
+    <div className={isWaiting ? "hidden" : "h-dvh flex flex-col bg-gray-950 text-gray-100"}>
       <RoomBanners
+        waitingList={isOwner ? waitingList : undefined}
+        admitRefusedId={admitRefusedId}
+        onAdmit={handleAdmit}
+        closing={closing}
         micError={micError}
         micRetrying={micRetrying}
         onRetryMic={retryMic}
@@ -289,6 +322,10 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
               onSetPeerVolume={handleSetPeerVolume}
               maxParticipants={MAX_PARTICIPANTS}
               connecting={connecting}
+              ownerIds={ownerIds}
+              canModerate={isOwner}
+              onSetOwner={handleSetOwner}
+              onKick={handleKick}
             />
           </div>
           <div className="hidden md:block">
@@ -317,6 +354,7 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
               imageSession={imageSession}
               localUserId={userId ?? ""}
               roomId={roomId}
+              canPin={canPin}
             />
           </div>
         </main>
@@ -326,6 +364,7 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
       {showSettings && (
         <SettingsPopup
           onClose={() => setShowSettings(false)}
+          roomPanel={roomSettings && <RoomSettingsPanel socket={socket} settings={roomSettings} isOwner={isOwner} />}
           audioInputs={audioInputs}
           selectedDeviceId={selectedDeviceId}
           onDeviceChange={setDevice}
@@ -347,5 +386,6 @@ function RoomCall({ roomId, name, password }: { roomId: string; name: string; pa
         <LeaveRoomDialog onCancel={() => setShowLeaveConfirm(false)} onLeave={() => navigate("/")} />
       )}
     </div>
+    </>
   );
 }

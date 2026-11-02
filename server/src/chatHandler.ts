@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { addChatMessage, findEntry, emptyReactions, removeMessage, type ChatMessage } from "./roomManager.js";
+import { addChatMessage, findEntry, emptyReactions, hasPermission, removeMessage, touchRoom, type ChatMessage } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
 import { isPollMessage, quoteText } from "./protocol.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
@@ -37,7 +37,8 @@ export function setupChat(io: AppServer): void {
   io.on("connection", (socket) => {
     // Typing indicator relay: broadcast to the others so they can show
     // "X is typing...". Clients auto-expire the indicator themselves.
-    onRoom(socket, "typing", noPayload, ({ roomId, participant }) => {
+    onRoom(socket, "typing", noPayload, ({ roomId, room, participant }) => {
+      touchRoom(room);
       socket.to(roomId).emit("typing", {
         userId: participant.userId,
         senderName: participant.name,
@@ -75,6 +76,7 @@ export function setupChat(io: AppServer): void {
       if (quoted && !isPollMessage(quoted)) msg.replyTo = quoteOf(quoted);
 
       addChatMessage(room, msg);
+      touchRoom(room);
       io.to(roomId).emit("chat-message", msg);
     });
 
@@ -82,6 +84,7 @@ export function setupChat(io: AppServer): void {
       const msg = findEntry(room, messageId);
       if (!msg || isPollMessage(msg)) return;
 
+      touchRoom(room);
       const list = msg.reactions[emoji] ?? [];
       const idx = list.findIndex((u) => u.userId === participant.userId);
       if (idx >= 0) {
@@ -111,6 +114,7 @@ export function setupChat(io: AppServer): void {
       if (msg.senderId !== participant.userId) return;
       if (msg.gifUrl || msg.imageUrls?.length) return;
 
+      touchRoom(room);
       msg.text = text;
       msg.edited = true;
       for (const m of room.chatHistory) {
@@ -128,7 +132,8 @@ export function setupChat(io: AppServer): void {
       io.to(roomId).emit("chat-message-delete", { messageId });
     });
 
-    onRoom(socket, "chat-pin", parseMessageId, ({ roomId, room }, { messageId }) => {
+    onRoom(socket, "chat-pin", parseMessageId, ({ roomId, room, participant }, { messageId }) => {
+      if (!hasPermission(room, "pinPermission", participant.userId)) return;
       const entry = findEntry(room, messageId);
       if (!entry) return;
 

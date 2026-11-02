@@ -12,9 +12,10 @@ interface Props {
   /** Stable identity, for "is this mine?" checks. */
   localUserId: string;
   roomId: string;
+  canPin?: boolean;
 }
 
-export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId }: Props) {
+export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId, canPin }: Props) {
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -53,6 +54,7 @@ export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessag
         chatHistory={chatHistory}
         pinnedMessageId={pinnedMessageId}
         localUserId={localUserId}
+        canPin={canPin}
         isAtBottomRef={isAtBottomRef}
         onReply={startReply}
         onFocusComposer={focusComposer}

@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { isPollMessage } from "./protocol.js";
-import { addChatMessage, findEntry, type PollMessage, type PollOption } from "./roomManager.js";
+import { addChatMessage, findEntry, touchRoom, type PollMessage, type PollOption } from "./roomManager.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
 import { parsePollCreate, parsePollVote } from "./validation.js";
 
@@ -35,6 +35,7 @@ export function setupPolls(io: AppServer): void {
       };
 
       addChatMessage(room, poll);
+      touchRoom(room);
       io.to(roomId).emit("poll-create", poll);
     });
 
@@ -45,6 +46,7 @@ export function setupPolls(io: AppServer): void {
       const option = poll.options.find((o) => o.id === optionId);
       if (!option) return;
 
+      touchRoom(room);
       const { userId, name } = participant;
       if (!removeVote(option, userId)) {
         if (!poll.allowMultiple) poll.options.forEach((o) => removeVote(o, userId));

@@ -9,6 +9,8 @@ interface Props {
   isOwn: boolean;
   isPinned: boolean;
   canEdit: boolean;
+  /** False when only owners can pin. */
+  canPin?: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onTogglePin: () => void;
@@ -18,7 +20,7 @@ interface Props {
   onDismiss: () => void;
 }
 
-export default function MessageContextMenu({ messageId, x, y, isOwn, isPinned, canEdit, onEdit, onDelete, onTogglePin, onClose, onDismiss }: Props) {
+export default function MessageContextMenu({ messageId, x, y, isOwn, isPinned, canEdit, canPin = true, onEdit, onDelete, onTogglePin, onClose, onDismiss }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Move focus into the context menu when it opens, so keyboard users land on
@@ -80,7 +82,9 @@ export default function MessageContextMenu({ messageId, x, y, isOwn, isPinned, c
         type="button"
         role="menuitem"
         onClick={onTogglePin}
-        className="flex w-full pointer-coarse:min-h-10 items-center gap-2 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
+        disabled={!canPin}
+        title={canPin ? undefined : "Only owners can pin messages"}
+        className="disabled:opacity-50 disabled:cursor-not-allowed flex w-full pointer-coarse:min-h-10 items-center gap-2 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
       >
         {isPinned ? <PinOff size={12} /> : <Pin size={12} />}
         {isPinned ? "Unpin message" : "Pin message"}

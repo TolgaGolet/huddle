@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
-import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS } from "./limits.js";
-import { isPollMessage, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry } from "./protocol.js";
+import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS, MAX_REMEMBERED_MEMBERS } from "./limits.js";
+import { isPollMessage, type RoomPermissions, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry } from "./protocol.js";
 
 export type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry };
 
@@ -26,6 +26,32 @@ export interface Room {
   emptySince: number | null;
   /** Checked against MAX_ROOMS_PER_IP. Never broadcast or log it. */
   creatorIp: string | null;
+  /** Random secret returned to the creator, whose first join makes them owner. Single use. */
+  ownerToken: string | null;
+  /** userIds. Kept across reconnects, so an owner keeps the role if they return. */
+  owners: Set<string>;
+  /** When the last owner present disappeared; see promoteAfterGrace. */
+  ownerlessSince: number | null;
+  settings: RoomPermissions;
+  /** userIds that got in, who can return without the password until they leave on purpose. */
+  memberIds: Set<string>;
+  /** Removed by an owner: these go to the waiting room if they come back. */
+  blockedUsers: Set<string>;
+  blockedIps: Set<string>;
+  /** By socket.id. */
+  waiting: Map<string, WaitingEntry>;
+  createdAt: number;
+  /** Last speech, chat or join. See roomLifetime.ts, which closes the room once this is too old. */
+  lastActivityAt: number;
+}
+
+export interface WaitingEntry {
+  id: string;
+  name: string;
+  userId: string | undefined;
+  wasRemoved: boolean;
+  /** Brings them into the room. False, with them still waiting, if it's full. */
+  admit: () => boolean;
 }
 
 /**
@@ -90,8 +116,15 @@ export function emptyReactions(): Record<string, ReactionUser[]> {
   return Object.create(null) as Record<string, ReactionUser[]>;
 }
 
-export function createRoom(password?: string, creatorIp: string | null = null): Room {
-  const id = nanoid(6);
+const DEFAULT_ROOM_PERMISSIONS: Readonly<RoomPermissions> = {
+  pinPermission: "everyone",
+  screenSharePermission: "everyone",
+  waitingRoom: false,
+};
+
+export function createRoom(password?: string, creatorIp: string | null = null, permissions: Partial<RoomPermissions> = {}): Room {
+  // An open room's link is its only protection, so the id must be unguessable.
+  const id = nanoid(21);
   const room: Room = {
     id,
     password: password || null,
@@ -107,9 +140,31 @@ export function createRoom(password?: string, creatorIp: string | null = null): 
     // A new room is empty: if nobody ever joins, it expires like any other.
     emptySince: Date.now(),
     creatorIp,
+    ownerToken: randomBytes(32).toString("base64url"),
+    owners: new Set(),
+    ownerlessSince: null,
+    settings: { ...DEFAULT_ROOM_PERMISSIONS, ...permissions },
+    memberIds: new Set(),
+    blockedUsers: new Set(),
+    blockedIps: new Set(),
+    waiting: new Map(),
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
   };
   rooms.set(id, room);
   return room;
+}
+
+export function hasPermission(room: Room, permission: "pinPermission" | "screenSharePermission", userId: string): boolean {
+  return room.settings[permission] === "everyone" || room.owners.has(userId);
+}
+
+export function rememberMember(room: Room, userId: string): void {
+  room.memberIds.add(userId);
+  // A Set iterates oldest first. Open rooms let anyone in, so this must stay bounded.
+  if (room.memberIds.size > MAX_REMEMBERED_MEMBERS) {
+    room.memberIds.delete(room.memberIds.values().next().value as string);
+  }
 }
 
 export function verifyPassword(room: Room, password?: string): boolean {
@@ -130,13 +185,34 @@ export function onRoomDestroyed(fn: RoomDestroyedListener): () => void {
 }
 
 function isExpired(room: Room, now: number): boolean {
-  return room.participants.size === 0 && room.emptySince !== null && now - room.emptySince > ROOM_GRACE_MS;
+  // People waiting are told by the lifetime sweep, which then closes the room.
+  return room.waiting.size === 0 && room.participants.size === 0 && room.emptySince !== null && now - room.emptySince > ROOM_GRACE_MS;
 }
 
 // Every deletion goes through here so listeners can't be skipped.
 function deleteRoom(id: string): void {
   rooms.delete(id);
   roomDestroyedListeners.forEach((fn) => fn(id));
+}
+
+export function allRooms(): IterableIterator<Room> {
+  return rooms.values();
+}
+
+export function touchRoom(room: Room, now = Date.now()): void {
+  room.lastActivityAt = now;
+}
+
+/** Ends a room with people in it. Telling them and disconnecting them is the caller's job. */
+export function closeRoom(id: string): void {
+  const room = rooms.get(id);
+  if (!room) return;
+  for (const socketId of room.participants.keys()) {
+    socketRoomMap.delete(socketId);
+    revokeHttpToken(socketId);
+  }
+  room.participants.clear();
+  deleteRoom(id);
 }
 
 export function getRoom(id: string): Room | undefined {
@@ -196,6 +272,7 @@ export function isRoomFull(room: Room, leaving: Participant[]): boolean {
 /** Without a `userId` the identity lasts only as long as this connection. */
 export function addParticipant(room: Room, socketId: string, name: string, userId = socketId, isMuted = false): Participant {
   room.emptySince = null;
+  touchRoom(room);
   const participant: Participant = { id: socketId, userId, name, isMuted };
   room.participants.set(socketId, participant);
   socketRoomMap.set(socketId, room.id);

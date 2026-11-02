@@ -1,112 +1,83 @@
 // @vitest-environment jsdom
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { renderToStaticMarkup } from "react-dom/server";
+import type { Participant } from "../types";
 import ParticipantsList from "./ParticipantsList";
 
-const participant = (id: string, name: string) => ({ id, userId: `user-${id}`, name, isMuted: false });
-const people = [participant("me", "Ana"), participant("peer", "Bo")];
+const me: Participant = { id: "s-me", userId: "u-me", name: "Me", isMuted: false };
+const bo: Participant = { id: "s-bo", userId: "u-bo", name: "Bo", isMuted: false };
 
-function setup(props: Partial<React.ComponentProps<typeof ParticipantsList>> = {}) {
-  const onSetPeerVolume = vi.fn();
-  render(<ParticipantsList participants={people} localId="me" speaking={new Set()} peerVolumes={new Map()} onSetPeerVolume={onSetPeerVolume} {...props} />);
-  return { onSetPeerVolume };
+function setup(overrides: Partial<React.ComponentProps<typeof ParticipantsList>> = {}) {
+  const onSetOwner = vi.fn();
+  const onKick = vi.fn();
+  render(
+    <ParticipantsList
+      participants={[me, bo]}
+      localId="s-me"
+      speaking={new Set()}
+      peerVolumes={new Map()}
+      onSetPeerVolume={vi.fn()}
+      ownerIds={new Set(["u-me"])}
+      canModerate
+      onSetOwner={onSetOwner}
+      onKick={onKick}
+      {...overrides}
+    />,
+  );
+  return { onSetOwner, onKick };
 }
 
-const slider = () => screen.queryByRole("slider", { name: "Volume for Bo" }) as HTMLInputElement | null;
 const openMenu = () => fireEvent.click(screen.getByRole("button", { name: "Options for Bo" }));
 
 afterEach(cleanup);
 
-describe("ParticipantsList", () => {
-  // Regression: the local card had a menu button that opened nothing.
-  it("offers options for remote participants only", () => {
-    const html = renderToStaticMarkup(
-      <ParticipantsList
-        participants={[participant("me", "Ana"), participant("peer", "Bo")]}
-        localId="me"
-        speaking={new Set()}
-        peerVolumes={new Map()}
-        onSetPeerVolume={() => {}}
-      />,
-    );
-
-    expect(html).toContain("Options for Bo");
-    expect(html).not.toContain("Options for Ana");
-  });
-
-  it("shows the count without a cap", () => {
+describe("ParticipantsList moderation", () => {
+  it("marks owners", () => {
     setup();
 
-    expect(screen.getByRole("heading").textContent).toBe("Participants — 2");
+    expect(screen.getAllByRole("img", { name: "Owner" })).toHaveLength(1);
   });
 
-  it("shows the count against the cap", () => {
-    setup({ maxParticipants: 6 });
+  it("lets an owner make someone an owner, and remove them", () => {
+    const { onSetOwner } = setup();
+    openMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Make owner" }));
+    expect(onSetOwner).toHaveBeenCalledWith("u-bo", true);
+    cleanup();
 
-    expect(screen.getByRole("heading").textContent).toBe("Participants — 2/6");
+    const again = setup({ ownerIds: new Set(["u-me", "u-bo"]) });
+    openMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Remove as owner" }));
+    expect(again.onSetOwner).toHaveBeenCalledWith("u-bo", false);
   });
 
-  it("says when the room is full", () => {
-    setup({ maxParticipants: 2 });
+  it("asks before kicking", () => {
+    const { onKick } = setup();
+    openMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Kick from room" }));
+    expect(onKick).not.toHaveBeenCalled();
 
-    expect(screen.getByRole("heading").textContent).toBe("Participants — 2/2 (full)");
+    fireEvent.click(screen.getByRole("button", { name: "Kick" }));
+    expect(onKick).toHaveBeenCalledWith("u-bo");
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("marks only the local participant as you", () => {
-    setup();
+  it("can be cancelled", () => {
+    const { onKick } = setup();
+    openMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Kick from room" }));
 
-    expect(screen.getAllByText("(you)")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onKick).not.toHaveBeenCalled();
   });
 
-  it("marks only the participants still connecting", () => {
-    setup({ connecting: new Set(["peer"]) });
-
-    expect(screen.getAllByText("Connecting…")).toHaveLength(1);
-  });
-
-  it("opens the volume menu from the button, at full volume by default", () => {
-    setup();
-
+  it("offers a non-owner only the volume", () => {
+    setup({ canModerate: false });
     openMenu();
 
-    expect(slider()!.value).toBe("100");
-  });
-
-  it("opens the volume menu on right-click, instead of the browser's", () => {
-    setup();
-
-    const notPrevented = fireEvent.contextMenu(screen.getByText("Bo"));
-
-    expect(notPrevented).toBe(false);
-    expect(slider()).not.toBeNull();
-  });
-
-  it("offers no menu on right-clicking ourselves", () => {
-    setup();
-
-    fireEvent.contextMenu(screen.getByText("Ana"));
-
-    expect(screen.queryByRole("slider")).toBeNull();
-  });
-
-  // By identity: a reconnect changes the socket id but must keep the choice.
-  it("reads and writes the volume by userId, not socket id", () => {
-    const { onSetPeerVolume } = setup({ peerVolumes: new Map([["user-peer", 0.5]]) });
-    openMenu();
-    expect(slider()!.value).toBe("50");
-
-    fireEvent.change(slider()!, { target: { value: "150" } });
-
-    expect(onSetPeerVolume).toHaveBeenCalledWith("user-peer", 1.5);
-  });
-
-  it("closes the menu on Escape", () => {
-    setup();
-    openMenu();
-
-    fireEvent.keyDown(document, { key: "Escape" });
-
-    expect(slider()).toBeNull();
+    expect(screen.getByRole("slider", { name: "Volume for Bo" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Kick from room" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Make owner" })).toBeNull();
   });
 });

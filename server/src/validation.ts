@@ -7,8 +7,10 @@
 // The user-facing limits live in limits.ts, which the client also imports.
 
 import type { ChatMessage } from "./roomManager.js";
+import type { RoomPermission, RoomPermissions } from "./protocol.js";
 import {
   CLIENT_KEY_PATTERN,
+  isValidNewPassword,
   MAX_CHAT_TEXT_LENGTH,
   MAX_IMAGES_PER_MESSAGE,
   MAX_NAME_LENGTH,
@@ -21,6 +23,7 @@ import {
 const MAX_ID_LENGTH = 32;
 const MAX_EMOJI_LENGTH = 32;
 const MAX_URL_LENGTH = 2048;
+const MAX_OWNER_TOKEN_LENGTH = 64;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -62,30 +65,85 @@ const bool = (v: unknown) => (typeof v === "boolean" ? v : null);
 
 export function parseJoinRoom(
   raw: unknown,
-): { roomId: string; name: string; password?: string; clientKey?: string; isMuted?: boolean } | null {
+): { roomId: string; name: string; password?: string; clientKey?: string; isMuted?: boolean; ownerToken?: string } | null {
   if (!isRecord(raw)) return null;
   const roomId = id(raw.roomId);
   const name = trimmedStr(raw.name, MAX_NAME_LENGTH);
   const pw = optional(raw.password, password);
   const key = optional(raw.clientKey, clientKey);
   const isMuted = optional(raw.isMuted, bool);
-  if (!roomId || !name || pw === null || key === null || isMuted === null) return null;
-  return { roomId, name, password: pw, clientKey: key, isMuted };
+  const ownerToken = optional(raw.ownerToken, (v) => str(v, MAX_OWNER_TOKEN_LENGTH));
+  if (!roomId || !name || pw === null || key === null || isMuted === null || ownerToken === null) return null;
+  return { roomId, name, password: pw, clientKey: key, isMuted, ownerToken };
 }
 
 /**
  * POST /api/rooms body. Uses the same password limit as join-room so a room
- * can never be created with a password its creator is unable to join with.
+ * can never be created with a password its creator is unable to join with. Only
+ * creating has a minimum, so a join's answer never depends on the guess's length.
  */
-export function parseCreateRoom(raw: unknown): { password?: string } | null {
+export function parseCreateRoom(raw: unknown): { password?: string; permissions: Partial<RoomPermissions> } | null {
   if (!isRecord(raw)) return null;
   const pw = optional(raw.password, password);
-  return pw === null ? null : { password: pw };
+  if (pw === null) return null;
+  if (typeof raw.password === "string" && !isValidNewPassword(raw.password)) return null;
+  const permissions = permissionsFrom(raw);
+  return permissions && { password: pw, permissions };
 }
+
+const permission = (v: unknown): RoomPermission | null => (v === "everyone" || v === "owners" ? v : null);
+
+/** The permission fields present in `raw`, or null if one is invalid. Rebuilt, so nothing else gets through. */
+function permissionsFrom(raw: UnknownRecord): Partial<RoomPermissions> | null {
+  const pinPermission = optional(raw.pinPermission, permission);
+  const screenSharePermission = optional(raw.screenSharePermission, permission);
+  const waitingRoom = optional(raw.waitingRoom, bool);
+  if (pinPermission === null || screenSharePermission === null || waitingRoom === null) return null;
+  const result: Partial<RoomPermissions> = {};
+  if (pinPermission) result.pinPermission = pinPermission;
+  if (screenSharePermission) result.screenSharePermission = screenSharePermission;
+  if (waitingRoom !== undefined) result.waitingRoom = waitingRoom;
+  return result;
+}
+
+export function parseRoomPermissions(raw: unknown): Partial<RoomPermissions> | null {
+  return isRecord(raw) ? permissionsFrom(raw) : null;
+}
+
+export function parseSetOwner(raw: unknown): { userId: string; isOwner: boolean } | null {
+  if (!isRecord(raw)) return null;
+  const userId = id(raw.userId);
+  const isOwner = bool(raw.isOwner);
+  return userId && isOwner !== null ? { userId, isOwner } : null;
+}
+
+export function parseKick(raw: unknown): { userId: string } | null {
+  const userId = isRecord(raw) ? id(raw.userId) : null;
+  return userId ? { userId } : null;
+}
+
+export function parseAdmitWaiting(raw: unknown): { id: string } | null {
+  const socketId = isRecord(raw) ? id(raw.id) : null;
+  return socketId ? { id: socketId } : null;
+}
+
+/** The same rule as creating a room; empty removes the password. */
+export function parseChangePassword(raw: unknown): { password: string } | null {
+  if (!isRecord(raw) || typeof raw.password !== "string" || !isValidNewPassword(raw.password)) return null;
+  return { password: raw.password.trim() };
+}
+
+/** Socket.IO's reason for a disconnect, which is a bare string. */
+export function parseDisconnect(raw: unknown): { reason: string } {
+  return { reason: typeof raw === "string" ? raw : "" };
+}
+
+/** Well above real SDP, including a video m-line for screen share, and real ICE candidates. */
+const MAX_RELAY_LENGTH = { offer: 32 * 1024, answer: 32 * 1024, candidate: 2 * 1024 };
 
 /**
  * offer/answer/ice-candidate relays. The SDP/candidate body is forwarded
- * opaquely to the peer (Socket.IO's maxHttpBufferSize bounds its size); we
+ * opaquely to the peer, up to a size that keeps relayed traffic small; we
  * only require it to be an object so the peer gets the shape it expects.
  * A null candidate is the end-of-candidates signal and is allowed.
  */
@@ -97,7 +155,8 @@ export function parseRelay(
     const to = id(raw.to);
     const body = raw[key];
     const bodyOk = isRecord(body) || (key === "candidate" && body === null);
-    return to && bodyOk ? { to, body } : null;
+    if (!to || !bodyOk || JSON.stringify(body).length > MAX_RELAY_LENGTH[key]) return null;
+    return { to, body };
   };
 }
 

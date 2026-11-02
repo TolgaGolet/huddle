@@ -10,10 +10,18 @@ import { giphyRouter } from "./giphyRouter.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
-import { clearStaleImages, deleteRoomImages, imageRouter, releaseMessageImages } from "./imageRouter.js";
+import { clearStaleImages, createImageRouter, deleteRoomImages, releaseMessageImages } from "./imageRouter.js";
 import { errorSummary } from "./errorLog.js";
 import { apiNotFound, httpErrorHandler } from "./httpErrors.js";
-import { connectionRateLimit, httpRateLimit, IP_LIMITS, proxyHopsFor } from "./ipRateLimit.js";
+import { connectionRateLimit, httpRateLimit, IP_LIMITS, openConnectionLimit, proxyHopsFor } from "./ipRateLimit.js";
+import { isDevelopment } from "./env.js";
+import { MAX_CONNECTIONS_PER_IP, MAX_CONNECTIONS_TOTAL } from "./limits.js";
+import { connectionOriginRefusal, DEV_CLIENT_ORIGIN, requireOwnOrigin } from "./originCheck.js";
+import { setupRoomLifetime } from "./roomLifetime.js";
+import { setupModeration } from "./roomModeration.js";
+import { securityHeaders } from "./securityHeaders.js";
+import { STATUS_LOG_INTERVAL_MS, takeSecurityCounts } from "./securityLog.js";
+import { BACKLOG_SWEEP_INTERVAL_MS, evictBacklogged } from "./socketBacklog.js";
 import type { AppServer } from "./socketRoute.js";
 
 // Socket handlers catch their own errors (socketRoute.ts), so client input
@@ -36,16 +44,25 @@ const PORT = process.env.PORT || 3001;
 const app = express();
 const httpServer = createServer(app);
 const proxyHops = proxyHopsFor(process.env);
+const connectionRateRefusal = connectionRateLimit(IP_LIMITS.connections, proxyHops);
+const openConnectionRefusal = openConnectionLimit(MAX_CONNECTIONS_PER_IP, MAX_CONNECTIONS_TOTAL, proxyHops);
 const io: AppServer = new Server(httpServer, {
-  allowRequest: connectionRateLimit(IP_LIMITS.connections, proxyHops),
+  // Each only if the one before allowed it: origin costs nothing, and a connection
+  // the rate limit refuses must never count as open.
+  allowRequest: (req, callback) => {
+    const refusal = connectionOriginRefusal(req) ?? connectionRateRefusal(req) ?? openConnectionRefusal(req);
+    callback(refusal, !refusal);
+  },
   cors: {
-    origin: process.env.NODE_ENV === "production" ? false : "http://localhost:4173",
+    origin: isDevelopment() ? DEV_CLIENT_ORIGIN : false,
   },
   transports: ["websocket"],
   perMessageDeflate: false,
   maxHttpBufferSize: 64 * 1024,
 });
 
+app.disable("x-powered-by");
+app.use(securityHeaders);
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
@@ -54,6 +71,7 @@ app.get("/health", (_req, res) => {
 
 // Image downloads have no rate limit: a chat can load many at once, they require
 // room membership, and imageRouter.ts bounds the memory they use.
+app.use("/api", requireOwnOrigin);
 app.post("/api/rooms", httpRateLimit(IP_LIMITS.createRoom, proxyHops));
 app.get("/api/rooms/:id", httpRateLimit(IP_LIMITS.lookupRoom, proxyHops));
 app.post("/api/rooms/:id/images", httpRateLimit(IP_LIMITS.uploadImages, proxyHops));
@@ -62,10 +80,11 @@ app.use("/api/giphy", httpRateLimit(IP_LIMITS.giphy, proxyHops));
 
 app.use("/api", createRoomRouter(proxyHops));
 app.use("/api/giphy", giphyRouter);
-app.use("/api", imageRouter);
+app.use("/api", createImageRouter(proxyHops));
 app.use("/api", apiNotFound);
 
 setupSignaling(io, proxyHops);
+setupModeration(io, proxyHops);
 setupChat(io);
 setupPolls(io);
 
@@ -76,19 +95,15 @@ app.get("/{*splat}", (_req, res) => {
 });
 app.use(httpErrorHandler);
 
-// Close to the limit of a 512 MB Render instance; below this the line is noise.
-const MEM_LOG_RSS_BYTES = 400 * 1024 * 1024;
-
+// One line for what happened lately: memory, for spotting a leak, and security
+// counts (see securityLog.ts), which never identify anyone.
 setInterval(() => {
   const mem = process.memoryUsage();
-  if (mem.rss < MEM_LOG_RSS_BYTES) return;
-  const rss = (mem.rss / 1024 / 1024).toFixed(1);
-  const heapUsed = (mem.heapUsed / 1024 / 1024).toFixed(1);
-  const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(1);
-  const external = (mem.external / 1024 / 1024).toFixed(1);
-  const images = (totalImageBytes() / 1024 / 1024).toFixed(1);
-  console.log(`[mem] rss=${rss}MB heap=${heapUsed}/${heapTotal}MB ext=${external}MB conns=${io.engine.clientsCount} rooms=${roomCount()} images=${images}MB`);
-}, 30_000);
+  const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+  console.log(
+    `[status] rss=${mb(mem.rss)}MB heap=${mb(mem.heapUsed)}/${mb(mem.heapTotal)}MB ext=${mb(mem.external)}MB conns=${io.engine.clientsCount} rooms=${roomCount()} images=${mb(totalImageBytes())}MB security=${JSON.stringify(takeSecurityCounts())}`,
+  );
+}, STATUS_LOG_INTERVAL_MS);
 
 // Delete a room's uploaded images whenever the room is destroyed, whether by
 // the lazy purge in getRoom() or the sweep below.
@@ -100,6 +115,9 @@ onMessageRemoved(releaseMessageImages);
 // (and their images) would never be deleted because nothing calls getRoom()
 // for a room nobody references.
 setInterval(purgeExpiredRooms, 30_000);
+
+setInterval(() => evictBacklogged(io), BACKLOG_SWEEP_INTERVAL_MS);
+setupRoomLifetime(io);
 
 void clearStaleImages().then(() => {
   httpServer.listen(PORT, () => {

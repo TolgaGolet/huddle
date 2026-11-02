@@ -15,10 +15,11 @@ function respondWith(status: number, body: unknown) {
 const png = () => new File([new Uint8Array(4)], "a.png", { type: "image/png" });
 
 describe("isImageFile", () => {
-  it("accepts allowed extensions, including HEIC with no reported type", () => {
+  it("accepts allowed extensions, and no longer HEIC", () => {
     expect(isImageFile(png())).toBe(true);
-    expect(isImageFile(new File([], "a.HEIC", { type: "" }))).toBe(true);
-    expect(isImageFile(new File([], "a.heic", { type: "application/octet-stream" }))).toBe(true);
+    expect(isImageFile(new File([], "a.jpg", { type: "" }))).toBe(true);
+    expect(isImageFile(new File([], "a.HEIC", { type: "" }))).toBe(false);
+    expect(isImageFile(new File([], "a.heif", { type: "image/heif" }))).toBe(false);
   });
 
   it("rejects other extensions and a mismatched type", () => {

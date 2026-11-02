@@ -72,6 +72,41 @@ export interface PollMessage {
 
 export type ChatEntry = ChatMessage | PollMessage;
 
+/** Who may do something in a room. */
+export type RoomPermission = "everyone" | "owners";
+
+export interface RoomPermissions {
+  pinPermission: RoomPermission;
+  screenSharePermission: RoomPermission;
+  /** Newcomers wait for an owner's approval. */
+  waitingRoom: boolean;
+}
+
+/** Sent to the whole room, so it never holds the password. */
+export interface RoomSettings extends RoomPermissions {
+  hasPassword: boolean;
+  /** userIds. */
+  ownerIds: string[];
+}
+
+export interface WaitingPerson {
+  /** socket.id. */
+  id: string;
+  name: string;
+  /** An owner removed this person, or someone on their network, earlier. */
+  wasRemoved: boolean;
+}
+
+export type RoomClosingReason = "inactive" | "lifetime";
+/** "empty": nobody was left to let in those still in the waiting room. */
+export type RoomClosedReason = RoomClosingReason | "empty";
+
+export interface RoomClosing {
+  reason: RoomClosingReason;
+  /** A duration, not a time, so that a client's wrong clock doesn't matter. */
+  remainingMs: number;
+}
+
 export function isPollMessage(entry: ChatEntry): entry is PollMessage {
   return "type" in entry && entry.type === "poll";
 }
@@ -91,7 +126,7 @@ export interface IceCandidate {
 }
 
 export interface ClientToServerEvents {
-  "join-room": (data: { roomId: string; name: string; password?: string; clientKey?: string; isMuted?: boolean }) => void;
+  "join-room": (data: { roomId: string; name: string; password?: string; clientKey?: string; isMuted?: boolean; ownerToken?: string }) => void;
   offer: (data: { to: string; offer: SessionDescription }) => void;
   answer: (data: { to: string; answer: SessionDescription }) => void;
   "ice-candidate": (data: { to: string; candidate: IceCandidate }) => void;
@@ -107,6 +142,14 @@ export interface ClientToServerEvents {
   "chat-pin": (data: { messageId: string }) => void;
   "poll-create": (data: { question: string; options: string[]; allowMultiple: boolean }) => void;
   "poll-vote": (data: { pollId: string; optionId: string }) => void;
+  /** This client's user is speaking. Media is peer-to-peer, so the server can't tell otherwise. */
+  "voice-activity": () => void;
+  "set-owner": (data: { userId: string; isOwner: boolean }) => void;
+  "kick-participant": (data: { userId: string }) => void;
+  "update-room-settings": (data: Partial<RoomPermissions>) => void;
+  /** An empty password makes the room open. */
+  "change-room-password": (data: { password: string }) => void;
+  "admit-waiting": (data: { id: string }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -120,6 +163,9 @@ export interface ServerToClientEvents {
     chatHistory: ChatEntry[];
     pinnedMessageId: string | null;
     screenSharer: string | null;
+    /** Set if the room is already within a closing warning. */
+    closing: RoomClosing | null;
+    settings: RoomSettings;
   }) => void;
   "participant-joined": (participant: Participant) => void;
   "participant-left": (data: { id: string; userId: string }) => void;
@@ -137,4 +183,17 @@ export interface ServerToClientEvents {
   "chat-pin-update": (data: { pinnedMessageId: string | null }) => void;
   "poll-create": (poll: PollMessage) => void;
   "poll-update": (poll: PollMessage) => void;
+  /** A closing warning, or null once activity has cancelled it. */
+  "room-closing": (closing: RoomClosing | null) => void;
+  "room-closed": (data: { reason: RoomClosedReason }) => void;
+  "room-settings": (settings: RoomSettings) => void;
+  /** An owner removed this client from the room. */
+  kicked: () => void;
+  /** This client is in the waiting room, until an owner accepts. */
+  "join-waiting": () => void;
+  /** Sent to owners only. */
+  "waiting-list": (people: WaitingPerson[]) => void;
+  /** To the owner who tried: the person couldn't come in because the room is full. */
+  "admit-refused": (data: { id: string }) => void;
+  "room-password-result": (data: { ok: boolean }) => void;
 }

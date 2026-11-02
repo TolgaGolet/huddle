@@ -31,8 +31,9 @@ The server reads these from `server/.env`:
 | Variable | Purpose |
 | --- | --- |
 | `PORT` | Port to listen on (default `3001`). |
-| `NODE_ENV` | Set to `production` in production. |
 | `GIPHY_API_KEY` | Enables the GIF picker. |
+| `GIPHY_HOURLY_LIMIT` | Giphy calls allowed per hour (default `90`, for a free beta key). Raise it for a production key. |
+| `PUBLIC_ORIGIN` | The site's own origin, such as `https://huddle.example`. Only needed if a proxy rewrites both `Host` and `X-Forwarded-Host`, which makes the server refuse real users. |
 
 The client reads `VITE_ICE_SERVERS` at build time; see below.
 

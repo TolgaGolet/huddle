@@ -1,13 +1,16 @@
+import { EventEmitter } from "node:events";
+import type { Response } from "express";
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request, type ClientRequest, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import express from "express";
 import { httpErrorHandler } from "./httpErrors.js";
-import { deleteRoomImages, IMAGE_READ_TIMEOUT_MS, imageRouter, releaseMessageImages, uploadsDir } from "./imageRouter.js";
-import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_INFLIGHT_IMAGE_BYTES, MAX_ROOM_IMAGE_BYTES, MAX_ROOM_INFLIGHT_READ_BYTES, MAX_TOTAL_IMAGE_BYTES } from "./limits.js";
+import { createImageRouter, deleteRoomImages, IMAGE_READ_TIMEOUT_MS, releaseMessageImages, uploadsDir } from "./imageRouter.js";
+import { holdImageMemory } from "./imageQuota.js";
+import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE, MAX_CLIENT_INFLIGHT_IMAGE_BYTES, MAX_INFLIGHT_IMAGE_BYTES, MAX_ROOM_IMAGE_BYTES, MAX_ROOM_INFLIGHT_READ_BYTES, MAX_TOTAL_IMAGE_BYTES } from "./limits.js";
 import { addParticipant, createRoom, emptyReactions, httpTokenFor, removeParticipant, type ChatMessage, type Room } from "./roomManager.js";
 
 // Before imageRouter loads, so its files go to a temp directory, not the real uploads.
@@ -25,6 +28,8 @@ const fsHooks = vi.hoisted(() => ({
   readFile: null as Promise<unknown> | null,
   writeFile: null as Promise<unknown> | null,
   writeReached: () => {},
+  /** What the mocked encoder returns, when not simply its input. */
+  encoded: null as Buffer | null,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -58,7 +63,7 @@ const openRequests: ClientRequest[] = [];
 
 beforeAll(async () => {
   const app = express();
-  app.use("/api", imageRouter);
+  app.use("/api", createImageRouter(1));
   app.use(httpErrorHandler);
   server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -112,6 +117,28 @@ function joinRoom(extraBytes = 0): void {
   room = createRoom();
   room.imageBytes = extraBytes;
   addParticipant(room, SOCKET_ID, "Ana");
+}
+
+// Router tests upload filler bytes; imageProcessing.test.ts covers the real thing.
+vi.mock("./imageProcessing.js", async (original) => ({
+  ...(await original<typeof import("./imageProcessing.js")>()),
+  processImage: (input: Buffer) => Promise.resolve(fsHooks.encoded ?? input),
+}));
+
+let nextClient = 1;
+/** Headers making a request count as a new client, each with its own in-flight share. */
+const newClient = () => ({ "X-Forwarded-For": `10.1.0.${nextClient++}` });
+
+/** A response object that holds image memory until told it closed. */
+function fakeResponse() {
+  return Object.assign(new EventEmitter(), { closed: false }) as unknown as Response;
+}
+
+/** Takes the whole shared image budget, leaving nothing for a request under test. */
+function fillImageMemory() {
+  const res = fakeResponse();
+  expect(holdImageMemory(res).take(MAX_INFLIGHT_IMAGE_BYTES)).toBe(true);
+  return { release: () => void res.emit("close") };
 }
 
 describe("POST /rooms/:id/images", () => {
@@ -197,21 +224,73 @@ describe("POST /rooms/:id/images", () => {
   });
 
   it("caps upload bytes held in memory across all rooms", async () => {
-    const declared = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE;
-    const fits = Math.floor(MAX_INFLIGHT_IMAGE_BYTES / declared);
-    for (let i = 0; i < fits; i++) {
-      joinRoom();
-      const { req, response } = openUpload(SOCKET_ID, { "Content-Length": declared });
-      response.catch(() => {});
-      req.write(multipartBody(16).subarray(0, 20));
-      await vi.waitFor(() => expect(room.imageBytes).toBe(declared));
-    }
-
+    const hold = fillImageMemory();
     joinRoom();
-    const { req, response } = openUpload(SOCKET_ID, { "Content-Length": declared });
+    const { req, response } = openUpload(SOCKET_ID, { "Content-Length": MAX_IMAGE_SIZE, ...newClient() });
     req.write(multipartBody(16).subarray(0, 20));
 
     expect((await response).status).toBe(503);
+    hold.release();
+  });
+
+  // Regression: declared bytes were reserved up front, so stalled requests blocked every room.
+  it("holds no shared memory for a declared size that hasn't arrived", async () => {
+    joinRoom();
+    const stalled = openUpload(SOCKET_ID, { "Content-Length": MAX_IMAGE_SIZE, ...newClient() });
+    stalled.response.catch(() => {});
+    stalled.req.write(multipartBody(16).subarray(0, 20));
+    await vi.waitFor(() => expect(room.imageBytes).toBe(MAX_IMAGE_SIZE));
+
+    const fake = fakeResponse();
+    expect(holdImageMemory(fake).take(MAX_INFLIGHT_IMAGE_BYTES - 1024)).toBe(true);
+    fake.emit("close");
+    stalled.req.destroy();
+  });
+
+  it("caps what one client can have in flight", async () => {
+    const declared = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE;
+    const client = newClient();
+    joinRoom();
+    const first = openUpload(SOCKET_ID, { "Content-Length": declared, ...client });
+    first.response.catch(() => {});
+    first.req.write(multipartBody(16).subarray(0, 20));
+    await vi.waitFor(() => expect(room.imageBytes).toBe(declared));
+
+    joinRoom();
+    const second = openUpload(SOCKET_ID, { "Content-Length": MAX_CLIENT_INFLIGHT_IMAGE_BYTES - declared + 1, ...client });
+    second.req.write(multipartBody(16).subarray(0, 20));
+
+    expect((await second.response).status).toBe(503);
+    first.req.destroy();
+  });
+
+  it("refuses an upload whose bytes no longer fit once they arrive", async () => {
+    joinRoom();
+    const { req, response } = openUpload(SOCKET_ID, { "Content-Length": 4096, ...newClient() });
+    req.flushHeaders();
+    await vi.waitFor(() => expect(room.imageBytes).toBe(4096));
+    const hold = fillImageMemory();
+
+    req.write(Buffer.alloc(1024));
+
+    expect((await response).status).toBe(503);
+    hold.release();
+  });
+
+  it("drops an upload that stops sending, and gives back what it reserved", async () => {
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    joinRoom();
+    const { req, response } = openUpload(SOCKET_ID, { "Content-Length": 4096, ...newClient() });
+    response.catch(() => {});
+    req.on("error", () => {});
+    req.flushHeaders();
+    await vi.waitFor(() => expect(room.imageBytes).toBe(4096));
+    const stall = timers.mock.calls.find(([, ms]) => ms === 15_000)![0] as () => void;
+    timers.mockRestore();
+
+    stall();
+
+    await vi.waitFor(() => expect(room.imageBytes).toBe(0));
   });
 
   it("stores a member's image and counts it towards the quota", async () => {
@@ -251,9 +330,11 @@ describe("POST /rooms/:id/images", () => {
     await vi.waitFor(() => expect(room.imageBytes).toBe(0));
   });
 
+  const roomFiles = () => readdir(path.join(uploadsDir, room.id)).catch(() => []);
+
   // Regression: the close refunded bytes the store was still about to count, so
   // disconnecting right after sending bypassed the quota.
-  it("still counts an image whose client disconnects while it is being stored", async () => {
+  it("keeps counting an image until a client that disconnected during its store is cleaned up", async () => {
     joinRoom();
     let releaseWrite!: () => void;
     fsHooks.writeFile = new Promise<void>((resolve) => (releaseWrite = resolve));
@@ -266,15 +347,85 @@ describe("POST /rooms/:id/images", () => {
 
       req.destroy();
       await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(room.imageBytes).toBeGreaterThanOrEqual(100);
       releaseWrite();
-      await new Promise((resolve) => setTimeout(resolve, 50));
 
-      expect(room.imageBytes).toBe(100);
-      expect(room.imageSizes.size).toBe(1);
+      // Nobody got the URL, so nothing could ever reference or free the file.
+      await vi.waitFor(() => expect(room.imageBytes).toBe(0));
+      expect(room.imageSizes.size).toBe(0);
+      expect(await roomFiles()).toEqual([]);
     } finally {
       fsHooks.writeFile = null;
       fsHooks.writeReached = () => {};
     }
+  });
+
+  // Regression: images already written stayed on disk and counted, with no URL for them.
+  it("stores nothing if a later image in the batch can't be written", async () => {
+    joinRoom();
+    const part = (name: string) => `--${BOUNDARY}\r\nContent-Disposition: form-data; name="images"; filename="${name}"\r\nContent-Type: image/png\r\n\r\nimage-bytes\r\n`;
+    let writes = 0;
+    fsHooks.writeReached = () => {
+      if (++writes === 2) fsHooks.writeFile = Promise.reject(new Error("disk full"));
+    };
+    try {
+      const { req, response } = openUpload(SOCKET_ID);
+      req.end(`${part("a.png")}${part("b.png")}--${BOUNDARY}--\r\n`);
+
+      expect((await response).status).toBe(500);
+      await vi.waitFor(() => expect(room.imageBytes).toBe(0));
+      expect(room.imageSizes.size).toBe(0);
+      expect(await roomFiles()).toEqual([]);
+    } finally {
+      fsHooks.writeFile = null;
+      fsHooks.writeReached = () => {};
+    }
+  });
+
+  describe("when encoding makes an image larger than its upload", () => {
+    const body = multipartBody(100);
+    const upload = () => {
+      const { req, response } = openUpload(SOCKET_ID, newClient());
+      req.end(body);
+      return response;
+    };
+    afterEach(() => {
+      fsHooks.encoded = null;
+    });
+
+    it("counts the size actually stored", async () => {
+      joinRoom();
+      fsHooks.encoded = Buffer.alloc(body.length + 500, 1);
+
+      expect((await upload()).status).toBe(200);
+      await vi.waitFor(() => expect(room.imageBytes).toBe(fsHooks.encoded!.length));
+    });
+
+    // Regression: only the upload's size was checked, so the quota could be passed.
+    it("refuses what no longer fits the room's quota, storing nothing", async () => {
+      const others = MAX_ROOM_IMAGE_BYTES - body.length - 10;
+      joinRoom(others);
+      fsHooks.encoded = Buffer.alloc(body.length + 11, 1);
+
+      expect((await upload()).status).toBe(413);
+      await vi.waitFor(() => expect(room.imageBytes).toBe(others));
+      expect(await roomFiles()).toEqual([]);
+    });
+
+    // Regression: encoded images were held in memory that no budget counted.
+    it("refuses what no longer fits the memory budget, storing nothing", async () => {
+      joinRoom();
+      const res = fakeResponse();
+      expect(holdImageMemory(res).take(MAX_INFLIGHT_IMAGE_BYTES - body.length - 10)).toBe(true);
+      fsHooks.encoded = Buffer.alloc(body.length + 1024, 1);
+      try {
+        expect((await upload()).status).toBe(503);
+        await vi.waitFor(() => expect(room.imageBytes).toBe(0));
+        expect(await roomFiles()).toEqual([]);
+      } finally {
+        res.emit("close");
+      }
+    });
   });
 
   it("stores nothing if the sender leaves the room during the upload", async () => {
@@ -374,7 +525,7 @@ describe("GET /rooms/:id/images/:filename", () => {
 
     const res = await get(filename, await sessionCookie());
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("content-type")).toBe("image/webp");
     expect(res.headers.get("cache-control")).toBe("private, no-cache");
     expect(Buffer.from(await res.arrayBuffer()).equals(image)).toBe(true);
   });
@@ -489,49 +640,27 @@ describe("GET /rooms/:id/images/:filename", () => {
     const cookie = await sessionCookie();
     const imageRoom = room;
 
-    // Two unfinished uploads, from other rooms, reserve the whole budget.
-    const declared = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE;
-    const holds = [];
-    for (const size of [declared, MAX_INFLIGHT_IMAGE_BYTES - declared]) {
-      joinRoom();
-      const hold = openUpload(SOCKET_ID, { "Content-Length": size });
-      hold.response.catch(() => {});
-      hold.req.write(multipartBody(16).subarray(0, 20));
-      await vi.waitFor(() => expect(room.imageBytes).toBe(size));
-      holds.push(hold);
-    }
+    // Other requests hold the whole budget.
+    const hold = fillImageMemory();
     room = imageRoom;
-    addParticipant(room, SOCKET_ID, "Ana");
 
     const busy = await get(filename, cookie);
     expect(busy.status).toBe(503);
     expect(busy.headers.get("retry-after")).toBe("1");
 
-    for (const hold of holds) hold.req.destroy();
+    hold.release();
     await vi.waitFor(async () => expect((await get(filename, cookie)).status).toBe(200));
   });
 
-  /** Holds the whole image budget with unfinished uploads from other rooms. */
+  /** Holds the whole image budget, as other requests would. */
   async function holdWholeBudget() {
-    const imageRoom = room;
-    const declared = MAX_IMAGE_SIZE * MAX_IMAGES_PER_MESSAGE;
-    const holds = [];
-    for (const size of [declared, MAX_INFLIGHT_IMAGE_BYTES - declared]) {
-      joinRoom();
-      const hold = openUpload(SOCKET_ID, { "Content-Length": size });
-      hold.response.catch(() => {});
-      hold.req.write(multipartBody(16).subarray(0, 20));
-      await vi.waitFor(() => expect(room.imageBytes).toBe(size));
-      holds.push(hold);
-    }
-    room = imageRoom;
-    addParticipant(room, SOCKET_ID, "Ana");
-    return holds;
+    const hold = fillImageMemory();
+    return [{ req: { destroy: hold.release } }];
   }
 
   /** A read that may never be answered, for the caller to abandon. */
   function openRead(filename: string, cookie: string, onClose?: () => void): ClientRequest {
-    const req = request({ port, path: `/api/rooms/${room.id}/images/${filename}`, headers: { Cookie: cookie } }, (res) => res.resume());
+    const req = request({ port, path: `/api/rooms/${room.id}/images/${filename}`, headers: { Cookie: cookie, ...newClient() } }, (res) => res.resume());
     req.on("error", () => {});
     if (onClose) req.on("close", onClose);
     req.end();

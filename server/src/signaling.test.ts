@@ -3,10 +3,10 @@ import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Server } from "socket.io";
 import { io as connect, type Socket as ClientSocket } from "socket.io-client";
-import { setupSignaling } from "./signaling.js";
+import { JOIN_DEADLINE_MS, setupSignaling } from "./signaling.js";
 import { IP_LIMITS } from "./ipRateLimit.js";
 import { JOIN_ERROR } from "./joinErrors.js";
-import { MAX_PARTICIPANTS } from "./limits.js";
+import { MAX_PARTICIPANTS, MAX_ROOM_LIFETIME_MS } from "./limits.js";
 import { RATE_LIMITS } from "./rateLimit.js";
 import { addParticipant, createRoom, getRoom, socketRoomMap } from "./roomManager.js";
 
@@ -64,10 +64,93 @@ describe("password guessing", () => {
     expect(await attempt(other.id, "wrong")).toBe("Incorrect password");
   });
 
+  // Regression: anyone could lock members out of a rejoin by guessing wrong.
+  it("lets a member rejoin while the password guesses are used up", async () => {
+    const room = createRoom("secret");
+    const clientKey = "member-key-0123456789";
+    const member = connect(url, { transports: ["websocket"] });
+    const rejoined = connect(url, { transports: ["websocket"] });
+    try {
+      await joined(member, { roomId: room.id, name: "Ana", password: "secret", clientKey });
+      for (let i = 0; i < IP_LIMITS.passwordGuesses.burst; i++) await attempt(room.id, "wrong");
+      expect(await attempt(room.id, "secret")).toMatch(/too many attempts/i);
+
+      await expect(joined(rejoined, { roomId: room.id, name: "Ana", clientKey })).resolves.toBeDefined();
+    } finally {
+      member.disconnect();
+      rejoined.disconnect();
+    }
+  });
+
   it("doesn't count correct passwords", async () => {
     const room = createRoom("secret");
     for (let i = 0; i < IP_LIMITS.passwordGuesses.burst + 1; i++) {
       expect(await attempt(room.id, "secret")).toBe("joined");
+    }
+  });
+});
+
+// Regression: many addresses meant unlimited guesses at one room's password.
+describe("password guessing from many addresses", () => {
+  it("limits a room's wrong passwords across all IPs", async () => {
+    const server = createServer();
+    const proxied = new Server(server, { transports: ["websocket"] });
+    setupSignaling(proxied, 1);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const room = createRoom("long-secret");
+    const attempt = async (ip: string, password: string) => {
+      const client = connect(`http://localhost:${(server.address() as AddressInfo).port}`, { transports: ["websocket"], extraHeaders: { "x-forwarded-for": ip } });
+      try {
+        await joined(client, { roomId: room.id, name: "Ana", password });
+        return "joined";
+      } catch (err) {
+        return (err as Error).message;
+      } finally {
+        client.disconnect();
+      }
+    };
+    try {
+      for (let i = 0; i < IP_LIMITS.roomPasswordGuesses.burst; i++) {
+        expect(await attempt(`10.0.0.${i}`, "wrong")).toBe("Incorrect password");
+      }
+      expect(await attempt("10.0.1.1", "long-secret")).toMatch(/too many attempts/i);
+    } finally {
+      await proxied.close();
+    }
+  });
+});
+
+describe("join deadline", () => {
+  /** A client's connection, with the deadline callback the server set up for it. */
+  async function connectWithDeadline() {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const client = connect(url, { transports: ["websocket"], reconnection: false });
+    await new Promise<void>((resolve) => client.once("connect", () => resolve()));
+    await vi.waitFor(() => expect(spy.mock.calls.some(([, ms]) => ms === JOIN_DEADLINE_MS)).toBe(true));
+    const expire = spy.mock.calls.find(([, ms]) => ms === JOIN_DEADLINE_MS)![0] as () => void;
+    spy.mockRestore();
+    return { client, expire };
+  }
+
+  // Regression: a socket could stay connected for ever without joining, costing memory.
+  it("closes a socket that never joined, so that a real client would reconnect", async () => {
+    const { client, expire } = await connectWithDeadline();
+    const closed = new Promise<string>((resolve) => client.once("disconnect", resolve));
+
+    expire();
+
+    expect(await closed).toBe("transport close");
+  });
+
+  it("leaves a socket alone once it has joined", async () => {
+    const { client, expire } = await connectWithDeadline();
+    try {
+      await joined(client, { roomId: createRoom().id, name: "Ana" });
+      expire();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(client.connected).toBe(true);
+    } finally {
+      client.disconnect();
     }
   });
 });
@@ -356,6 +439,37 @@ describe("join-room error codes", () => {
 
       expect(codes.filter((c) => c === JOIN_ERROR.INCORRECT_PASSWORD)).toHaveLength(RATE_LIMITS.join.burst);
       expect(codes.filter((c) => c === JOIN_ERROR.RATE_LIMITED)).toHaveLength(5);
+    } finally {
+      client.disconnect();
+    }
+  });
+});
+
+describe("room activity and closing", () => {
+  it("counts speech reported by a client", async () => {
+    const room = createRoom();
+    const client = connect(url, { transports: ["websocket"] });
+    try {
+      await joined(client, { roomId: room.id, name: "Ana" });
+      room.lastActivityAt = 0;
+
+      client.emit("voice-activity");
+
+      await vi.waitFor(() => expect(room.lastActivityAt).toBeGreaterThan(0));
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  it("tells someone joining during a closing warning", async () => {
+    const room = createRoom();
+    room.createdAt = Date.now() - MAX_ROOM_LIFETIME_MS + 60_000;
+    const client = connect(url, { transports: ["websocket"] });
+    try {
+      const { closing } = await joined<{ closing: { reason: string; remainingMs: number } }>(client, { roomId: room.id, name: "Ana" });
+
+      expect(closing.reason).toBe("lifetime");
+      expect(closing.remainingMs).toBeLessThanOrEqual(60_000);
     } finally {
       client.disconnect();
     }

@@ -10,6 +10,10 @@ export function isImageFile(file: File): boolean {
   return isAllowedImage(file.name.split(".").pop()?.toLowerCase() ?? "", file.type);
 }
 
+export function isHeicFile(file: File): boolean {
+  return /\.(heic|heif)$/i.test(file.name);
+}
+
 /** Sets the cookie that authorizes this room's image requests. Call after joining. */
 export async function openImageSession(roomId: string, httpToken: string): Promise<void> {
   const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/image-session`, {
@@ -50,18 +54,9 @@ export function keepImageSessionOpen(roomId: string, httpToken: string, onSettle
 }
 
 async function compressImage(file: File): Promise<Blob> {
-  const extension = file.name.split(".").pop()?.toLowerCase();
-  if (extension === "heic" || extension === "heif") {
-    try {
-      // Lazy-load heic2any (~1.3 MB) only when a HEIC file is actually encountered.
-      const { default: heic2any } = await import("heic2any");
-      const converted = await heic2any({ blob: file, toType: "image/webp", quality: 0.85 });
-      return Array.isArray(converted) ? converted[0] : converted;
-    } catch {
-      return file;
-    }
-  }
-  if (file.size <= 4 * 1024 * 1024 || file.type === "image/gif") return file;
+  // The server can't read BMP, so that always goes through the canvas here.
+  const isBmp = file.name.toLowerCase().endsWith(".bmp");
+  if (!isBmp && (file.size <= 4 * 1024 * 1024 || file.type === "image/gif")) return file;
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, 2560 / Math.max(bitmap.width, bitmap.height));
@@ -74,8 +69,7 @@ async function compressImage(file: File): Promise<Blob> {
       canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not compress image"))), "image/webp", 0.92);
     });
   } catch {
-    // Browsers commonly cannot decode HEIC/HEIF. Upload the original instead
-    // of aborting the complete batch; the server can store it safely.
+    // Let the server decide: it refuses what it can't read, with a clear message.
     return file;
   }
 }

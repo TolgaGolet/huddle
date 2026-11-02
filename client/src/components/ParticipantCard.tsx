@@ -1,4 +1,4 @@
-import { Mic, MicOff, EllipsisVertical } from "lucide-react";
+import { Crown, Mic, MicOff, EllipsisVertical } from "lucide-react";
 import type { Participant } from "../types";
 import { avatarBgColor } from "../lib/avatarColor";
 
@@ -6,6 +6,7 @@ interface Props {
   participant: Participant;
   isSpeaking: boolean;
   isLocal?: boolean;
+  isOwner?: boolean;
   /** True while this participant's peer connection is still being established. */
   isConnecting?: boolean;
   /** Opens the options menu, from a right-click or the button. Without it there is no menu. */
@@ -21,7 +22,7 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-export default function ParticipantCard({ participant, isSpeaking, isLocal, isConnecting, onOpenMenu }: Props) {
+export default function ParticipantCard({ participant, isSpeaking, isLocal, isOwner, isConnecting, onOpenMenu }: Props) {
   return (
     <div
       onContextMenu={onOpenMenu}
@@ -43,6 +44,7 @@ export default function ParticipantCard({ participant, isSpeaking, isLocal, isCo
           </span>
         )}
       </span>
+      {isOwner && <Crown size={14} role="img" aria-label="Owner" className="text-amber-400 flex-shrink-0" />}
       {participant.isMuted ? (
         <MicOff size={16} role="img" aria-label="Muted" className="text-red-400 flex-shrink-0" />
       ) : (

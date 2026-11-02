@@ -9,10 +9,10 @@ vi.mock("../lib/giphyClient", () => ({ fetchSearch: vi.fn(), fetchTrending: vi.f
 
 const gif = (id: string): GifItem => ({ id, title: `Gif ${id}`, preview: `https://p/${id}`, url: `https://u/${id}` });
 
-function setup() {
+function setup(httpToken: string | null = "token") {
   const onSelect = vi.fn();
   const onClose = vi.fn();
-  render(<GifPicker onSelect={onSelect} onClose={onClose} />);
+  render(<GifPicker httpToken={httpToken} onSelect={onSelect} onClose={onClose} />);
   return { onSelect, onClose };
 }
 
@@ -91,7 +91,7 @@ describe("GifPicker", () => {
     vi.mocked(fetchSearch).mockReturnValueOnce(new Promise((resolve) => (finishOld = resolve)));
     search("old");
     await flush(400);
-    const oldSignal = vi.mocked(fetchSearch).mock.calls[0][1];
+    const oldSignal = vi.mocked(fetchSearch).mock.calls[0][2];
 
     search("new");
     expect(oldSignal.aborted).toBe(true);
@@ -115,6 +115,15 @@ describe("GifPicker", () => {
     await act(async () => failOld(new DOMException("aborted", "AbortError")));
 
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("makes no request while it has no token, and says so", async () => {
+    setup(null);
+
+    await flush();
+
+    expect(fetchTrending).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("Not connected");
   });
 
   it("shows the empty state", async () => {

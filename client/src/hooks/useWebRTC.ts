@@ -1,3 +1,4 @@
+import { bufferCandidate } from "../lib/candidateBuffer";
 import { useEffect, useRef, useCallback, useState } from "react";
 import type { Socket } from "socket.io-client";
 import type { AppSocket } from "../types";
@@ -201,7 +202,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       const session = sessionsRef.current.get(from);
       if (!session) {
         const early = earlyCandidatesRef.current.get(from) ?? [];
-        early.push(candidate);
+        bufferCandidate(early, candidate);
         earlyCandidatesRef.current.set(from, early);
         return;
       }

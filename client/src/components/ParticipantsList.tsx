@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import type { Participant } from "../types";
 import ParticipantCard from "./ParticipantCard";
+import KickDialog from "./KickDialog";
 import ParticipantContextMenu from "./ParticipantContextMenu";
 
 interface Props {
@@ -13,6 +14,12 @@ interface Props {
   maxParticipants?: number;
   /** Participant ids whose peer connection is still being established. */
   connecting?: Set<string>;
+  /** userIds. */
+  ownerIds?: ReadonlySet<string>;
+  /** This user can manage others, through these. */
+  canModerate?: boolean;
+  onSetOwner?: (userId: string, isOwner: boolean) => void;
+  onKick?: (userId: string) => void;
 }
 
 interface ContextMenuState {
@@ -30,8 +37,13 @@ export default function ParticipantsList({
   onSetPeerVolume,
   maxParticipants,
   connecting,
+  ownerIds,
+  canModerate,
+  onSetOwner,
+  onKick,
 }: Props) {
   const [ctx, setCtx] = useState<ContextMenuState | null>(null);
+  const [kicking, setKicking] = useState<{ userId: string; name: string } | null>(null);
 
   const openMenu = useCallback((e: React.MouseEvent, p: Participant) => {
     e.preventDefault();
@@ -59,6 +71,7 @@ export default function ParticipantsList({
             participant={p}
             isSpeaking={speaking.has(p.id)}
             isLocal={isLocal}
+            isOwner={ownerIds?.has(p.userId)}
             isConnecting={connecting?.has(p.id)}
             onOpenMenu={onOpenMenu}
           />
@@ -72,6 +85,27 @@ export default function ParticipantsList({
           volume={peerVolumes.get(ctx.userId) ?? 1}
           onVolumeChange={(v) => onSetPeerVolume(ctx.userId, v)}
           onClose={() => setCtx(null)}
+          moderation={canModerate ? {
+            targetIsOwner: !!ownerIds?.has(ctx.userId),
+            onToggleOwner: () => {
+              onSetOwner?.(ctx.userId, !ownerIds?.has(ctx.userId));
+              setCtx(null);
+            },
+            onKick: () => {
+              setKicking({ userId: ctx.userId, name: ctx.name });
+              setCtx(null);
+            },
+          } : undefined}
+        />
+      )}
+      {kicking && (
+        <KickDialog
+          name={kicking.name}
+          onCancel={() => setKicking(null)}
+          onKick={() => {
+            onKick?.(kicking.userId);
+            setKicking(null);
+          }}
         />
       )}
     </div>

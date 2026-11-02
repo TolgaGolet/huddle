@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Users, Plus, Lock } from "lucide-react";
-import { MAX_NAME_LENGTH, MAX_PASSWORD_LENGTH } from "../types";
+import { isValidNewPassword, MAX_NAME_LENGTH, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, type RoomPermission } from "../types";
+import { PermissionSelect, WaitingRoomCheckbox } from "../components/RoomSettingsPanel";
+import { setRoomEntry } from "../lib/roomEntry";
 import { REQUEST_TIMEOUT_MS } from "../lib/requestTimeouts";
 import { lookupRoom } from "../lib/roomLookup";
 
@@ -11,10 +13,10 @@ const INPUT_BASE = "px-4 py-3 rounded-lg bg-gray-800 border text-white placehold
 const INPUT = `${INPUT_BASE} border-gray-700 focus:border-indigo-500`;
 
 interface RedirectState {
+  notice?: string;
   error?: string;
   roomId?: string;
   name?: string;
-  password?: string;
 }
 
 function NameInput({ value, onChange }: { value: string; onChange: (name: string) => void }) {
@@ -63,13 +65,17 @@ export default function LandingPage() {
   const [mode, setMode] = useState<Mode>(rs.error || rs.roomId ? "join" : "idle");
   const [name, setName] = useState(rs.name || "");
   const [roomId, setRoomId] = useState(rs.roomId || "");
-  const [password, setPassword] = useState(rs.password || "");
+  const [password, setPassword] = useState("");
+  const [pinPermission, setPinPermission] = useState<RoomPermission>("everyone");
+  const [screenSharePermission, setScreenSharePermission] = useState<RoomPermission>("everyone");
+  const [waitingRoom, setWaitingRoom] = useState(false);
   const [error, setError] = useState(rs.error || "");
   const [loading, setLoading] = useState(false);
-  const [roomNeedsPassword, setRoomNeedsPassword] = useState(!!rs.password);
+  const [roomNeedsPassword, setRoomNeedsPassword] = useState(false);
 
-  function goToRoom(id: string, pw?: string) {
-    navigate(`/room/${id}`, { state: { name: name.trim(), password: pw } });
+  function goToRoom(id: string, pw?: string, ownerToken?: string) {
+    setRoomEntry({ roomId: id, password: pw, ownerToken });
+    navigate(`/room/${id}`, { state: { name: name.trim() } });
   }
 
   async function handleJoin(e: React.FormEvent) {
@@ -112,13 +118,23 @@ export default function LandingPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    if (!isValidNewPassword(password)) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters, or leave it empty for an open room.`);
+      return;
+    }
     setError("");
     setLoading(true);
     try {
       const res = await fetch("/api/rooms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: password.trim() || undefined }),
+        body: JSON.stringify({
+          password: password.trim() || undefined,
+          // Left out at their defaults.
+          pinPermission: pinPermission === "owners" ? pinPermission : undefined,
+          screenSharePermission: screenSharePermission === "owners" ? screenSharePermission : undefined,
+          waitingRoom: waitingRoom || undefined,
+        }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       const data = await res.json();
@@ -126,7 +142,7 @@ export default function LandingPage() {
         setError(data.error || "Failed to create room. Please try again.");
         return;
       }
-      goToRoom(data.roomId, password.trim() || undefined);
+      goToRoom(data.roomId, password.trim() || undefined, data.ownerToken);
     } catch {
       setError("Failed to create room. Please try again.");
     } finally {
@@ -150,6 +166,12 @@ export default function LandingPage() {
         <p className="text-gray-400 text-center mb-10 text-sm">
           Lightweight voice &amp; chat rooms
         </p>
+
+        {rs.notice && (
+          <p role="alert" className="mb-6 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-sm text-center">
+            {rs.notice}
+          </p>
+        )}
 
         {mode === "idle" && (
           <div className="flex flex-col gap-4">
@@ -224,6 +246,9 @@ export default function LandingPage() {
                 className={`flex-1 ${INPUT}`}
               />
             </div>
+            <PermissionSelect id="create-pin-permission" label="Who can pin messages" value={pinPermission} onChange={setPinPermission} />
+            <PermissionSelect id="create-screen-permission" label="Who can share their screen" value={screenSharePermission} onChange={setScreenSharePermission} />
+            <WaitingRoomCheckbox id="create-waiting-room" checked={waitingRoom} onChange={setWaitingRoom} />
             <FormActions
               error={error}
               onBack={resetMode}
@@ -232,6 +257,10 @@ export default function LandingPage() {
             />
           </form>
         )}
+
+        <p className="mt-8 text-center text-xs">
+          <Link to="/privacy" className="text-gray-400 hover:text-gray-200 underline transition-colors">Privacy</Link>
+        </p>
       </div>
     </div>
   );

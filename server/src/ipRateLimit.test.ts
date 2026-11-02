@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import type { IncomingMessage } from "node:http";
 import type { NextFunction, Request, Response } from "express";
-import { clientIp, connectionRateLimit, createIpLimiter, httpRateLimit, proxyHopsFor } from "./ipRateLimit.js";
+import { EventEmitter } from "node:events";
+import { clientIp, connectionRateLimit, createIpLimiter, httpRateLimit, openConnectionLimit, proxyHopsFor } from "./ipRateLimit.js";
 
 function clock() {
   let t = 1000;
@@ -34,6 +35,30 @@ describe("clientIp", () => {
     expect(clientIp("10.0.0.1", undefined, 1)).toBe("10.0.0.1");
     expect(clientIp("10.0.0.1", "1.2.3.4", 2)).toBe("10.0.0.1");
     expect(clientIp(undefined, undefined, 0)).toBe("unknown");
+  });
+
+  // Regression: each address in a /64 had its own limits, so one customer had no limits at all.
+  it("counts a whole IPv6 /64 as one client", () => {
+    const key = clientIp("2001:db8:1:1::1", undefined, 0);
+    expect(key).toBe("2001:db8:1:1::/64");
+    expect(clientIp("2001:0db8:0001:0001:aaaa:bbbb:cccc:dddd", undefined, 0)).toBe(key);
+    expect(clientIp("proxy", "2001:db8:1:1::ffff", 1)).toBe(key);
+    expect(clientIp("2001:db8:1:2::1", undefined, 0)).not.toBe(key);
+  });
+
+  it("handles the compressed and zoned forms of IPv6", () => {
+    expect(clientIp("::1", undefined, 0)).toBe("0:0:0:0::/64");
+    expect(clientIp("fe80::1%eth0", undefined, 0)).toBe("fe80:0:0:0::/64");
+  });
+
+  it("treats an IPv4-mapped address as the IPv4 client, in either notation", () => {
+    expect(clientIp("::ffff:1.2.3.4", undefined, 0)).toBe("1.2.3.4");
+    expect(clientIp("::ffff:102:304", undefined, 0)).toBe("1.2.3.4");
+  });
+
+  it("leaves anything that isn't an IPv6 address alone", () => {
+    expect(clientIp("1.2.3.4", undefined, 0)).toBe("1.2.3.4");
+    expect(clientIp("proxy", "not-an-ip", 1)).toBe("not-an-ip");
   });
 });
 
@@ -107,15 +132,55 @@ describe("connectionRateLimit", () => {
   it("rejects connections over the limit, and allows them again later", () => {
     const { now, advance } = clock();
     const allow = connectionRateLimit({ burst: 1, perSecond: 1 }, 0, now);
-    const callback = vi.fn();
 
-    allow(request("a"), callback);
-    expect(callback).toHaveBeenLastCalledWith(null, true);
-    allow(request("a"), callback);
-    expect(callback).toHaveBeenLastCalledWith(expect.any(String), false);
+    expect(allow(request("a"))).toBeNull();
+    expect(allow(request("a"))).toEqual(expect.any(String));
 
     advance(1000);
-    allow(request("a"), callback);
-    expect(callback).toHaveBeenLastCalledWith(null, true);
+    expect(allow(request("a"))).toBeNull();
+  });
+});
+
+describe("openConnectionLimit", () => {
+  function connection(ip: string) {
+    const socket = Object.assign(new EventEmitter(), { remoteAddress: ip, destroyed: false });
+    return { req: { socket, headers: {} } as unknown as IncomingMessage, socket };
+  }
+
+  it("caps open connections per IP, and frees a place when one closes", () => {
+    const allow = openConnectionLimit(1, 10, 0);
+    const first = connection("a");
+
+    expect(allow(first.req)).toBeNull();
+    expect(allow(connection("a").req)).toEqual(expect.any(String));
+    expect(allow(connection("b").req)).toBeNull();
+
+    first.socket.emit("close");
+    expect(allow(connection("a").req)).toBeNull();
+  });
+
+  it("caps open connections in total", () => {
+    const allow = openConnectionLimit(5, 1, 0);
+
+    allow(connection("a").req);
+
+    expect(allow(connection("b").req)).toEqual(expect.any(String));
+  });
+
+  it("counts an IPv6 /64 as one client", () => {
+    const allow = openConnectionLimit(1, 10, 0);
+
+    allow(connection("2001:db8::1").req);
+
+    expect(allow(connection("2001:db8::2").req)).toEqual(expect.any(String));
+  });
+
+  it("refuses a connection that already closed, whose place would never be freed", () => {
+    const allow = openConnectionLimit(1, 10, 0);
+    const closed = connection("a");
+    closed.socket.destroyed = true;
+
+    expect(allow(closed.req)).toEqual(expect.any(String));
+    expect(allow(connection("a").req)).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import { bufferCandidate } from "./candidateBuffer";
 import { describeStats, DirectionalAudioWatchdog, readAudioStats, type Direction } from "./audioWatchdog";
 import { errorName, huddleLog, huddleWarn } from "./huddleLog";
 import { isPoliteFor, resolveInboundOffer } from "./negotiation";
@@ -7,7 +8,6 @@ const MAX_RESTARTS = 3;
 const MAX_AUDIO_RECOVERIES = 2;
 const IGNORED_OFFER_RECOVERY_MS = 5000;
 const DISCONNECT_ESCALATION_MS = 8000;
-const MAX_RETRY_CANDIDATES = 100;
 
 // Structured stats log, development only.
 //
@@ -50,11 +50,6 @@ export class PeerSession {
   // restart while the old remote description was still set). They are retried
   // once the peer returns to a stable signaling state.
   private retryCandidates: RTCIceCandidateInit[] = [];
-  private queueRetryCandidate(candidate: RTCIceCandidateInit): void {
-    this.retryCandidates.push(candidate);
-    // Repeated ICE restarts must not grow this forever; the oldest are the stalest.
-    if (this.retryCandidates.length > MAX_RETRY_CANDIDATES) this.retryCandidates.shift();
-  }
   // Serializes SDP operations (setLocalDescription/setRemoteDescription and
   // answer creation) so concurrent offers cannot interleave.
   private sdpLock: Promise<unknown> = Promise.resolve();
@@ -248,7 +243,7 @@ export class PeerSession {
       } catch {
         // Stale generation (e.g. ICE restart raced the flush): keep it for
         // the next stable transition instead of dropping it forever.
-        this.queueRetryCandidate(c);
+        bufferCandidate(this.retryCandidates, c);
       }
     }
   }
@@ -339,7 +334,7 @@ export class PeerSession {
 
   async addCandidate(candidate: RTCIceCandidateInit): Promise<void> {
     if (!this.pc.remoteDescription) {
-      this.pendingCandidates.push(candidate);
+      bufferCandidate(this.pendingCandidates, candidate);
       return;
     }
     try {
@@ -348,7 +343,7 @@ export class PeerSession {
       // The candidate belongs to a newer ICE generation than the currently
       // applied remote description (e.g. mid-restart). Buffer it and retry
       // once signaling is stable — never drop it permanently.
-      this.queueRetryCandidate(candidate);
+      bufferCandidate(this.retryCandidates, candidate);
     }
   }
 

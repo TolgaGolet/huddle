@@ -8,6 +8,7 @@ import {
   stepNoiseFloor,
   updateAdaptiveNoiseFloor,
 } from "../lib/audioLevels";
+import { createWorkerInterval } from "../lib/workerTimer";
 
 /**
  * Visual voice-activity detection.
@@ -55,7 +56,9 @@ export function useVoiceActivity(
   const bufferRef = useRef<Uint8Array | null>(null);
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    // A worker clock: people often talk with the tab in the background, and a
+    // room counts that speech as activity (see useVoiceActivityReport).
+    return createWorkerInterval(() => {
       const current = analysersRef.current;
       const states = statesRef.current;
       const now = performance.now();
@@ -127,8 +130,6 @@ export function useVoiceActivity(
         return prev;
       });
     }, POLL_INTERVAL);
-
-    return () => clearInterval(interval);
   }, []);
 
   return speaking;

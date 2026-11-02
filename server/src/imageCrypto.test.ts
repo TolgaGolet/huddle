@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decryptFile, deriveRoomKey, encryptFile, roomImageKey } from "./imageCrypto.js";
+import { decryptFile, deriveRoomKey, encryptFile, roomImageKey, setRoomPassword } from "./imageCrypto.js";
 import { createRoom } from "./roomManager.js";
 
 describe("image encryption", () => {
@@ -37,5 +37,50 @@ describe("roomImageKey", () => {
     const first = roomImageKey(room);
     expect(roomImageKey(room)).toBe(first);
     expect(await first).toEqual(await deriveRoomKey("pw", room.encryptionSalt!));
+  });
+});
+
+describe("setRoomPassword", () => {
+  const image = Buffer.from("image bytes");
+
+  it("keeps images readable when a password changes", async () => {
+    const room = createRoom("first-password");
+    const stored = encryptFile(image, (await roomImageKey(room))!);
+
+    await setRoomPassword(room, "second-password");
+
+    expect(room.password).toBe("second-password");
+    expect(decryptFile(stored, (await roomImageKey(room))!)).toEqual(image);
+  });
+
+  it("keeps images readable when a password that was never used for one changes", async () => {
+    const room = createRoom("first-password");
+
+    await setRoomPassword(room, "second-password");
+
+    const stored = encryptFile(image, (await roomImageKey(room))!);
+    await setRoomPassword(room, "third-password");
+    expect(decryptFile(stored, (await roomImageKey(room))!)).toEqual(image);
+  });
+
+  it("keeps them readable when the password is removed, and encrypting from then on", async () => {
+    const room = createRoom("first-password");
+    const stored = encryptFile(image, (await roomImageKey(room))!);
+
+    await setRoomPassword(room, "");
+
+    expect(room.password).toBeNull();
+    expect(decryptFile(stored, (await roomImageKey(room))!)).toEqual(image);
+  });
+
+  it("starts encrypting when an open room gets a password, still reading older plain files", async () => {
+    const room = createRoom();
+    expect(roomImageKey(room)).toBeNull();
+
+    await setRoomPassword(room, "first-password");
+
+    const key = (await roomImageKey(room))!;
+    expect(decryptFile(image, key)).toEqual(image);
+    expect(decryptFile(encryptFile(image, key), key)).toEqual(image);
   });
 });

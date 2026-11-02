@@ -43,7 +43,7 @@ describe("dialog", () => {
   it("is labelled by its title", () => {
     setup();
 
-    expect(screen.getByRole("dialog", { name: "Audio Settings" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeTruthy();
   });
 
   it("closes from the button and Escape", () => {

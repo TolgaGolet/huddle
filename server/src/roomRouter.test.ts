@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
-import { MAX_PARTICIPANTS, MAX_PASSWORD_LENGTH } from "./limits.js";
+import { MAX_PARTICIPANTS, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "./limits.js";
 import { addParticipant, createRoom, getRoom, removeParticipant, ROOM_GRACE_MS } from "./roomManager.js";
 import { createRoomRouter } from "./roomRouter.js";
 
@@ -46,16 +46,31 @@ describe("POST /rooms", () => {
   });
 
   it("trims the password, the same as a join does", async () => {
-    const { roomId } = await (await post({ password: "  secret  " })).json();
+    const { roomId } = await (await post({ password: "  long-secret  " })).json();
 
-    expect(getRoom(roomId)?.password).toBe("secret");
+    expect(getRoom(roomId)?.password).toBe("long-secret");
     expect(getRoom(roomId)?.encryptionSalt).toBeTruthy();
   });
 
-  it("treats a blank password as an open room", async () => {
-    const { roomId } = await (await post({ password: "   " })).json();
+  it("treats an empty password as an open room", async () => {
+    const { roomId } = await (await post({ password: "" })).json();
 
     expect(getRoom(roomId)?.password).toBeNull();
+  });
+
+  // Regression: spaces silently created an open room for someone who wanted a password.
+  it.each([["only spaces", "   "], ["too short", "p".repeat(MIN_PASSWORD_LENGTH - 1)]])("refuses a password that is %s, and says why", async (_name, password) => {
+    const res = await post({ password });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain(String(MIN_PASSWORD_LENGTH));
+  });
+
+  // Regression: 6 characters left an open room, whose link is its only protection, guessable.
+  it("gives a room an id too long to guess", async () => {
+    const { roomId } = await (await post({})).json();
+
+    expect(roomId).toHaveLength(21);
   });
 
   it("allows a password at the length limit", async () => {

@@ -1,4 +1,5 @@
 import { Mic, ShieldCheck, Sparkles, Sliders } from "lucide-react";
+import { FIELD_CLASS } from "./fieldStyles";
 import type { MicTelemetry, VoiceTransmissionThreshold } from "../types";
 import {
   MANUAL_THRESHOLD_MAX_DB,
@@ -49,7 +50,7 @@ export default function AudioSettings({
           id="mic-device-select"
           value={selectedDeviceId}
           onChange={(e) => onDeviceChange(e.target.value)}
-          className="w-full px-3 py-2 rounded-lg bg-gray-700 border border-gray-600 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+          className={FIELD_CLASS}
         >
           {audioInputs.map((d) => (
             <option key={d.deviceId} value={d.deviceId}>
@@ -85,7 +86,7 @@ export default function AudioSettings({
           onChange={(e) =>
             onTransmissionThresholdChange(e.target.value as VoiceTransmissionThreshold)
           }
-          className="w-full px-3 py-2 rounded-lg bg-gray-700 border border-gray-600 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors cursor-pointer"
+          className={`${FIELD_CLASS} cursor-pointer`}
         >
           <option value="off">Off (Continuous Transmission)</option>
           <option value="low">Low ({THRESHOLD_LOW_OPEN_DB} dB)</option>

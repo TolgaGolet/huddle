@@ -11,6 +11,7 @@ interface Props {
   imageSession: number;
   localUserId: string;
   roomId: string;
+  canPin?: boolean;
 }
 
 /**
@@ -19,7 +20,7 @@ interface Props {
  * its effects run before useWebRTC's, which sends the join, so `room-joined` can't
  * arrive before useChat is listening.
  */
-function RoomChat({ socket, httpToken, imageSession, localUserId, roomId }: Props) {
+function RoomChat({ socket, httpToken, imageSession, localUserId, roomId, canPin }: Props) {
   const { history, pinnedMessageId } = useChat(socket);
   return (
     <ErrorBoundary fallback={ChatCrashed}>
@@ -31,6 +32,7 @@ function RoomChat({ socket, httpToken, imageSession, localUserId, roomId }: Prop
           pinnedMessageId={pinnedMessageId}
           localUserId={localUserId}
           roomId={roomId}
+          canPin={canPin}
         />
       </ImageSessionContext>
     </ErrorBoundary>

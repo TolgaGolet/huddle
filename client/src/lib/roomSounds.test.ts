@@ -24,6 +24,29 @@ beforeEach(() => {
 });
 
 describe("subscribeRoomSounds", () => {
+  it("plays a cue when someone new is waiting, not when they go", () => {
+    const { socket, emit } = fakeSocket();
+    subscribeRoomSounds(socket, () => "me");
+    const person = { id: "s", name: "Bo", wasRemoved: false };
+
+    emit("waiting-list", [person]);
+    expect(playMessageSound).toHaveBeenCalledOnce();
+
+    emit("waiting-list", []);
+    expect(playMessageSound).toHaveBeenCalledOnce();
+  });
+
+  it("plays a cue when a closing warning starts, not when it is cancelled", () => {
+    const { socket, emit } = fakeSocket();
+    subscribeRoomSounds(socket, () => "me");
+
+    emit("room-closing", null);
+    expect(playMessageSound).not.toHaveBeenCalled();
+
+    emit("room-closing", { reason: "inactive", remainingMs: 1000 });
+    expect(playMessageSound).toHaveBeenCalledOnce();
+  });
+
   it("plays a cue for other people's messages but not our own", () => {
     const { socket, emit } = fakeSocket();
     subscribeRoomSounds(socket, () => "me");

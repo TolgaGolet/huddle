@@ -4,12 +4,14 @@ import { resolveParticipant, socketRoomMap, type RoomCtx } from "./roomManager.j
 import { createBucket, EVENT_LIMITS, RATE_LIMITS, type Bucket, type RateLimitGroup } from "./rateLimit.js";
 import { parseRelay } from "./validation.js";
 import { errorSummary } from "./errorLog.js";
+import { countSecurityEvent } from "./securityLog.js";
+import { evict, isBacklogged } from "./socketBacklog.js";
 
 export type AppServer = Server<ClientToServerEvents, ServerToClientEvents>;
 export type AppSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
 
 // "disconnect" is Socket.IO's own event, not client input (see signaling.ts).
-type RouteEvents = ClientToServerEvents & { disconnect: () => void };
+type RouteEvents = ClientToServerEvents & { disconnect: (data: { reason: string }) => void };
 type RoutePayload<E extends keyof RouteEvents> = Parameters<RouteEvents[E]> extends [infer P] ? P : Record<string, never>;
 
 const NOTICE_INTERVAL_MS = 1000;
@@ -61,6 +63,7 @@ function register<T>(
     try {
       // Before parsing, so a flood costs as little as possible.
       if (group && !withinLimit(socket, group)) {
+        countSecurityEvent(`socket_limited_${group}`);
         if (onLimited) onLimited();
         else sendLimitNotice(socket, event, group);
         return;
@@ -115,12 +118,18 @@ export function onRoom<E extends keyof ClientToServerEvents>(
  * the SAME room. This prevents a stale or unauthenticated client from
  * injecting offers/candidates into unrelated peers, which could otherwise
  * desynchronize a victim's negotiation. The body is forwarded opaquely, so its
- * protocol type is not checked here.
+ * protocol type is not checked here. A peer that has stopped reading is evicted
+ * rather than sent more, or relaying to it would exhaust the server's memory.
  */
 export function onRelay(socket: AppSocket, event: "offer" | "answer" | "ice-candidate", key: "offer" | "answer" | "candidate"): void {
   register(socket, event, parseRelay(key), ({ to, body }) => {
     const roomId = socketRoomMap.get(socket.id);
     if (!roomId || to === socket.id || socketRoomMap.get(to) !== roomId) return;
+    const peer = socket.nsp.sockets.get(to);
+    if (peer && isBacklogged(peer)) {
+      evict(peer);
+      return;
+    }
     (socket as unknown as Socket).to(to).emit(event, { from: socket.id, [key]: body });
   });
 }

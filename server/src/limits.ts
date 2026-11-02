@@ -20,10 +20,10 @@ export const MAX_POLL_OPTION_LENGTH = 100;
 export const MAX_POLL_OPTIONS = 10;
 export const MAX_IMAGES_PER_MESSAGE = 10;
 export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
-export const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif", "heic", "heif"]);
+export const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif"]);
 /**
- * The extension is the authoritative check: some browsers report an empty or
- * non-standard MIME type for HEIC files.
+ * A first filter only, as the name and type are the sender's claim. The server
+ * decodes every image, which is the real check (imageProcessing.ts).
  */
 export function isAllowedImage(extension: string, mimeType: string): boolean {
   return IMAGE_EXTENSIONS.has(extension) && (!mimeType || mimeType.startsWith("image/") || mimeType === "application/octet-stream");
@@ -42,6 +42,32 @@ export const MAX_ROOMS_PER_IP = 10;
 export const MAX_INFLIGHT_IMAGE_BYTES = 128 * 1024 * 1024;
 /** One room's share of that for decrypting reads, so it can't starve other rooms. */
 export const MAX_ROOM_INFLIGHT_READ_BYTES = MAX_INFLIGHT_IMAGE_BYTES / 2;
+/** One client's share of that. Must fit one maximum upload. */
+export const MAX_CLIENT_INFLIGHT_IMAGE_BYTES = 84 * 1024 * 1024;
+/** However active it is, a room closes this long after it was created. */
+export const MAX_ROOM_LIFETIME_MS = 10 * 60 * 60 * 1000;
+/** A room closes this long after anyone last spoke, wrote or shared their screen. */
+export const ROOM_INACTIVE_MS = 31 * 60 * 1000;
+/** How long before each kind of closing its members are warned. */
+export const INACTIVE_WARNING_MS = 10 * 60 * 1000;
+export const LIFETIME_WARNING_MS = 30 * 60 * 1000;
+/** People in one room's waiting room at once. */
+export const MAX_WAITING_PER_ROOM = 10;
+/** Identities a room remembers as having got in, so that they can return without the password. */
+export const MAX_REMEMBERED_MEMBERS = 200;
 export const MAX_PASSWORD_LENGTH = 128;
+export const MIN_PASSWORD_LENGTH = 8;
+/**
+ * For a new room: empty means no password, while only spaces is refused, as its
+ * creator clearly wanted a password and would otherwise get an open room.
+ */
+export function isValidNewPassword(password: string): boolean {
+  const { length } = password.trim();
+  return password === "" || (length >= MIN_PASSWORD_LENGTH && length <= MAX_PASSWORD_LENGTH);
+}
+/** Open connections per IP. Above what a shared network needs, as a socket costs about 36 KB even idle. */
+export const MAX_CONNECTIONS_PER_IP = 30;
+/** Open connections in total, so that idle ones can't exhaust the 512 MB instance. */
+export const MAX_CONNECTIONS_TOTAL = 3000;
 /** Format of the secret key a client proves its identity with (see identity.ts). */
 export const CLIENT_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;

@@ -129,7 +129,7 @@ describe("chat-message reply quotes", () => {
 
   it("quotes an image-only original by its first image", async () => {
     const room = await joinNewRoom();
-    const imageUrls =[`/api/rooms/${room.id}/images/aaaaaaaaaa.png`, `/api/rooms/${room.id}/images/bbbbbbbbbb.png`];
+    const imageUrls =[`/api/rooms/${room.id}/images/aaaaaaaaaa.webp`, `/api/rooms/${room.id}/images/bbbbbbbbbb.webp`];
     const original = await message({ text: "", imageUrls });
 
     const { replyTo } = await message({ text: "nice", replyToId: original.id });
@@ -358,5 +358,16 @@ describe("identity across a reconnect", () => {
     } finally {
       watcher.disconnect();
     }
+  });
+});
+
+describe("room activity", () => {
+  it("counts a chat message", async () => {
+    const room = await joinNewRoom();
+    room.lastActivityAt = 0;
+
+    await send("chat-message", { text: "hi" }, "chat-message");
+
+    expect(room.lastActivityAt).toBeGreaterThan(0);
   });
 });

@@ -57,6 +57,8 @@ export const RATE_LIMITS = {
   reactions: { burst: 30, perSecond: 3 },
   callState: { burst: 20, perSecond: 2 },
   join: { burst: 10, perSecond: 0.2 },
+  activity: { burst: 5, perSecond: 0.2 },
+  moderation: { burst: 10, perSecond: 1 },
 } as const satisfies Record<string, RateLimit>;
 
 export type RateLimitGroup = keyof typeof RATE_LIMITS;
@@ -78,4 +80,10 @@ export const EVENT_LIMITS: Readonly<Record<keyof ClientToServerEvents, RateLimit
   "screen-share-started": "callState",
   "screen-share-stopped": "callState",
   "join-room": "join",
+  "voice-activity": "activity",
+  "set-owner": "moderation",
+  "kick-participant": "moderation",
+  "update-room-settings": "moderation",
+  "change-room-password": "moderation",
+  "admit-waiting": "moderation",
 };

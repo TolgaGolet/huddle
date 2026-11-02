@@ -25,7 +25,6 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: "dist",
-      chunkSizeWarningLimit: 1500, // heic2any (~1.35 MB) is lazy-loaded and only fetched on HEIC uploads
       rollupOptions: {
         output: {
           manualChunks: {

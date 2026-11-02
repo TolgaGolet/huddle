@@ -16,6 +16,7 @@ interface Props {
   pinnedMessageId: string | null;
   /** Stable identity, for "is this mine?" checks. */
   localUserId: string;
+  canPin?: boolean;
   isAtBottomRef: React.RefObject<boolean>;
   onReply: (msg: ChatMessage) => void;
   /** Sends focus to the composer once the focused message is gone. */
@@ -28,7 +29,7 @@ interface ContextMenuState {
   y: number;
 }
 
-function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBottomRef, onReply, onFocusComposer }: Props) {
+function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin, isAtBottomRef, onReply, onFocusComposer }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
@@ -285,6 +286,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, isAtBo
           y={contextMenu.y}
           isOwn={contextMenuEntry.senderId === localUserId}
           isPinned={contextMenuEntry.id === pinnedMessageId}
+          canPin={canPin}
           canEdit={contextMenuEntry.senderId === localUserId && isEditable(contextMenuEntry)}
           onEdit={() => startEdit(contextMenu.messageId)}
           onDelete={() => handleDeleteMessage(contextMenu.messageId)}

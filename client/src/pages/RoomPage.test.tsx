@@ -70,8 +70,13 @@ function mockSocket(overrides: Partial<ReturnType<typeof useSocket>> = {}) {
     imageSession: 1,
     participants: [],
     connected: true,
-    joinError: null,
+    exit: null,
     currentScreenSharer: null,
+    closing: null,
+    settings: null,
+    isWaiting: false,
+    waitingList: [],
+    admitRefusedId: null,
     joinRoom: joinRoom as () => void,
     ...overrides,
   });
@@ -146,10 +151,53 @@ describe("arriving", () => {
     expect(useMicrophone).not.toHaveBeenCalled();
   });
 
-  it("joins with the room, name and password it was given", () => {
+  // Regression: unmounting the chat here lost the history sent when the wait ends.
+  it("shows only the waiting screen while waiting, keeping the chat mounted but hidden", () => {
+    mockSocket({ isWaiting: true });
+
+    setup();
+
+    expect(screen.getByRole("status").textContent).toMatch(/Waiting for an owner/);
+    expect(screen.getByTestId("chat").closest(".hidden")).not.toBeNull();
+  });
+
+  it("returns to the main screen with the notice when made to leave", () => {
+    mockSocket({ exit: { notice: "Gone" } });
+
+    setup();
+
+    expect(JSON.parse(screen.getByTestId("landing").textContent!)).toEqual({ notice: "Gone" });
+  });
+
+  it("stops a screen share the settings no longer allow", async () => {
+    const settings = { pinPermission: "everyone", screenSharePermission: "everyone", waitingRoom: false, hasPassword: false, ownerIds: [] as string[] } as const;
+    mockSocket({ settings });
+    setup();
+    await act(async () => fireEvent.click(firstButton(/share/i)));
+    expect(startScreenShare).toHaveBeenCalled();
+
+    mockSocket({ settings: { ...settings, screenSharePermission: "owners" } });
+    fireEvent.click(firstButton(/mute/i)); // Anything that renders the room again.
+
+    expect(stopScreenShare).toHaveBeenCalled();
+  });
+
+  it("offers settings and moderation only as allowed", () => {
+    const settings = { pinPermission: "owners", screenSharePermission: "owners", waitingRoom: false, hasPassword: false, ownerIds: ["someone"] as string[] } as const;
+    mockSocket({ settings });
+
+    setup();
+
+    expect((firstButton("Only owners can share their screen") as HTMLButtonElement).disabled).toBe(true);
+    expect((captured.list as unknown as { canModerate: boolean }).canModerate).toBe(false);
+  });
+
+  // Regression: a password in router state stays in browser history.
+  it("joins with the room and name, and takes no password from router state", () => {
     setup({ name: "Me", password: "pw" });
 
-    expect(vi.mocked(useSocket).mock.lastCall![0]).toMatchObject({ roomId: "abc", name: "Me", password: "pw" });
+    expect(vi.mocked(useSocket).mock.lastCall![0]).toMatchObject({ roomId: "abc", name: "Me" });
+    expect(vi.mocked(useSocket).mock.lastCall![0]).not.toHaveProperty("password");
   });
 
   it("joins once signaling reports ready", () => {
@@ -160,12 +208,22 @@ describe("arriving", () => {
     expect(joinRoom).toHaveBeenCalledOnce();
   });
 
+  it("reports only this user's own speech", () => {
+    mockSocket();
+    socket.connected = true;
+    vi.mocked(useVoiceActivity).mockReturnValue(new Set(["someone-else"]));
+
+    setup();
+
+    expect(socket.emit.mock.calls.filter(([event]) => event === "voice-activity")).toEqual([]);
+  });
+
   it("returns to the join form with the reason when a join fails", () => {
-    mockSocket({ joinError: "Incorrect password" });
+    mockSocket({ exit: { error: "Incorrect password" } });
 
     setup({ name: "Me", password: "wrong" });
 
-    expect(JSON.parse(screen.getByTestId("landing").textContent!)).toEqual({ error: "Incorrect password", roomId: "abc", name: "Me", password: "wrong" });
+    expect(JSON.parse(screen.getByTestId("landing").textContent!)).toEqual({ error: "Incorrect password", roomId: "abc", name: "Me" });
   });
 });
 

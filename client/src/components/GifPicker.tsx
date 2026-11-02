@@ -4,11 +4,13 @@ import type { GifItem } from "../types";
 import { fetchTrending, fetchSearch } from "../lib/giphyClient";
 
 interface Props {
+  /** Null while reconnecting; the picker loads again once it's back. */
+  httpToken: string | null;
   onSelect: (gifUrl: string, gifTitle: string) => void;
   onClose: () => void;
 }
 
-export default function GifPicker({ onSelect, onClose }: Props) {
+export default function GifPicker({ httpToken, onSelect, onClose }: Props) {
   const [search, setSearch] = useState("");
   const [gifs, setGifs] = useState<GifItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,13 +31,19 @@ export default function GifPicker({ onSelect, onClose }: Props) {
 
   // Trending (empty query) loads immediately; searches are debounced.
   useEffect(() => {
+    if (!httpToken) {
+      setLoading(false);
+      setError("Not connected, please wait");
+      setGifs([]);
+      return;
+    }
     const controller = new AbortController();
     const { signal } = controller;
     const load = async () => {
       setLoading(true);
       setError(null);
       try {
-        const results = query ? await fetchSearch(query, signal) : await fetchTrending(signal);
+        const results = query ? await fetchSearch(query, httpToken, signal) : await fetchTrending(httpToken, signal);
         if (!signal.aborted) setGifs(results);
       } catch (err) {
         // An aborted request was replaced by a newer one, which owns the UI state.
@@ -51,7 +59,7 @@ export default function GifPicker({ onSelect, onClose }: Props) {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [query, httpToken]);
 
   return (
     <div

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { MAX_IMAGE_SIZE, MAX_IMAGES_PER_MESSAGE } from "../types";
-import { isImageFile } from "../lib/imageUpload";
+import { isHeicFile, isImageFile } from "../lib/imageUpload";
 
 export interface PendingImage { id: string; file: File; previewUrl: string; }
 
@@ -20,6 +20,7 @@ export function useImageDraft() {
     let problem: string | null = null;
     for (const file of Array.from(fileList)) {
       if (images.length + accepted.length >= MAX_IMAGES_PER_MESSAGE) { problem ??= `You can send up to ${MAX_IMAGES_PER_MESSAGE} images at once.`; break; }
+      if (isHeicFile(file)) { problem ??= "HEIC photos aren't supported. Please convert to JPEG first."; continue; }
       if (!isImageFile(file)) { problem ??= `${file.name} is not a supported image file.`; continue; }
       if (file.size > MAX_IMAGE_SIZE) { problem ??= `${file.name} is larger than ${MAX_IMAGE_SIZE / (1024 * 1024)} MB.`; continue; }
       accepted.push({ id: `${file.name}-${file.lastModified}-${Math.random()}`, file, previewUrl: URL.createObjectURL(file) });

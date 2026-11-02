@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Volume2 } from "lucide-react";
+import { Crown, UserX, Volume2 } from "lucide-react";
 
 interface Props {
   x: number;
@@ -9,9 +9,17 @@ interface Props {
   volume: number;
   onVolumeChange: (v: number) => void;
   onClose: () => void;
+  /** For an owner looking at someone else; leave out otherwise. */
+  moderation?: {
+    targetIsOwner: boolean;
+    onToggleOwner: () => void;
+    onKick: () => void;
+  };
 }
 
-export default function ParticipantContextMenu({ x, y, name, volume, onVolumeChange, onClose }: Props) {
+const ACTION = "flex w-full items-center gap-2 px-2 pointer-coarse:min-h-10 py-1.5 rounded text-xs transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500";
+
+export default function ParticipantContextMenu({ x, y, name, volume, onVolumeChange, onClose, moderation }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   // Clamp the menu inside the viewport so it never renders off-screen
   // (which was making it appear as if "nothing happens").
@@ -74,6 +82,18 @@ export default function ParticipantContextMenu({ x, y, name, volume, onVolumeCha
         />
         <span className="text-xs text-gray-400 w-10 text-right">{Math.round(volume * 100)}%</span>
       </div>
+      {moderation && (
+        <div className="mt-2 pt-2 border-t border-gray-700">
+          <button type="button" onClick={moderation.onToggleOwner} className={`${ACTION} text-gray-200 hover:bg-gray-700`}>
+            <Crown size={12} />
+            {moderation.targetIsOwner ? "Remove as owner" : "Make owner"}
+          </button>
+          <button type="button" onClick={moderation.onKick} className={`${ACTION} text-red-400 hover:bg-gray-700`}>
+            <UserX size={12} />
+            Kick from room
+          </button>
+        </div>
+      )}
     </div>,
     document.body,
   );

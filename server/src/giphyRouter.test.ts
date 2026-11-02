@@ -10,11 +10,15 @@ const upstreamBody = { data: [{ id: "1", title: "Cat", images: { fixed_width: re
 let server: Server;
 let baseUrl: string;
 let upstream: ReturnType<typeof vi.fn>;
+let token: string;
 
 beforeEach(async () => {
   // The cache lives in the router module, so each test imports a fresh copy.
   vi.resetModules();
   const { giphyRouter } = await import("./giphyRouter.js");
+  const { addParticipant, createRoom, httpTokenFor } = await import("./roomManager.js");
+  addParticipant(createRoom(), "socket-1", "Ana");
+  token = httpTokenFor("socket-1")!;
   vi.stubEnv("GIPHY_API_KEY", "test-key");
   upstream = vi.fn(async () => new Response(JSON.stringify(upstreamBody)));
   vi.stubGlobal("fetch", upstream);
@@ -33,7 +37,7 @@ afterEach(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-const get = (path: string) => realFetch(`${baseUrl}${path}`);
+const get = (path: string) => realFetch(`${baseUrl}${path}`, { headers: { "X-Participant-Token": token } });
 
 describe("giphyRouter", () => {
   it("returns mapped results and passes a timeout signal upstream", async () => {
@@ -103,6 +107,27 @@ describe("giphyRouter", () => {
     expect((await get("/search")).status).toBe(400);
     expect((await get("/search?q=a&q=b")).status).toBe(400);
     expect(upstream).not.toHaveBeenCalled();
+  });
+
+  // Regression: anyone on the internet could spend the key's quota.
+  it("refuses a request from outside any room", async () => {
+    expect((await realFetch(`${baseUrl}/trending`)).status).toBe(403);
+    expect((await realFetch(`${baseUrl}/trending`, { headers: { "X-Participant-Token": "nope" } })).status).toBe(403);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("rejects a search over the length limit", async () => {
+    expect((await get(`/search?q=${"a".repeat(101)}`)).status).toBe(400);
+    expect((await get(`/search?q=${"a".repeat(100)}`)).status).toBe(200);
+  });
+
+  it("stops calling upstream past the hourly limit, while still serving the cache", async () => {
+    vi.stubEnv("GIPHY_HOURLY_LIMIT", "1");
+
+    expect((await get("/search?q=cats")).status).toBe(200);
+    expect((await get("/search?q=dogs")).status).toBe(503);
+    expect((await get("/search?q=cats")).status).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(1);
   });
 
   it("reports a missing API key without calling upstream", async () => {
