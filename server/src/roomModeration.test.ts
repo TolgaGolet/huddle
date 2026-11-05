@@ -6,6 +6,7 @@ import { io as connect, type Socket as ClientSocket } from "socket.io-client";
 import { setupChat } from "./chatHandler.js";
 import { JOIN_ERROR } from "./joinErrors.js";
 import { MAX_WAITING_PER_ROOM } from "./limits.js";
+import { setupPolls } from "./pollHandler.js";
 import type { RoomSettings, WaitingPerson } from "./protocol.js";
 import { sweepRoomLifetimes } from "./roomLifetime.js";
 import { addChatMessage, createRoom, emptyReactions, type Room } from "./roomManager.js";
@@ -24,6 +25,7 @@ beforeAll(async () => {
   setupSignaling(io);
   setupModeration(io);
   setupChat(io);
+  setupPolls(io);
   await new Promise<void>((resolve) => httpServer.listen(0, resolve));
   url = `http://localhost:${(httpServer.address() as AddressInfo).port}`;
 });
@@ -118,7 +120,7 @@ describe("non-owners", () => {
     bo.socket.emit("set-owner", { userId: cy.userId, isOwner: true });
     bo.socket.emit("set-owner", { userId: owner.userId, isOwner: false });
     bo.socket.emit("kick-participant", { userId: cy.userId });
-    bo.socket.emit("update-room-settings", { pinPermission: "owners", screenSharePermission: "owners", waitingRoom: true });
+    bo.socket.emit("update-room-settings", { pinPermission: "owners", screenSharePermission: "owners", messagePermission: "owners", waitingRoom: true });
     bo.socket.emit("change-room-password", { password: "long-secret" });
     bo.socket.emit("admit-waiting", { id: "someone" });
     await settled(bo.socket);
@@ -126,7 +128,7 @@ describe("non-owners", () => {
     expect([...room.owners]).toEqual([owner.userId]);
     expect(room.blockedUsers.size).toBe(0);
     expect(cy.socket.connected).toBe(true);
-    expect(room.settings).toEqual({ pinPermission: "everyone", screenSharePermission: "everyone", waitingRoom: false });
+    expect(room.settings).toEqual({ pinPermission: "everyone", screenSharePermission: "everyone", messagePermission: "everyone", waitingRoom: false });
     expect(room.password).toBeNull();
     expect(room.waiting.get("someone")!.admit).not.toHaveBeenCalled();
     room.waiting.clear();
@@ -174,11 +176,12 @@ describe("owners", () => {
 });
 
 describe("permissions", () => {
-  it("defaults to everyone being able to pin and share", async () => {
+  it("defaults to everyone being able to pin, share and send messages", async () => {
     const { room } = await ownedRoom();
     const bo = await join(room, "Bo");
     expect(bo.settings.pinPermission).toBe("everyone");
     expect(bo.settings.screenSharePermission).toBe("everyone");
+    expect(bo.settings.messagePermission).toBe("everyone");
     expect(bo.settings.waitingRoom).toBe(false);
   });
 
@@ -197,6 +200,33 @@ describe("permissions", () => {
     owner.socket.emit("screen-share-started");
     await vi.waitFor(() => expect(room.pinnedMessageId).toBe("m1"));
     await vi.waitFor(() => expect(room.screenSharerId).toBe(owner.socket.id));
+  });
+
+  it("stops non-owners sending, editing, polling and typing when messages are owners-only", async () => {
+    const { room, owner } = await ownedRoom({ messagePermission: "owners" });
+    const bo = await join(room, "Bo");
+    addChatMessage(room, { id: "bo-1", senderId: bo.userId, senderName: "Bo", text: "before", timestamp: 1, reactions: emptyReactions() });
+    const ownerHeard = vi.fn();
+    owner.socket.on("typing", ownerHeard);
+    const refused: string[] = [];
+    bo.socket.on("not-permitted", ({ event }: { event: string }) => refused.push(event));
+
+    bo.socket.emit("chat-message", { text: "hi" });
+    bo.socket.emit("chat-edit", { messageId: "bo-1", text: "changed" });
+    bo.socket.emit("poll-create", { question: "Q?", options: ["a", "b"], allowMultiple: false });
+    bo.socket.emit("typing");
+    await settled(bo.socket);
+    expect(room.chatHistory.map((m) => m.id)).toEqual(["bo-1"]);
+    expect(room.chatHistory[0]).toMatchObject({ text: "before" });
+    expect(ownerHeard).not.toHaveBeenCalled();
+    // So a client that cleared its draft can say it wasn't sent. Typing needs no reply.
+    await vi.waitFor(() => expect(refused).toEqual(["chat-message", "chat-edit", "poll-create"]));
+
+    const sent = once<{ text: string }>(bo.socket, "chat-message");
+    owner.socket.emit("chat-message", { text: "owner here" });
+    expect((await sent).text).toBe("owner here");
+    owner.socket.emit("poll-create", { question: "Q?", options: ["a", "b"], allowMultiple: false });
+    await vi.waitFor(() => expect(room.chatHistory).toHaveLength(3));
   });
 });
 

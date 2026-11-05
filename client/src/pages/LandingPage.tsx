@@ -68,6 +68,7 @@ export default function LandingPage() {
   const [password, setPassword] = useState("");
   const [pinPermission, setPinPermission] = useState<RoomPermission>("everyone");
   const [screenSharePermission, setScreenSharePermission] = useState<RoomPermission>("everyone");
+  const [messagePermission, setMessagePermission] = useState<RoomPermission>("everyone");
   const [waitingRoom, setWaitingRoom] = useState(false);
   const [error, setError] = useState(rs.error || "");
   const [loading, setLoading] = useState(false);
@@ -133,6 +134,7 @@ export default function LandingPage() {
           // Left out at their defaults.
           pinPermission: pinPermission === "owners" ? pinPermission : undefined,
           screenSharePermission: screenSharePermission === "owners" ? screenSharePermission : undefined,
+          messagePermission: messagePermission === "owners" ? messagePermission : undefined,
           waitingRoom: waitingRoom || undefined,
         }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -248,6 +250,7 @@ export default function LandingPage() {
             </div>
             <PermissionSelect id="create-pin-permission" label="Who can pin messages" value={pinPermission} onChange={setPinPermission} />
             <PermissionSelect id="create-screen-permission" label="Who can share their screen" value={screenSharePermission} onChange={setScreenSharePermission} />
+            <PermissionSelect id="create-message-permission" label="Who can send messages" value={messagePermission} onChange={setMessagePermission} />
             <WaitingRoomCheckbox id="create-waiting-room" checked={waitingRoom} onChange={setWaitingRoom} />
             <FormActions
               error={error}

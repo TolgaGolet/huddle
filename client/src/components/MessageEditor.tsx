@@ -3,7 +3,8 @@ import { MAX_CHAT_TEXT_LENGTH } from "../types";
 
 interface Props {
   initialText: string;
-  onSubmit: (text: string) => void;
+  /** Absent while the user may not send messages; the editor stays open, keeping the text. */
+  onSubmit?: (text: string) => void;
   onCancel: () => void;
 }
 
@@ -14,7 +15,7 @@ export default function MessageEditor({ initialText, onSubmit, onCancel }: Props
 
   function submit() {
     // Over-limit edits would be dropped by the server; keep the editor open.
-    if (!trimmed || tooLong) return;
+    if (!onSubmit || !trimmed || tooLong) return;
     onSubmit(trimmed);
   }
 
@@ -37,7 +38,7 @@ export default function MessageEditor({ initialText, onSubmit, onCancel }: Props
         <button
           type="button"
           onClick={submit}
-          disabled={tooLong}
+          disabled={tooLong || !onSubmit}
           className="disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs text-white cursor-pointer transition-colors"
         >
           Save
@@ -50,6 +51,9 @@ export default function MessageEditor({ initialText, onSubmit, onCancel }: Props
           Cancel
         </button>
       </div>
+      {!onSubmit && (
+        <p role="status" className="mt-1 text-xs text-gray-400">Only owners can send messages now. Your edit is kept until you can save it.</p>
+      )}
       {tooLong && (
         <p role="alert" className="mt-1 text-xs text-red-400">Message is too long (max {MAX_CHAT_TEXT_LENGTH} characters).</p>
       )}

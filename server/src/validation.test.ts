@@ -123,6 +123,8 @@ describe("room settings", () => {
     expect(parseCreateRoom({ pinPermission: "owners", waitingRoom: true, extra: "x" })?.permissions).toEqual({ pinPermission: "owners", waitingRoom: true });
     expect(parseCreateRoom({ pinPermission: "nobody" })).toBeNull();
     expect(parseCreateRoom({ waitingRoom: "yes" })).toBeNull();
+    expect(parseCreateRoom({ messagePermission: "owners" })?.permissions).toEqual({ messagePermission: "owners" });
+    expect(parseCreateRoom({ messagePermission: "nobody" })).toBeNull();
   });
 
   it("rebuilds an update, so that nothing else can be assigned to the room", () => {

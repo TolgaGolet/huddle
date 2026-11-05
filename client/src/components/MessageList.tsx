@@ -17,6 +17,8 @@ interface Props {
   /** Stable identity, for "is this mine?" checks. */
   localUserId: string;
   canPin?: boolean;
+  /** Also allows editing, as an edit can say anything. */
+  canSendMessages?: boolean;
   isAtBottomRef: React.RefObject<boolean>;
   onReply: (msg: ChatMessage) => void;
   /** Sends focus to the composer once the focused message is gone. */
@@ -29,7 +31,7 @@ interface ContextMenuState {
   y: number;
 }
 
-function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin, isAtBottomRef, onReply, onFocusComposer }: Props) {
+function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin, canSendMessages = true, isAtBottomRef, onReply, onFocusComposer }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
@@ -200,14 +202,15 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin
   const actions = useMemo<MessageActions>(() => ({
     registerRef: setMessageRef,
     react: handleReaction,
-    reply: onReply,
+    reply: canSendMessages ? onReply : undefined,
     openMenu: openContextMenu,
     scrollTo: scrollToMessage,
     viewImage,
     imageLoaded: scrollPinnedToBottom,
-    submitEdit,
+    // An open edit stays open without it, so its text survives until the permission comes back.
+    submitEdit: canSendMessages ? submitEdit : undefined,
     cancelEdit,
-  }), [setMessageRef, handleReaction, onReply, openContextMenu, scrollToMessage, viewImage, scrollPinnedToBottom, submitEdit, cancelEdit]);
+  }), [setMessageRef, handleReaction, canSendMessages, onReply, openContextMenu, scrollToMessage, viewImage, scrollPinnedToBottom, submitEdit, cancelEdit]);
 
   return (
     <div className="relative flex-1 min-h-0 flex flex-col">
@@ -287,7 +290,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin
           isOwn={contextMenuEntry.senderId === localUserId}
           isPinned={contextMenuEntry.id === pinnedMessageId}
           canPin={canPin}
-          canEdit={contextMenuEntry.senderId === localUserId && isEditable(contextMenuEntry)}
+          canEdit={canSendMessages && contextMenuEntry.senderId === localUserId && isEditable(contextMenuEntry)}
           onEdit={() => startEdit(contextMenu.messageId)}
           onDelete={() => handleDeleteMessage(contextMenu.messageId)}
           onTogglePin={() => handlePinMessage(contextMenu.messageId)}

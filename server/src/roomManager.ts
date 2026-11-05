@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
 import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS, MAX_REMEMBERED_MEMBERS } from "./limits.js";
-import { isPollMessage, type RoomPermissions, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry } from "./protocol.js";
+import { isPollMessage, permits, type PermissionKey, type RoomPermissions, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry } from "./protocol.js";
 
 export type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry };
 
@@ -119,6 +119,7 @@ export function emptyReactions(): Record<string, ReactionUser[]> {
 const DEFAULT_ROOM_PERMISSIONS: Readonly<RoomPermissions> = {
   pinPermission: "everyone",
   screenSharePermission: "everyone",
+  messagePermission: "everyone",
   waitingRoom: false,
 };
 
@@ -155,8 +156,8 @@ export function createRoom(password?: string, creatorIp: string | null = null, p
   return room;
 }
 
-export function hasPermission(room: Room, permission: "pinPermission" | "screenSharePermission", userId: string): boolean {
-  return room.settings[permission] === "everyone" || room.owners.has(userId);
+export function hasPermission(room: Room, permission: PermissionKey, userId: string): boolean {
+  return permits(room.settings, permission, room.owners.has(userId));
 }
 
 export function rememberMember(room: Room, userId: string): void {

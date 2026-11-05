@@ -150,6 +150,18 @@ describe("POST /rooms/:id/images", () => {
     expect((await response).status).toBe(403);
   });
 
+  it("rejects a member who may not send messages, without reserving anything", async () => {
+    joinRoom();
+    room.settings.messagePermission = "owners";
+    const { req, response } = openUpload(SOCKET_ID, { "Content-Length": 1000 });
+    req.write(multipartBody(16).subarray(0, 20));
+
+    const { status, body } = await response;
+    expect(status).toBe(403);
+    expect(JSON.parse(body).error).toMatch(/Only owners/);
+    expect(room.imageBytes).toBe(0);
+  });
+
   it("rejects an upload whose Content-Length exceeds the quota without waiting for the body", async () => {
     joinRoom(MAX_ROOM_IMAGE_BYTES - 10);
     const { req, response } = openUpload(SOCKET_ID, { "Content-Length": 1000 });
@@ -438,6 +450,23 @@ describe("POST /rooms/:id/images", () => {
     req.end(body.subarray(20));
 
     expect((await response).status).toBe(403);
+    await vi.waitFor(() => expect(room.imageBytes).toBe(0));
+    expect(existsSync(path.join(uploadsDir, room.id))).toBe(false);
+  });
+
+  // Regression: the message using the images would be refused, leaving them unused.
+  it("stores nothing if sending becomes owners-only during the upload", async () => {
+    joinRoom();
+    const body = multipartBody(100);
+    const { req, response } = openUpload(SOCKET_ID, { "Content-Length": body.length });
+    req.write(body.subarray(0, 20));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    room.settings.messagePermission = "owners";
+    req.end(body.subarray(20));
+
+    const { status, body: reply } = await response;
+    expect(status).toBe(403);
+    expect(JSON.parse(reply).error).toMatch(/Only owners/);
     await vi.waitFor(() => expect(room.imageBytes).toBe(0));
     expect(existsSync(path.join(uploadsDir, room.id))).toBe(false);
   });

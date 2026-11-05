@@ -16,6 +16,18 @@ function setup(initialText = "hello") {
 afterEach(cleanup);
 
 describe("MessageEditor", () => {
+  it("keeps the text but can't save while the user may not send", () => {
+    const onCancel = vi.fn();
+    render(<MessageEditor initialText="draft" onCancel={onCancel} />);
+    const box = screen.getByLabelText("Edit message") as HTMLTextAreaElement;
+
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    expect(box.value).toBe("draft");
+    expect((screen.getByText("Save") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("status").textContent).toContain("Only owners");
+  });
+
   it("starts with the message's text", () => {
     expect(setup("original").box.value).toBe("original");
   });

@@ -12,12 +12,14 @@ import RoomImage from "./RoomImage";
 export interface MessageActions {
   registerRef: (id: string, el: HTMLDivElement | null) => void;
   react: (messageId: string, emoji: string) => void;
-  reply: (msg: ChatMessage) => void;
+  /** Absent when the user may not send messages. */
+  reply?: (msg: ChatMessage) => void;
   openMenu: (entry: ChatEntry, e: React.MouseEvent) => void;
   scrollTo: (messageId: string) => void;
   viewImage: (url: string, senderName: string) => void;
   imageLoaded: () => void;
-  submitEdit: (messageId: string, text: string) => void;
+  /** Absent when the user may not send messages. */
+  submitEdit?: (messageId: string, text: string) => void;
   cancelEdit: () => void;
 }
 
@@ -36,6 +38,7 @@ export const HIGHLIGHT_CLASS = "bg-indigo-500/10";
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "👌"];
 
 function MessageItem({ msg, isPinned, isEditing, isHighlighted, localUserId, actions }: Props) {
+  const { reply, submitEdit } = actions;
   const reactions = msg.reactions || {};
   const reactionEntries = Object.entries(reactions).filter(([, users]) => users.length > 0);
   const formattedText = useMemo(() => formatMessage(msg.text), [msg.text]);
@@ -146,7 +149,7 @@ function MessageItem({ msg, isPinned, isEditing, isHighlighted, localUserId, act
           {isEditing ? (
             <MessageEditor
               initialText={msg.text}
-              onSubmit={(text) => actions.submitEdit(msg.id, text)}
+              onSubmit={submitEdit && ((text) => submitEdit(msg.id, text))}
               onCancel={actions.cancelEdit}
             />
           ) : (
@@ -204,15 +207,17 @@ function MessageItem({ msg, isPinned, isEditing, isHighlighted, localUserId, act
             {emoji}
           </button>
         ))}
-        <button
-          type="button"
-          onClick={() => actions.reply(msg)}
-          className="touch-target px-2 py-1 hover:bg-gray-700 transition-colors cursor-pointer text-gray-400 hover:text-gray-200 border-l border-gray-700"
-          title="Reply"
-          aria-label="Reply"
-        >
-          <Reply size={13} />
-        </button>
+        {reply && (
+          <button
+            type="button"
+            onClick={() => reply(msg)}
+            className="touch-target px-2 py-1 hover:bg-gray-700 transition-colors cursor-pointer text-gray-400 hover:text-gray-200 border-l border-gray-700"
+            title="Reply"
+            aria-label="Reply"
+          >
+            <Reply size={13} />
+          </button>
+        )}
         <button
           type="button"
           onClick={(e) => actions.openMenu(msg, e)}

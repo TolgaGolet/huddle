@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import { isPollMessage } from "./protocol.js";
-import { getRoom, totalImageBytes, type ChatEntry, type Room } from "./roomManager.js";
+import { getRoom, hasPermission, totalImageBytes, type ChatEntry, type Room } from "./roomManager.js";
 import { participantFromRequest } from "./participantRequest.js";
 import { decryptFile, encryptFile, roomImageKey } from "./imageCrypto.js";
 import { holdImageMemory, imageMemoryFits, reserveRoomImageBytes, tryReserveClientImageBytes, type ImageMemoryHold, type Reservation } from "./imageQuota.js";
@@ -52,6 +52,15 @@ function requireParticipant(req: Request, res: Response) {
   const ctx = participantFromRequest(req);
   if (ctx?.roomId === param(req.params.id)) return ctx;
   res.status(403).json({ error: "Not authorized for this room" });
+  return undefined;
+}
+
+/** A member who may also send messages, which images are part of. */
+function requireSender(req: Request, res: Response) {
+  const ctx = requireParticipant(req, res);
+  if (!ctx) return undefined;
+  if (hasPermission(ctx.room, "messagePermission", ctx.participant.userId)) return ctx;
+  res.status(403).json({ error: "Only owners can send messages in this room" });
   return undefined;
 }
 
@@ -205,7 +214,7 @@ export function createImageRouter(proxyHops = 0): Router {
    * still running has finished.
    */
   const rejectEarly: RequestHandler = (req, res, next) => {
-    const room = requireParticipant(req, res)?.room;
+    const room = requireSender(req, res)?.room;
     if (!room) return;
     const declaredBytes = Number(req.headers["content-length"]);
     if (!Number.isSafeInteger(declaredBytes) || declaredBytes <= 0) {
@@ -259,9 +268,10 @@ export function createImageRouter(proxyHops = 0): Router {
   router.post("/rooms/:id/images", rejectEarly, upload.array("images", MAX_IMAGES_PER_MESSAGE), async (req: Request, res: Response) => {
     // The client left as the body finished: the reservation is already released.
     if (res.closed) return;
-    // Checked again: a slow upload can outlast the sender's membership or the
-    // room itself, and writing then would leave files no cleanup will remove.
-    const room = requireParticipant(req, res)?.room;
+    // Checked again: a slow upload can outlast the sender's membership, their
+    // permission to send or the room itself, and writing then would leave
+    // files no message will use, or that no cleanup will remove.
+    const room = requireSender(req, res)?.room;
     if (!room) return;
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (!files.length) {

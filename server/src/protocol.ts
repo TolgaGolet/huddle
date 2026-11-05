@@ -78,8 +78,18 @@ export type RoomPermission = "everyone" | "owners";
 export interface RoomPermissions {
   pinPermission: RoomPermission;
   screenSharePermission: RoomPermission;
+  /** Text, GIFs, images, polls and edits. Reactions, votes and deleting stay open to all. */
+  messagePermission: RoomPermission;
   /** Newcomers wait for an owner's approval. */
   waitingRoom: boolean;
+}
+
+/** The settings that say who may do something, as opposed to on/off switches. */
+export type PermissionKey = { [K in keyof RoomPermissions]: RoomPermissions[K] extends RoomPermission ? K : never }[keyof RoomPermissions];
+
+/** Shared so the client's disabled controls match what the server enforces. Missing settings allow everything. */
+export function permits(settings: RoomPermissions | null | undefined, permission: PermissionKey, isOwner: boolean): boolean {
+  return settings?.[permission] !== "owners" || isOwner;
 }
 
 /** Sent to the whole room, so it never holds the password. */
@@ -155,6 +165,8 @@ export interface ClientToServerEvents {
 export interface ServerToClientEvents {
   error: (data: { code: JoinErrorCode; message: string }) => void;
   "rate-limited": (data: { event: string }) => void;
+  /** Something the room's settings didn't allow was dropped, e.g. a message sent as they changed. */
+  "not-permitted": (data: { event: string }) => void;
   "room-joined": (data: {
     userId: string;
     /** Authorizes this client's image requests. Sent only to its owner. */

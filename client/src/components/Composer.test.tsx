@@ -32,16 +32,17 @@ function fakeSocket() {
 const message = { id: "m1", senderName: "Bo", text: "hi" } as unknown as ChatMessage;
 const imageFile = () => new File(["x"], "a.png", { type: "image/png" });
 
-function setup(replyingTo: ChatMessage | null = null) {
+function setup(replyingTo: ChatMessage | null = null, canSend = true) {
   const socket = fakeSocket();
   const ref = { current: null as ComposerHandle | null };
   const onReplyingToChange = vi.fn();
-  const element = (reply: ChatMessage | null) => (
+  const element = (reply: ChatMessage | null, allowed = canSend) => (
     <Composer
       ref={ref}
       socket={socket as unknown as AppSocket}
       httpToken="token"
       roomId="room"
+      canSend={allowed}
       replyingTo={reply}
       onReplyingToChange={onReplyingToChange}
       onBeforeSend={() => {}}
@@ -49,7 +50,14 @@ function setup(replyingTo: ChatMessage | null = null) {
   );
   const view = render(element(replyingTo));
   const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
-  return { socket, ref, box, onReplyingToChange, rerenderWith: (reply: ChatMessage | null) => view.rerender(element(reply)) };
+  return {
+    socket,
+    ref,
+    box,
+    onReplyingToChange,
+    rerenderWith: (reply: ChatMessage | null) => view.rerender(element(reply)),
+    setCanSend: (allowed: boolean) => view.rerender(element(replyingTo, allowed)),
+  };
 }
 
 const chatEmits = (socket: ReturnType<typeof fakeSocket>) => socket.emit.mock.calls.filter(([event]) => event === "chat-message");
@@ -70,6 +78,56 @@ describe("Composer", () => {
 
     await waitFor(() => expect(box.value).toBe(""));
     expect(chatEmits(socket)).toEqual([["chat-message", { text: "hello" }]]);
+  });
+
+  it("sends, types and adds images only with permission to send", () => {
+    const { socket, ref, box } = setup(null, false);
+
+    expect(box.readOnly).toBe(true);
+    expect(box.getAttribute("aria-disabled")).toBe("true");
+    expect(box.placeholder).toBe("Only owners can send messages");
+    expect(screen.getByLabelText("Create poll").matches(":disabled")).toBe(true);
+    act(() => ref.current!.addImages([imageFile()]));
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    expect(screen.queryByText(/Images ready to send/)).toBeNull();
+    expect(socket.emit).not.toHaveBeenCalled();
+  });
+
+  // Regression: disabling the focused box dropped focus to the page.
+  it("keeps focus in the box when the permission goes", () => {
+    const { box, setCanSend } = setup();
+    box.focus();
+
+    setCanSend(false);
+
+    expect(box.disabled).toBe(false);
+    expect(document.activeElement).toBe(box);
+  });
+
+  // Regression: the server would drop the message after the draft was cleared.
+  it("keeps the draft if the permission goes during an upload", async () => {
+    let finishUpload!: (urls: string[]) => void;
+    vi.mocked(uploadImages).mockReturnValue(new Promise((resolve) => { finishUpload = resolve; }));
+    const { socket, ref, box, setCanSend } = setup();
+    fireEvent.change(box, { target: { value: "look" } });
+    act(() => ref.current!.addImages([imageFile()]));
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    setCanSend(false);
+    await act(async () => finishUpload(["/api/rooms/room/images/a.png"]));
+
+    expect(chatEmits(socket)).toEqual([]);
+    expect(screen.getByRole("alert").textContent).toContain("Not sent");
+    expect(box.value).toBe("look");
+    expect(screen.getByAltText("a.png")).toBeTruthy();
+  });
+
+  it("says so when the server refused a send as the setting changed", () => {
+    const { socket } = setup();
+    act(() => socket.fire("not-permitted", { event: "chat-message" }));
+
+    expect(screen.getByRole("alert").textContent).toContain("only owners");
   });
 
   it("doesn't send on Shift+Enter", () => {

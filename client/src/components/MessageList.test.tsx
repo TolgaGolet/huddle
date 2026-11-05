@@ -38,13 +38,14 @@ function setup(history: ChatEntry[] = [], pinnedMessageId: string | null = null,
   const isAtBottomRef = { current: true };
   const onReply = vi.fn();
   const onFocusComposer = vi.fn();
-  const element = (h: ChatEntry[], pinned: string | null) => (
+  const element = (h: ChatEntry[], pinned: string | null, canSendMessages = true) => (
     <ImageSessionContext.Provider value={1}>
       <MessageList
         socket={noSocket ? null : asAppSocket(socket)}
         chatHistory={h}
         pinnedMessageId={pinned}
         localUserId={ME}
+        canSendMessages={canSendMessages}
         isAtBottomRef={isAtBottomRef}
         onReply={onReply}
         onFocusComposer={onFocusComposer}
@@ -59,6 +60,7 @@ function setup(history: ChatEntry[] = [], pinnedMessageId: string | null = null,
     onFocusComposer,
     ...view,
     update: (h: ChatEntry[], pinned: string | null = pinnedMessageId) => view.rerender(element(h, pinned)),
+    setCanSend: (allowed: boolean) => view.rerender(element(history, pinnedMessageId, allowed)),
   };
 }
 
@@ -256,6 +258,21 @@ describe("editing", () => {
 
     expect(emitsOf(socket, "chat-edit")).toEqual([]);
     expect(screen.queryByLabelText("Edit message")).toBeNull();
+  });
+
+  // Regression: the edit was thrown away, while the composer keeps its draft.
+  it("keeps an open edit while the permission is gone, and saves it once it's back", () => {
+    const { socket, setCanSend } = startEditing();
+    fireEvent.change(screen.getByLabelText("Edit message"), { target: { value: "new" } });
+
+    setCanSend(false);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(emitsOf(socket, "chat-edit")).toEqual([]);
+    expect((screen.getByLabelText("Edit message") as HTMLTextAreaElement).value).toBe("new");
+
+    setCanSend(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(emitsOf(socket, "chat-edit")).toEqual([["chat-edit", { messageId: "a", text: "new" }]]);
   });
 });
 

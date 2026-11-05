@@ -23,6 +23,8 @@ interface Props {
   socket: AppSocket | null;
   httpToken: string | null;
   roomId: string;
+  /** False when the room lets only owners send messages. */
+  canSend?: boolean;
   replyingTo: ChatMessage | null;
   onReplyingToChange: React.Dispatch<React.SetStateAction<ChatMessage | null>>;
   /** Called just before anything is sent, so the list follows the new entry. */
@@ -55,14 +57,19 @@ function extractClipboardImages(clipboardData: DataTransfer | null): File[] {
 
 const SENDING_TOO_FAST_ERROR = "You're sending messages too fast.";
 const SERVER_LIMIT_ERROR = "You're doing that too fast.";
-const SERVER_LIMIT_ERROR_MS = 4000;
+const SERVER_NOTICE_MS = 4000;
+const NO_PERMISSION_TEXT = "Only owners can send messages";
+const NOT_PERMITTED_ERROR = "Not sent: only owners can send messages now.";
 
-export default function Composer({ ref, socket, httpToken, roomId, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
+export default function Composer({ ref, socket, httpToken, roomId, canSend = true, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
   const [text, setText] = useState("");
   const [openPopover, setOpenPopover] = useState<Popover | null>(null);
   // Read after an upload, when the `replyingTo` a send captured may be outdated.
   const replyingToRef = useRef(replyingTo);
   replyingToRef.current = replyingTo;
+  // Read by handlers and after an upload, as the setting can change meanwhile.
+  const canSendRef = useRef(canSend);
+  canSendRef.current = canSend;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { images: pendingImages, add: addToDraft, remove: removeImage, clear: clearDraft } = useImageDraft();
   const { typingUsers, notifyTyping } = useTyping(socket);
@@ -100,7 +107,7 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
 
   function addImages(fileList: FileList | File[]) {
     // A successful send clears the draft, which would lose images added now.
-    if (sending) return;
+    if (sending || !canSendRef.current) return;
     setUploadError(null);
     const problem = addToDraft(fileList);
     if (problem) setUploadError(problem);
@@ -131,12 +138,12 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
     const format = formatForShortcut(e);
     if (format) {
       e.preventDefault();
-      if (!sending) formatSelection(textarea, text, setText, format);
+      if (!sending && canSend) formatSelection(textarea, text, setText, format);
     }
   }
 
   async function doSend() {
-    if ((!text.trim() && !pendingImages.length) || !socket || !socket.id) return;
+    if (!canSendRef.current || (!text.trim() && !pendingImages.length) || !socket || !socket.id) return;
     // The textarea's maxLength only limits typing; emoji and formatting
     // insertions can push past it. The server drops over-limit messages
     // without a reply, so stop here before clearing (or uploading) anything.
@@ -180,6 +187,11 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
       setUploadError(CONNECTION_LOST_ERROR);
       return;
     }
+    // Keep the draft, and the uploaded images for a later send, if it comes back.
+    if (!canSendRef.current) {
+      setUploadError(NOT_PERMITTED_ERROR);
+      return;
+    }
     const payload: ChatMessagePayload = {
       text: text.trim(),
     };
@@ -202,6 +214,7 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
   }
 
   function handleCreatePoll(data: { question: string; options: string[]; allowMultiple: boolean }): boolean {
+    if (!canSendRef.current) return false;
     if (!socket?.connected) {
       setUploadError(CONNECTION_LOST_ERROR);
       return false;
@@ -213,7 +226,7 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
   }
 
   function handleGifSelect(gifUrl: string, gifTitle: string) {
-    if (!socket || sending) return;
+    if (!socket || sending || !canSendRef.current) return;
     if (!socket.connected) {
       setUploadError(CONNECTION_LOST_ERROR);
       return;
@@ -251,21 +264,29 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
     if (textareaRef.current) fitToContent(textareaRef.current);
   }, [text]);
 
-  // The server dropped something other than a draft (a reaction, vote, edit or call state).
+  // The server dropped something: other than a draft (a reaction, vote, edit or
+  // call state) when rate-limited, or a send that crossed a settings change.
   useEffect(() => {
     if (!socket) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const onLimited = () => {
-      setUploadError(SERVER_LIMIT_ERROR);
+    const show = (message: string) => () => {
+      setUploadError(message);
       clearTimeout(timer);
-      timer = setTimeout(() => setUploadError((current) => (current === SERVER_LIMIT_ERROR ? null : current)), SERVER_LIMIT_ERROR_MS);
+      timer = setTimeout(() => setUploadError((current) => (current === message ? null : current)), SERVER_NOTICE_MS);
     };
+    const onLimited = show(SERVER_LIMIT_ERROR);
+    const onNotPermitted = show(NOT_PERMITTED_ERROR);
     socket.on("rate-limited", onLimited);
+    socket.on("not-permitted", onNotPermitted);
     return () => {
       socket.off("rate-limited", onLimited);
+      socket.off("not-permitted", onNotPermitted);
       clearTimeout(timer);
     };
   }, [socket]);
+
+  // Losing the permission closes the pickers. The draft stays, in case it comes back.
+  if (!canSend && openPopover !== null) setOpenPopover(null);
 
   // Close the emoji, GIF and poll popovers with Escape while one is open.
   const popoverOpen = openPopover !== null;
@@ -367,7 +388,7 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
       {pendingImages.length > 0 && <p className="mb-1 text-[10px] text-gray-400">Images are temporarily stored and deleted when the room ends. Password-protected rooms encrypt uploaded images at rest; chat messages are not encrypted.</p>}
       <form onSubmit={send} className="space-y-1">
         {/* Formatting toolbar row */}
-        <fieldset disabled={sending} className="min-w-0 disabled:opacity-50">
+        <fieldset disabled={sending || !canSend} className="min-w-0 disabled:opacity-50">
         <div className="flex flex-wrap items-center justify-between">
           <FormattingToolbar textareaRef={textareaRef} text={text} setText={setText} />
           <div className="flex items-center gap-0.5 pointer-coarse:gap-0">
@@ -419,19 +440,21 @@ export default function Composer({ ref, socket, httpToken, roomId, replyingTo, o
           <textarea
             ref={textareaRef}
             value={text}
-            readOnly={sending}
+            // Read-only rather than disabled, so a focused box keeps focus when the permission goes.
+            readOnly={sending || !canSend}
+            aria-disabled={!canSend}
             onChange={(e) => { setText(e.target.value); handleTyping(); }}
             maxLength={MAX_CHAT_TEXT_LENGTH}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Type a message..."
+            placeholder={canSend ? "Type a message..." : NO_PERMISSION_TEXT}
             aria-label="Message"
             rows={1}
-            className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-base md:text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500 transition-colors resize-none min-h-[36px] max-h-28 overflow-y-auto"
+            className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-base md:text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500 transition-colors resize-none min-h-[36px] max-h-28 overflow-y-auto aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
           />
           <button
             type="submit"
-            disabled={sending || (!text.trim() && !pendingImages.length)}
+            disabled={sending || !canSend || (!text.trim() && !pendingImages.length)}
             aria-busy={sending}
             aria-label="Send message"
             className="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer self-end"

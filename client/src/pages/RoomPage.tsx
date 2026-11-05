@@ -21,7 +21,7 @@ import VoiceControls from "../components/VoiceControls";
 import SettingsPopup from "../components/SettingsPopup";
 import ScreenViewer from "../components/ScreenViewer";
 import type { Participant } from "../types";
-import { MAX_PARTICIPANTS } from "../types";
+import { MAX_PARTICIPANTS, permits } from "../types";
 import { resyncCallStateWhenLimited } from "../lib/callStateResync";
 import { isNoiseCancellationSupported } from "../lib/micCapture";
 import { playMuteSound, playUnmuteSound } from "../lib/notificationSounds";
@@ -179,8 +179,9 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
 
   const ownerIds = useMemo(() => new Set(roomSettings?.ownerIds), [roomSettings]);
   const isOwner = !!userId && ownerIds.has(userId);
-  const canPin = roomSettings?.pinPermission !== "owners" || isOwner;
-  const canShareScreen = roomSettings?.screenSharePermission !== "owners" || isOwner;
+  const canPin = permits(roomSettings, "pinPermission", isOwner);
+  const canShareScreen = permits(roomSettings, "screenSharePermission", isOwner);
+  const canSendMessages = permits(roomSettings, "messagePermission", isOwner);
 
   // The server stops a share the settings no longer allow; the capture ends here.
   useEffect(() => {
@@ -355,6 +356,7 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
               localUserId={userId ?? ""}
               roomId={roomId}
               canPin={canPin}
+              canSendMessages={canSendMessages}
             />
           </div>
         </main>

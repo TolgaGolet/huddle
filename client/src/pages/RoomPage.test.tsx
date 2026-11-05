@@ -26,9 +26,14 @@ vi.mock("../hooks/useCaptureAudio", () => ({
 vi.mock("../lib/notificationSounds", () => ({ playMuteSound: vi.fn(), playUnmuteSound: vi.fn() }));
 vi.mock("../lib/callStateResync", () => ({ resyncCallStateWhenLimited: vi.fn(() => () => {}) }));
 
-const captured = vi.hoisted(() => ({ list: null as null | Record<string, unknown> }));
+const captured = vi.hoisted(() => ({ list: null as null | Record<string, unknown>, chat: null as null | Record<string, unknown> }));
 
-vi.mock("../components/RoomChat", () => ({ default: () => <div data-testid="chat" /> }));
+vi.mock("../components/RoomChat", () => ({
+  default: (props: Record<string, unknown>) => {
+    captured.chat = props;
+    return <div data-testid="chat" />;
+  },
+}));
 vi.mock("../components/SettingsPopup", () => ({ default: () => <div data-testid="settings" /> }));
 vi.mock("../components/ScreenViewer", () => ({ default: ({ sharerName }: { sharerName: string }) => <div data-testid="screen">{sharerName}</div> }));
 vi.mock("../components/ParticipantsList", () => ({
@@ -170,7 +175,7 @@ describe("arriving", () => {
   });
 
   it("stops a screen share the settings no longer allow", async () => {
-    const settings = { pinPermission: "everyone", screenSharePermission: "everyone", waitingRoom: false, hasPassword: false, ownerIds: [] as string[] } as const;
+    const settings = { pinPermission: "everyone", screenSharePermission: "everyone", messagePermission: "everyone", waitingRoom: false, hasPassword: false, ownerIds: [] as string[] } as const;
     mockSocket({ settings });
     setup();
     await act(async () => fireEvent.click(firstButton(/share/i)));
@@ -183,13 +188,14 @@ describe("arriving", () => {
   });
 
   it("offers settings and moderation only as allowed", () => {
-    const settings = { pinPermission: "owners", screenSharePermission: "owners", waitingRoom: false, hasPassword: false, ownerIds: ["someone"] as string[] } as const;
+    const settings = { pinPermission: "owners", screenSharePermission: "owners", messagePermission: "owners", waitingRoom: false, hasPassword: false, ownerIds: ["someone"] as string[] } as const;
     mockSocket({ settings });
 
     setup();
 
     expect((firstButton("Only owners can share their screen") as HTMLButtonElement).disabled).toBe(true);
     expect((captured.list as unknown as { canModerate: boolean }).canModerate).toBe(false);
+    expect(captured.chat).toMatchObject({ canPin: false, canSendMessages: false });
   });
 
   // Regression: a password in router state stays in browser history.

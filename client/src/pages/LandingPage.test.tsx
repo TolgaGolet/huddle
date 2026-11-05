@@ -305,10 +305,12 @@ describe("creating", () => {
     openCreate();
     expect((screen.getByLabelText("Who can pin messages") as HTMLSelectElement).value).toBe("everyone");
     expect((screen.getByLabelText("Who can share their screen") as HTMLSelectElement).value).toBe("everyone");
+    expect((screen.getByLabelText("Who can send messages") as HTMLSelectElement).value).toBe("everyone");
     expect((screen.getByLabelText("Waiting room") as HTMLInputElement).checked).toBe(false);
 
     type("Who can pin messages", "owners");
     type("Who can share their screen", "owners");
+    type("Who can send messages", "owners");
     fireEvent.click(screen.getByLabelText("Waiting room"));
     submit();
 
@@ -316,6 +318,7 @@ describe("creating", () => {
     expect(JSON.parse((mock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({
       pinPermission: "owners",
       screenSharePermission: "owners",
+      messagePermission: "owners",
       waitingRoom: true,
     });
   });

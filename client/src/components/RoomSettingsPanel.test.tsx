@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { AppSocket, RoomSettings } from "../types";
 import RoomSettingsPanel from "./RoomSettingsPanel";
 
-const settings: RoomSettings = { pinPermission: "everyone", screenSharePermission: "owners", waitingRoom: false, hasPassword: true, ownerIds: [] };
+const settings: RoomSettings = { pinPermission: "everyone", screenSharePermission: "owners", messagePermission: "everyone", waitingRoom: false, hasPassword: true, ownerIds: [] };
 
 function fakeSocket() {
   const handlers = new Map<string, (data: unknown) => void>();
@@ -49,6 +49,8 @@ describe("RoomSettingsPanel", () => {
     expect(socket.emit).toHaveBeenLastCalledWith("update-room-settings", { pinPermission: "owners" });
     fireEvent.change(screen.getByLabelText("Who can share their screen"), { target: { value: "everyone" } });
     expect(socket.emit).toHaveBeenLastCalledWith("update-room-settings", { screenSharePermission: "everyone" });
+    fireEvent.change(screen.getByLabelText("Who can send messages"), { target: { value: "owners" } });
+    expect(socket.emit).toHaveBeenLastCalledWith("update-room-settings", { messagePermission: "owners" });
     fireEvent.click(screen.getByLabelText("Waiting room"));
     expect(socket.emit).toHaveBeenLastCalledWith("update-room-settings", { waitingRoom: true });
   });

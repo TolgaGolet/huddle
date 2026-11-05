@@ -175,6 +175,13 @@ export default function RoomSettingsPanel({ socket, settings, isOwner }: Props) 
           disabled={disabled}
           onChange={(screenSharePermission) => socket?.emit("update-room-settings", { screenSharePermission })}
         />
+        <PermissionSelect
+          id="room-message-permission"
+          label="Who can send messages"
+          value={settings.messagePermission}
+          disabled={disabled}
+          onChange={(messagePermission) => socket?.emit("update-room-settings", { messagePermission })}
+        />
         <WaitingRoomCheckbox
           id="room-waiting-room"
           checked={settings.waitingRoom}

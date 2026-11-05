@@ -28,9 +28,14 @@ vi.mock("./Composer", () => ({
 const message = { id: "m1", senderName: "Ana", text: "hi" } as ChatMessage;
 const DROP_TEXT = "Drop images to send";
 
-function setup() {
-  const { container } = render(<ChatPanel socket={null} httpToken={null} chatHistory={[]} pinnedMessageId={null} localUserId="me" roomId="room" />);
-  return container.firstElementChild as HTMLElement;
+function panel(canSendMessages = true) {
+  return <ChatPanel socket={null} httpToken={null} chatHistory={[]} pinnedMessageId={null} localUserId="me" roomId="room" canSendMessages={canSendMessages} />;
+}
+
+function setup(canSendMessages = true) {
+  const { container, rerender } = render(panel(canSendMessages));
+  const element = container.firstElementChild as HTMLElement;
+  return Object.assign(element, { setCanSend: (allowed: boolean) => rerender(panel(allowed)) });
 }
 
 function dragLeave(panel: HTMLElement, relatedTarget: EventTarget | null) {
@@ -134,6 +139,27 @@ describe("dropping images", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(children.handle.addImages).toHaveBeenCalledWith(files);
+    expect(screen.queryByText(DROP_TEXT)).toBeNull();
+  });
+  // Regression: an unhandled dragover let the browser open the file, leaving the call.
+  it("still stops the browser opening a file when the user may not send", () => {
+    const panel = setup(false);
+    const over = createEvent.dragOver(panel, { dataTransfer: { dropEffect: "copy" } });
+    fireEvent(panel, over);
+    const drop = createEvent.drop(panel, { dataTransfer: { files: [] } });
+    fireEvent(panel, drop);
+
+    expect(over.defaultPrevented).toBe(true);
+    expect(drop.defaultPrevented).toBe(true);
+    expect(screen.queryByText(DROP_TEXT)).toBeNull();
+  });
+
+  it("hides the drop target when the permission goes mid-drag", () => {
+    const panel = setup();
+    fireEvent.dragOver(panel);
+
+    act(() => panel.setCanSend(false));
+
     expect(screen.queryByText(DROP_TEXT)).toBeNull();
   });
 });

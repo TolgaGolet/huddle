@@ -97,11 +97,13 @@ const permission = (v: unknown): RoomPermission | null => (v === "everyone" || v
 function permissionsFrom(raw: UnknownRecord): Partial<RoomPermissions> | null {
   const pinPermission = optional(raw.pinPermission, permission);
   const screenSharePermission = optional(raw.screenSharePermission, permission);
+  const messagePermission = optional(raw.messagePermission, permission);
   const waitingRoom = optional(raw.waitingRoom, bool);
-  if (pinPermission === null || screenSharePermission === null || waitingRoom === null) return null;
+  if (pinPermission === null || screenSharePermission === null || messagePermission === null || waitingRoom === null) return null;
   const result: Partial<RoomPermissions> = {};
   if (pinPermission) result.pinPermission = pinPermission;
   if (screenSharePermission) result.screenSharePermission = screenSharePermission;
+  if (messagePermission) result.messagePermission = messagePermission;
   if (waitingRoom !== undefined) result.waitingRoom = waitingRoom;
   return result;
 }

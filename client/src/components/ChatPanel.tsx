@@ -13,13 +13,18 @@ interface Props {
   localUserId: string;
   roomId: string;
   canPin?: boolean;
+  canSendMessages?: boolean;
 }
 
-export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId, canPin }: Props) {
+export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId, canPin, canSendMessages = true }: Props) {
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
   const isAtBottomRef = useRef(true);
+
+  // A reply can't be sent once the permission is gone, nor images dropped.
+  if (!canSendMessages && replyingTo) setReplyingTo(null);
+  if (!canSendMessages && isDragging) setIsDragging(false);
 
   const focusComposer = useCallback(() => composerRef.current?.focus(), []);
 
@@ -32,7 +37,12 @@ export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessag
     <div
       className="relative flex flex-col h-full"
       onDragOver={(event) => {
+        // Always handled: otherwise the browser opens a dropped file, leaving the call.
         event.preventDefault();
+        if (!canSendMessages) {
+          event.dataTransfer.dropEffect = "none";
+          return;
+        }
         setIsDragging(true);
       }}
       onDragLeave={(event) => {
@@ -55,6 +65,7 @@ export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessag
         pinnedMessageId={pinnedMessageId}
         localUserId={localUserId}
         canPin={canPin}
+        canSendMessages={canSendMessages}
         isAtBottomRef={isAtBottomRef}
         onReply={startReply}
         onFocusComposer={focusComposer}
@@ -64,6 +75,7 @@ export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessag
         socket={socket}
         httpToken={httpToken}
         roomId={roomId}
+        canSend={canSendMessages}
         replyingTo={replyingTo}
         onReplyingToChange={setReplyingTo}
         onBeforeSend={() => { isAtBottomRef.current = true; }}

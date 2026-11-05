@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import { isPollMessage } from "./protocol.js";
+import { maySendMessages } from "./chatHandler.js";
 import { addChatMessage, findEntry, touchRoom, type PollMessage, type PollOption } from "./roomManager.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
 import { parsePollCreate, parsePollVote } from "./validation.js";
@@ -16,7 +17,9 @@ export function setupPolls(io: AppServer): void {
   io.on("connection", (socket) => {
     // The parser has already trimmed the question and options, dropped blank
     // options, and enforced 2..MAX_POLL_OPTIONS of them.
-    onRoom(socket, "poll-create", parsePollCreate, ({ roomId, room, participant }, { question, options, allowMultiple }) => {
+    onRoom(socket, "poll-create", parsePollCreate, (ctx, { question, options, allowMultiple }) => {
+      if (!maySendMessages(socket, ctx, "poll-create")) return;
+      const { roomId, room, participant } = ctx;
       const pollOptions = options.map((text) => ({
         id: nanoid(6),
         text,

@@ -1,8 +1,8 @@
 import { nanoid } from "nanoid";
-import { addChatMessage, findEntry, emptyReactions, hasPermission, removeMessage, touchRoom, type ChatMessage } from "./roomManager.js";
+import { addChatMessage, findEntry, emptyReactions, hasPermission, removeMessage, touchRoom, type ChatMessage, type RoomCtx } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
 import { isPollMessage, quoteText } from "./protocol.js";
-import { onRoom, type AppServer } from "./socketRoute.js";
+import { onRoom, type AppServer, type AppSocket } from "./socketRoute.js";
 import {
   noPayload,
   parseChatEdit,
@@ -18,6 +18,17 @@ const GIPHY_CDN_HOST = /^media\d*\.giphy\.com$/;
 // emoji), so without a cap a client could grow a message's reaction map, and
 // every broadcast of it, without bound.
 const MAX_REACTION_KEYS = 20;
+
+/**
+ * Text, GIFs, images, polls and edits need the room's message permission. The
+ * sender is told when it's missing, since its client may already have cleared
+ * a draft sent just as the setting changed.
+ */
+export function maySendMessages(socket: AppSocket, { room, participant }: RoomCtx, event: string): boolean {
+  if (hasPermission(room, "messagePermission", participant.userId)) return true;
+  socket.emit("not-permitted", { event });
+  return false;
+}
 
 function isGiphyUrl(url: string): boolean {
   try {
@@ -38,6 +49,7 @@ export function setupChat(io: AppServer): void {
     // Typing indicator relay: broadcast to the others so they can show
     // "X is typing...". Clients auto-expire the indicator themselves.
     onRoom(socket, "typing", noPayload, ({ roomId, room, participant }) => {
+      if (!hasPermission(room, "messagePermission", participant.userId)) return;
       touchRoom(room);
       socket.to(roomId).emit("typing", {
         userId: participant.userId,
@@ -45,7 +57,9 @@ export function setupChat(io: AppServer): void {
       });
     });
 
-    onRoom(socket, "chat-message", parseChatMessage, ({ roomId, room, participant }, { text, replyToId, gifUrl, imageUrls }) => {
+    onRoom(socket, "chat-message", parseChatMessage, (ctx, { text, replyToId, gifUrl, imageUrls }) => {
+      if (!maySendMessages(socket, ctx, "chat-message")) return;
+      const { roomId, room, participant } = ctx;
       // Validate gifUrl is a GIPHY CDN URL to prevent abuse
       const safeGifUrl = gifUrl && isGiphyUrl(gifUrl) ? gifUrl : undefined;
       // Shape and count are enforced by the parser; each URL must also point
@@ -105,7 +119,10 @@ export function setupChat(io: AppServer): void {
       });
     });
 
-    onRoom(socket, "chat-edit", parseChatEdit, ({ roomId, room, participant }, { messageId, text }) => {
+    onRoom(socket, "chat-edit", parseChatEdit, (ctx, { messageId, text }) => {
+      // An edit can say anything, so it counts as sending.
+      if (!maySendMessages(socket, ctx, "chat-edit")) return;
+      const { roomId, room, participant } = ctx;
       const msg = findEntry(room, messageId);
       if (!msg || isPollMessage(msg)) return;
 
