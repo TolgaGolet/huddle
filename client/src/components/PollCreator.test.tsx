@@ -59,7 +59,7 @@ describe("PollCreator", () => {
 
     fireEvent.click(createButton());
 
-    expect(onSubmit).toHaveBeenCalledWith({ question: "Pizza?", options: ["Yes", "No"], allowMultiple: false });
+    expect(onSubmit).toHaveBeenCalledWith({ question: "Pizza?", options: ["Yes", "No"], allowMultiple: false, lockVotes: false });
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -67,10 +67,30 @@ describe("PollCreator", () => {
     const { onSubmit } = setup();
     fillValid();
 
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Allow multiple selections" }));
     fireEvent.click(createButton());
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ allowMultiple: true }));
+  });
+
+  it("passes the locked-votes choice and an end time", () => {
+    const { onSubmit } = setup();
+    fillValid();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Votes can't be changed" }));
+    fireEvent.change(screen.getByLabelText("Ends after"), { target: { value: String(15 * 60_000) } });
+    fireEvent.click(createButton());
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ lockVotes: true, durationMs: 15 * 60_000 }));
+  });
+
+  it("sends no end time by default", () => {
+    const { onSubmit } = setup();
+    fillValid();
+
+    fireEvent.click(createButton());
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.not.objectContaining({ durationMs: expect.anything() }));
   });
 
   it("stays open with what's typed when the poll wasn't sent", () => {

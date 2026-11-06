@@ -5,6 +5,7 @@ import { Server } from "socket.io";
 import { io as connect, type Socket as ClientSocket } from "socket.io-client";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
+import { setupPolls } from "./pollHandler.js";
 import { createRoom, getRoom, type ChatMessage, type Room } from "./roomManager.js";
 
 let httpServer: HttpServer;
@@ -17,6 +18,7 @@ beforeAll(async () => {
   io = new Server(httpServer, { transports: ["websocket"] });
   setupSignaling(io);
   setupChat(io);
+  setupPolls(io);
   await new Promise<void>((resolve) => httpServer.listen(0, resolve));
   url = `http://localhost:${(httpServer.address() as AddressInfo).port}`;
 });
@@ -113,7 +115,7 @@ describe("chat-message reply quotes", () => {
 
   it("doesn't quote a poll", async () => {
     const room = await joinNewRoom();
-    room.chatHistory.push({ id: "poll1", type: "poll", senderId: "u", senderName: "Bob", question: "q", options: [], allowMultiple: false, timestamp: 0 });
+    room.chatHistory.push({ id: "poll1", type: "poll", senderId: "u", senderName: "Bob", question: "q", options: [], allowMultiple: false, lockVotes: false, timestamp: 0 });
 
     expect((await message({ text: "hi", replyToId: "poll1" })).replyTo).toBeUndefined();
   });
@@ -227,12 +229,13 @@ describe("message ownership", () => {
 
   afterEach(() => other?.disconnect());
 
-  async function joinTwo(): Promise<void> {
+  /** With `otherOwns`, Bob created the room and so is its owner. */
+  async function joinTwo({ otherOwns = false } = {}): Promise<void> {
     room = createRoom();
     client = connect(url, { transports: ["websocket"] });
     other = connect(url, { transports: ["websocket"] });
     await joined(client, { roomId: room.id, name: "Ana" });
-    await joined(other, { roomId: room.id, name: "Bob" });
+    await joined(other, { roomId: room.id, name: "Bob", ...(otherOwns && { ownerToken: room.ownerToken }) });
   }
 
   // Events from one socket are handled in order, so once this reply arrives
@@ -267,6 +270,23 @@ describe("message ownership", () => {
 
     expect(stored(msg.id)).toMatchObject({ text: "hi" });
     expect(stored(msg.id)?.edited).toBeUndefined();
+  });
+
+  it("lets an owner delete anyone's message and poll, but not edit them", async () => {
+    await joinTwo({ otherOwns: true });
+    const msg = await send<{ id: string }>("chat-message", { text: "hi" }, "chat-message");
+    const poll = await send<{ id: string }>("poll-create", { question: "Lunch?", options: ["Soup", "Pizza"], allowMultiple: false, lockVotes: false }, "poll-create");
+
+    other.emit("chat-edit", { messageId: msg.id, text: "hacked" });
+    await flush(other, msg.id);
+    expect(stored(msg.id)).toMatchObject({ text: "hi" });
+
+    for (const id of [msg.id, poll.id]) {
+      const deleted = new Promise((resolve) => client.once("chat-message-delete", resolve));
+      other.emit("chat-delete", { messageId: id });
+      expect(await deleted).toEqual({ messageId: id });
+    }
+    expect(getRoom(room.id)?.chatHistory).toEqual([]);
   });
 
   it("refuses to edit a GIF message", async () => {

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useImperativeHandle, useLayoutEffect } from "react";
 import { Send, Loader2, Smile, BarChart3, Reply, X, Image as ImageIcon } from "lucide-react";
-import type { AppSocket, ChatMessage, ClientToServerEvents } from "../types";
+import type { AppSocket, ChatMessage, ClientToServerEvents, PollCreate } from "../types";
 import { createBucket, MAX_CHAT_TEXT_LENGTH, MAX_IMAGES_PER_MESSAGE, RATE_LIMITS } from "../types";
 import FormattingToolbar, { formatForShortcut, formatSelection, restoreSelection } from "./FormattingToolbar";
 import EmojiPicker from "./EmojiPicker";
@@ -213,7 +213,7 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
     void doSend();
   }
 
-  function handleCreatePoll(data: { question: string; options: string[]; allowMultiple: boolean }): boolean {
+  function handleCreatePoll(data: PollCreate): boolean {
     if (!canSendRef.current) return false;
     if (!socket?.connected) {
       setUploadError(CONNECTION_LOST_ERROR);

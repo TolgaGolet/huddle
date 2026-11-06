@@ -67,7 +67,29 @@ export interface PollMessage {
   question: string;
   options: PollOption[];
   allowMultiple: boolean;
+  /** A vote, once cast, can't be changed; votes arrive through `poll-submit`. */
+  lockVotes: boolean;
   timestamp: number;
+  /** Server time after which votes are refused. */
+  endsAt?: number;
+  /** Set by the server when `endsAt` passes, so clients don't depend on their own clocks. */
+  closed?: boolean;
+}
+
+export type PollCreate = { question: string; options: string[]; allowMultiple: boolean; lockVotes: boolean; durationMs?: number };
+
+/** Shared so the client's disabled options match what the server accepts. */
+export function isPollOpen(poll: PollMessage, now: number): boolean {
+  return !poll.closed && (poll.endsAt === undefined || now < poll.endsAt);
+}
+
+/** Whether the user is among a reaction's users (or an option's voters). */
+export function hasReacted(users: ReactionUser[], userId: string): boolean {
+  return users.some((u) => u.userId === userId);
+}
+
+export function hasVotedInPoll(poll: PollMessage, userId: string): boolean {
+  return poll.options.some((o) => hasReacted(o.voters, userId));
 }
 
 export type ChatEntry = ChatMessage | PollMessage;
@@ -78,7 +100,7 @@ export type RoomPermission = "everyone" | "owners";
 export interface RoomPermissions {
   pinPermission: RoomPermission;
   screenSharePermission: RoomPermission;
-  /** Text, GIFs, images, polls and edits. Reactions, votes and deleting stay open to all. */
+  /** Text, GIFs, images, polls and edits. Reactions, votes and deleting stay open to all (owners can delete anyone's). */
   messagePermission: RoomPermission;
   /** Newcomers wait for an owner's approval. */
   waitingRoom: boolean;
@@ -92,11 +114,23 @@ export function permits(settings: RoomPermissions | null | undefined, permission
   return settings?.[permission] !== "owners" || isOwner;
 }
 
+/** Senders delete their own messages; owners can delete anyone's. */
+export function mayDeleteMessage(senderId: string, userId: string, isOwner: boolean): boolean {
+  return senderId === userId || isOwner;
+}
+
+/** Whom an owner can kick, promote or demote: anyone else present but the room's creator. */
+export function isModeratable(targetId: string, actorId: string, creatorId: string | null): boolean {
+  return targetId !== actorId && targetId !== creatorId;
+}
+
 /** Sent to the whole room, so it never holds the password. */
 export interface RoomSettings extends RoomPermissions {
   hasPassword: boolean;
   /** userIds. */
   ownerIds: string[];
+  /** userId of the room's creator, whom other owners can't kick or demote. */
+  creatorId: string | null;
 }
 
 export interface WaitingPerson {
@@ -150,8 +184,11 @@ export interface ClientToServerEvents {
   "chat-edit": (data: { messageId: string; text: string }) => void;
   "chat-delete": (data: { messageId: string }) => void;
   "chat-pin": (data: { messageId: string }) => void;
-  "poll-create": (data: { question: string; options: string[]; allowMultiple: boolean }) => void;
+  "poll-create": (data: PollCreate) => void;
+  /** Toggles one vote. Refused for polls with `lockVotes`. */
   "poll-vote": (data: { pollId: string; optionId: string }) => void;
+  /** All of a user's votes at once, for polls with `lockVotes`. */
+  "poll-submit": (data: { pollId: string; optionIds: string[] }) => void;
   /** This client's user is speaking. Media is peer-to-peer, so the server can't tell otherwise. */
   "voice-activity": () => void;
   "set-owner": (data: { userId: string; isOwner: boolean }) => void;

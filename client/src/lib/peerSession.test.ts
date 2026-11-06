@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PeerSession, type PeerSessionHost } from "./peerSession";
+import { MIC_RESTART_GRACE_MS, PeerSession, type PeerSessionHost } from "./peerSession";
 
 class FakePeerConnection {
   signalingState: RTCSignalingState = "stable";
@@ -485,6 +485,60 @@ describe("attachLocalTrack", () => {
 
     expect(transceiver.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
     expect(pc.addTrack).not.toHaveBeenCalled();
+  });
+
+  // Regression: Firefox negotiated before the mic (restricted ICE candidates), ICE
+  // failed, and the joiner stayed unheard after the restart. Gather again soon.
+  it("restarts ICE when a sender negotiated before the mic still isn't connected after a grace period", () => {
+    const { pc, session } = setup();
+    pc.transceivers = [emptyAudioTransceiver()];
+    pc.localDescription = { type: "offer" };
+    pc.connectionState = "connecting";
+
+    session.attachLocalTrack(newTrack, stream);
+    vi.advanceTimersByTime(MIC_RESTART_GRACE_MS - 1);
+    expect(pc.restartIce).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+
+    expect(pc.restartIce).toHaveBeenCalledOnce();
+  });
+
+  // Regression: the restart ran at once in every browser, disrupting connections about to succeed.
+  it("leaves a connection that succeeds within the grace period alone", () => {
+    const { pc, session } = setup();
+    pc.transceivers = [emptyAudioTransceiver()];
+    pc.localDescription = { type: "offer" };
+    pc.connectionState = "connecting";
+
+    session.attachLocalTrack(newTrack, stream);
+    pc.connectionState = "connected";
+    vi.advanceTimersByTime(MIC_RESTART_GRACE_MS);
+
+    expect(pc.restartIce).not.toHaveBeenCalled();
+  });
+
+  it("doesn't restart ICE for a connected peer, an unnegotiated one, or a device change", () => {
+    const connected = setup();
+    connected.pc.transceivers = [emptyAudioTransceiver()];
+    connected.pc.localDescription = { type: "offer" };
+    connected.pc.connectionState = "connected";
+    connected.session.attachLocalTrack(newTrack, stream);
+
+    const fresh = setup();
+    fresh.pc.transceivers = [emptyAudioTransceiver()];
+    fresh.session.attachLocalTrack(newTrack, stream);
+
+    const deviceChange = setup();
+    const sender = { track: { kind: "audio" }, replaceTrack: vi.fn(async () => {}) };
+    deviceChange.pc.getSenders = (() => [sender]) as unknown as typeof deviceChange.pc.getSenders;
+    deviceChange.pc.localDescription = { type: "offer" };
+    deviceChange.pc.connectionState = "connecting";
+    deviceChange.session.attachLocalTrack(newTrack, stream);
+    vi.advanceTimersByTime(MIC_RESTART_GRACE_MS);
+
+    expect(connected.pc.restartIce).not.toHaveBeenCalled();
+    expect(fresh.pc.restartIce).not.toHaveBeenCalled();
+    expect(deviceChange.pc.restartIce).not.toHaveBeenCalled();
   });
 
   it("restores sendrecv on a transceiver left in another direction", () => {

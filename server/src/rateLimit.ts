@@ -76,6 +76,7 @@ export const EVENT_LIMITS: Readonly<Record<keyof ClientToServerEvents, RateLimit
   "chat-pin": "messageActions",
   "chat-reaction": "reactions",
   "poll-vote": "reactions",
+  "poll-submit": "reactions",
   "mute-toggle": "callState",
   "screen-share-started": "callState",
   "screen-share-stopped": "callState",

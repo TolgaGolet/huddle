@@ -2,12 +2,14 @@ import { Trash2 } from "lucide-react";
 import Dialog from "./Dialog";
 
 interface Props {
+  /** Set when an owner deletes someone else's message, so it isn't mistaken for their own. */
+  senderName?: string;
   onCancel: () => void;
   onConfirm: () => void;
   returnFocus: () => HTMLElement | null;
 }
 
-export default function DeleteMessageDialog({ onCancel, onConfirm, returnFocus }: Props) {
+export default function DeleteMessageDialog({ senderName, onCancel, onConfirm, returnFocus }: Props) {
   return (
     <Dialog
       onClose={onCancel}
@@ -19,7 +21,7 @@ export default function DeleteMessageDialog({ onCancel, onConfirm, returnFocus }
     >
       <div className="flex items-center gap-2 mb-2">
         <Trash2 size={14} className="text-red-400" />
-        <h3 id="delete-dialog-title" className="text-sm font-semibold text-white">Delete message?</h3>
+        <h3 id="delete-dialog-title" className="text-sm font-semibold text-white">{senderName ? `Delete ${senderName}'s message?` : "Delete message?"}</h3>
       </div>
       <p className="text-xs text-gray-400 mb-4">
         This message will be removed for everyone in the room. This cannot be undone.

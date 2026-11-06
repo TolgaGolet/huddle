@@ -12,6 +12,8 @@ interface Props {
   /** For an owner looking at someone else; leave out otherwise. */
   moderation?: {
     targetIsOwner: boolean;
+    /** The room's creator can't be kicked or demoted, so neither action is offered. */
+    targetIsCreator?: boolean;
     onToggleOwner: () => void;
     onKick: () => void;
   };
@@ -84,6 +86,13 @@ export default function ParticipantContextMenu({ x, y, name, volume, onVolumeCha
       </div>
       {moderation && (
         <div className="mt-2 pt-2 border-t border-gray-700">
+          {moderation.targetIsCreator ? (
+            <p className="flex items-center gap-2 px-2 py-1.5 text-xs text-gray-400">
+              <Crown size={12} className="text-amber-400" />
+              Room creator — can't be removed
+            </p>
+          ) : (
+          <>
           <button type="button" onClick={moderation.onToggleOwner} className={`${ACTION} text-gray-200 hover:bg-gray-700`}>
             <Crown size={12} />
             {moderation.targetIsOwner ? "Remove as owner" : "Make owner"}
@@ -92,6 +101,8 @@ export default function ParticipantContextMenu({ x, y, name, volume, onVolumeCha
             <UserX size={12} />
             Kick from room
           </button>
+          </>
+          )}
         </div>
       )}
     </div>,

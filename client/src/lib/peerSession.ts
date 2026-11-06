@@ -8,6 +8,9 @@ const MAX_RESTARTS = 3;
 const MAX_AUDIO_RECOVERIES = 2;
 const IGNORED_OFFER_RECOVERY_MS = 5000;
 const DISCONNECT_ESCALATION_MS = 8000;
+// How long a peer negotiated before the mic may keep connecting once the track
+// arrives, before its candidates are gathered again (see attachLocalTrack).
+export const MIC_RESTART_GRACE_MS = 2000;
 
 // Structured stats log, development only.
 //
@@ -363,6 +366,8 @@ export class PeerSession {
       audioTransceiver?.sender ??
       pc.getSenders().find((s) => s.track?.kind === "audio");
     if (audioSender) {
+      // A peer created after the mic already carries its track.
+      if (audioSender.track === newTrack) return;
       if (audioTransceiver && audioTransceiver.direction !== "sendrecv") {
         try { audioTransceiver.direction = "sendrecv"; } catch { /* ignore */ }
       }
@@ -373,6 +378,25 @@ export class PeerSession {
       audioSender.replaceTrack(newTrack).catch((err) => {
         huddleWarn("audio", { peerId, event: "replaceTrack-error", error: errorName(err) });
       });
+      // Negotiated before the mic existed: Firefox gathered its candidates
+      // without a getUserMedia grant (mDNS-only host, default route only),
+      // which can't connect behind CGNAT. If it still hasn't connected after a
+      // grace period, gather again instead of waiting for `failed` and
+      // recovering on a connection that stayed unheard. The grace spares a
+      // connection that was about to succeed (any browser) a needless restart.
+      if (audioTransceiver && pc.localDescription && pc.connectionState !== "connected") {
+        setTimeout(() => {
+          // Skipped while a recovery restart is already scheduled or in flight.
+          if (this.disposed || this.iceRestarting) return;
+          if (pc.connectionState === "connected" || pc.connectionState === "closed") return;
+          huddleLog("negotiate", { peerId, event: "restart-after-mic" });
+          try {
+            pc.restartIce();
+          } catch {
+            /* negotiation may be in flight */
+          }
+        }, MIC_RESTART_GRACE_MS);
+      }
     } else {
       try {
         pc.addTrack(newTrack, stream);

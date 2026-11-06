@@ -127,6 +127,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       rememberMember(room, participant.userId);
       if (isCreator) {
         room.owners.add(participant.userId);
+        room.creatorId = participant.userId;
         room.ownerToken = null;
       }
 
@@ -288,8 +289,12 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       // return visit starts over, and someone else can take over at once.
       if (room && userId && reason === LEFT_ON_PURPOSE) {
         room.memberIds.delete(userId);
-        room.owners.delete(userId);
-        promoteIfOwnerless(io, room);
+        const wasOwner = room.owners.delete(userId);
+        const wasCreator = room.creatorId === userId;
+        if (wasCreator) room.creatorId = null;
+        // With another owner present nobody is promoted, but the others must
+        // still learn the role is gone, or their menus keep protecting it.
+        if (!promoteIfOwnerless(io, room) && (wasOwner || wasCreator)) announceSettings(io, room);
       }
     });
   });

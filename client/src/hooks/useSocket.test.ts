@@ -169,7 +169,7 @@ describe("joining", () => {
 
   it("tracks settings from joining and from later changes", async () => {
     const { result } = await setupJoined();
-    const settings = { pinPermission: "owners", screenSharePermission: "everyone", messagePermission: "everyone", waitingRoom: true, hasPassword: false, ownerIds: ["u-me"] };
+    const settings = { pinPermission: "owners", screenSharePermission: "everyone", messagePermission: "everyone", waitingRoom: true, hasPassword: false, ownerIds: ["u-me"], creatorId: "u-me" };
 
     await fire("room-settings", settings);
 

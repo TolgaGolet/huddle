@@ -148,8 +148,57 @@ describe("owners", () => {
     await settled(bo.socket);
     expect(room.owners.has(bo.userId)).toBe(true);
 
+    const cy = await join(room, "Cy");
+    owner.socket.emit("set-owner", { userId: cy.userId, isOwner: true });
+    await vi.waitFor(() => expect(room.owners.has(cy.userId)).toBe(true));
+    bo.socket.emit("set-owner", { userId: cy.userId, isOwner: false });
+    await vi.waitFor(() => expect(room.owners.has(cy.userId)).toBe(false));
+  });
+
+  it("can't demote or kick the creator, who can still kick them", async () => {
+    const { room, owner } = await ownedRoom();
+    const bo = await join(room, "Bo");
+    expect(bo.settings.creatorId).toBe(owner.userId);
+    owner.socket.emit("set-owner", { userId: bo.userId, isOwner: true });
+    await vi.waitFor(() => expect(room.owners.has(bo.userId)).toBe(true));
+
     bo.socket.emit("set-owner", { userId: owner.userId, isOwner: false });
-    await vi.waitFor(() => expect(room.owners.has(owner.userId)).toBe(false));
+    bo.socket.emit("kick-participant", { userId: owner.userId });
+    await settled(bo.socket);
+    expect(room.owners.has(owner.userId)).toBe(true);
+    expect(room.blockedUsers.has(owner.userId)).toBe(false);
+    expect(owner.socket.connected).toBe(true);
+
+    const kicked = once(bo.socket, "kicked");
+    owner.socket.emit("kick-participant", { userId: bo.userId });
+    await kicked;
+    expect(room.blockedUsers.has(bo.userId)).toBe(true);
+  });
+
+  it("loses the creator's protection once they leave on purpose", async () => {
+    const { room, owner } = await ownedRoom();
+    const bo = await join(room, "Bo");
+    expect(room.creatorId).toBe(owner.userId);
+
+    owner.socket.disconnect();
+    await vi.waitFor(() => expect(room.creatorId).toBeNull());
+    expect(room.owners.has(bo.userId)).toBe(true);
+  });
+
+  // Regression: with another owner present nobody was promoted, so nothing was
+  // sent and the others kept showing the departed creator as protected.
+  it("tells the remaining owners when the creator leaves on purpose", async () => {
+    const { room, owner } = await ownedRoom();
+    const bo = await join(room, "Bo");
+    owner.socket.emit("set-owner", { userId: bo.userId, isOwner: true });
+    await vi.waitFor(() => expect(room.owners.has(bo.userId)).toBe(true));
+
+    // The latest one, as the promotion's own announcement may still be arriving.
+    let latest: unknown;
+    bo.socket.on("room-settings", (s: unknown) => (latest = s));
+    owner.socket.disconnect();
+
+    await vi.waitFor(() => expect(latest).toMatchObject({ creatorId: null, ownerIds: [bo.userId] }));
   });
 
   it("change settings for everyone, and a share they no longer allow stops", async () => {

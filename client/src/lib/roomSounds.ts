@@ -1,4 +1,4 @@
-import type { AppSocket, ChatMessage } from "../types";
+import type { AppSocket, ChatMessage, PollMessage } from "../types";
 import { playJoinSound, playLeaveSound, playMessageSound } from "./notificationSounds";
 
 /** Plays room event sounds for the socket's lifetime. A message's cue is only for messages from others, as the server broadcasts to all. */
@@ -14,7 +14,11 @@ export function subscribeRoomSounds(socket: Pick<AppSocket, "on">, getUserId: ()
     if (people.length > waiting) playMessageSound();
     waiting = people.length;
   });
+  // GIFs and images arrive as chat messages too; polls have their own event.
   socket.on("chat-message", (msg: ChatMessage) => {
     if (msg.senderId !== getUserId()) playMessageSound();
+  });
+  socket.on("poll-create", (poll: PollMessage) => {
+    if (poll.senderId !== getUserId()) playMessageSound();
   });
 }

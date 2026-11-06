@@ -58,6 +58,17 @@ describe("subscribeRoomSounds", () => {
     expect(playMessageSound).toHaveBeenCalledOnce();
   });
 
+  it("plays a cue for other people's polls but not our own", () => {
+    const { socket, emit } = fakeSocket();
+    subscribeRoomSounds(socket, () => "me");
+
+    emit("poll-create", { senderId: "me" });
+    expect(playMessageSound).not.toHaveBeenCalled();
+
+    emit("poll-create", { senderId: "them" });
+    expect(playMessageSound).toHaveBeenCalledOnce();
+  });
+
   it("plays join and leave cues", () => {
     const { socket, emit } = fakeSocket();
     subscribeRoomSounds(socket, () => "me");

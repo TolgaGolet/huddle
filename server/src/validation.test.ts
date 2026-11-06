@@ -18,6 +18,7 @@ import {
   parseMessageId,
   parseMute,
   parsePollCreate,
+  parsePollSubmit,
   parsePollVote,
   parseRelay,
   parseAdmitWaiting,
@@ -41,6 +42,7 @@ describe.each([
   ["parseMessageId", parseMessageId],
   ["parsePollCreate", parsePollCreate],
   ["parsePollVote", parsePollVote],
+  ["parsePollSubmit", parsePollSubmit],
 ] as const)("%s", (_name, parse) => {
   it.each(junk)("rejects %j without throwing", (raw) => {
     expect(parse(raw)).toBeNull();
@@ -258,7 +260,7 @@ describe("parsePollCreate", () => {
   const ok = { question: " Lunch? ", options: [" Pizza ", "", "Sushi"], allowMultiple: true };
 
   it("trims, drops blank options and coerces allowMultiple", () => {
-    expect(parsePollCreate(ok)).toEqual({ question: "Lunch?", options: ["Pizza", "Sushi"], allowMultiple: true });
+    expect(parsePollCreate(ok)).toEqual({ question: "Lunch?", options: ["Pizza", "Sushi"], allowMultiple: true, lockVotes: false });
     expect(parsePollCreate({ ...ok, allowMultiple: "yes" })?.allowMultiple).toBe(false);
   });
 
@@ -281,5 +283,22 @@ describe("parsePollCreate", () => {
 
   it("rejects an oversized question", () => {
     expect(parsePollCreate({ ...ok, question: "q".repeat(MAX_POLL_QUESTION_LENGTH + 1) })).toBeNull();
+  });
+
+  it("accepts only the offered durations and coerces lockVotes", () => {
+    expect(parsePollCreate({ ...ok, durationMs: 5 * 60_000, lockVotes: true })).toMatchObject({ durationMs: 5 * 60_000, lockVotes: true });
+    expect(parsePollCreate({ ...ok, lockVotes: "yes" })?.lockVotes).toBe(false);
+    expect(parsePollCreate({ ...ok, durationMs: 1234 })).toBeNull();
+    expect(parsePollCreate({ ...ok, durationMs: "300000" })).toBeNull();
+  });
+});
+
+describe("parsePollSubmit", () => {
+  it("takes 1..MAX_POLL_OPTIONS distinct ids", () => {
+    expect(parsePollSubmit({ pollId: "p", optionIds: ["a", "b"] })).toEqual({ pollId: "p", optionIds: ["a", "b"] });
+    expect(parsePollSubmit({ pollId: "p", optionIds: [] })).toBeNull();
+    expect(parsePollSubmit({ pollId: "p", optionIds: ["a", "a"] })).toBeNull();
+    expect(parsePollSubmit({ pollId: "p", optionIds: ["a", 1] })).toBeNull();
+    expect(parsePollSubmit({ pollId: "p", optionIds: Array.from({ length: MAX_POLL_OPTIONS + 1 }, (_, i) => `o${i}`) })).toBeNull();
   });
 });

@@ -13,10 +13,12 @@ interface Props {
   localUserId: string;
   roomId: string;
   canPin?: boolean;
+  /** Owners can delete anyone's messages. */
+  isOwner?: boolean;
   canSendMessages?: boolean;
 }
 
-export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId, canPin, canSendMessages = true }: Props) {
+export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessageId, localUserId, roomId, canPin, isOwner, canSendMessages = true }: Props) {
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -65,6 +67,7 @@ export default function ChatPanel({ socket, httpToken, chatHistory, pinnedMessag
         pinnedMessageId={pinnedMessageId}
         localUserId={localUserId}
         canPin={canPin}
+        isOwner={isOwner}
         canSendMessages={canSendMessages}
         isAtBottomRef={isAtBottomRef}
         onReply={startReply}

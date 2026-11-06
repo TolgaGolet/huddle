@@ -1,7 +1,7 @@
 import { errorSummary } from "./errorLog.js";
 import { setRoomPassword } from "./imageCrypto.js";
 import { requestIp } from "./ipRateLimit.js";
-import type { RoomSettings, WaitingPerson } from "./protocol.js";
+import { isModeratable, type RoomSettings, type WaitingPerson } from "./protocol.js";
 import { getParticipantsArray, hasPermission, type Room, type RoomCtx, type WaitingEntry } from "./roomManager.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
 import { parseAdmitWaiting, parseChangePassword, parseKick, parseRoomPermissions, parseSetOwner } from "./validation.js";
@@ -11,7 +11,7 @@ export const OWNER_GRACE_MS = 60_000;
 
 /** Sent to the whole room, so never put the password or an owner token here. */
 export function roomSettingsOf(room: Room): RoomSettings {
-  return { ...room.settings, hasPassword: !!room.password, ownerIds: [...room.owners] };
+  return { ...room.settings, hasPassword: !!room.password, ownerIds: [...room.owners], creatorId: room.creatorId };
 }
 
 export function waitingEntryFor(room: Room, userId: string): WaitingEntry | undefined {
@@ -40,19 +40,23 @@ function stopDisallowedShare(io: AppServer, room: Room): void {
   io.to(room.id).emit("screen-share-stopped", { id: sharer.id });
 }
 
-function promoteLongestPresent(io: AppServer, room: Room): void {
+/** True if someone was promoted, and so the room was sent the new settings. */
+function promoteLongestPresent(io: AppServer, room: Room): boolean {
   const [longestPresent] = getParticipantsArray(room);
-  if (!longestPresent) return;
+  if (!longestPresent) return false;
   room.owners.add(longestPresent.userId);
   room.ownerlessSince = null;
   announceSettings(io, room);
   announceWaiting(io, room);
+  return true;
 }
 
 /** Makes the longest-present participant an owner, if nobody present is one. */
-export function promoteIfOwnerless(io: AppServer, room: Room): void {
-  if (ownersPresent(room).length > 0) room.ownerlessSince = null;
-  else promoteLongestPresent(io, room);
+/** True if someone was promoted, and so the room was sent the new settings. */
+export function promoteIfOwnerless(io: AppServer, room: Room): boolean {
+  if (ownersPresent(room).length === 0) return promoteLongestPresent(io, room);
+  room.ownerlessSince = null;
+  return false;
 }
 
 /** For the periodic sweep: gives a disconnected owner time to come back first. */
@@ -74,7 +78,7 @@ export function setupModeration(io: AppServer, proxyHops = 0): void {
   io.on("connection", (socket) => {
     onRoom(socket, "set-owner", parseSetOwner, ownerOnly(({ room, participant }, { userId, isOwner }) => {
       // Others only, so a room with an owner present can't be left without one by accident.
-      if (userId === participant.userId || !getParticipantsArray(room).some((p) => p.userId === userId)) return;
+      if (!isModeratable(userId, participant.userId, room.creatorId) || !getParticipantsArray(room).some((p) => p.userId === userId)) return;
       if (isOwner) room.owners.add(userId);
       else room.owners.delete(userId);
       stopDisallowedShare(io, room);
@@ -83,7 +87,7 @@ export function setupModeration(io: AppServer, proxyHops = 0): void {
     }));
 
     onRoom(socket, "kick-participant", parseKick, ownerOnly(({ room, participant }, { userId }) => {
-      if (userId === participant.userId) return;
+      if (!isModeratable(userId, participant.userId, room.creatorId)) return;
       const target = getParticipantsArray(room).find((p) => p.userId === userId);
       if (!target) return;
       room.blockedUsers.add(userId);

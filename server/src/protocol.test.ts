@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hasReacted } from "./reactions";
+import { hasReacted } from "./protocol.js";
 
 describe("hasReacted", () => {
   const ana = { userId: "u-ana", name: "Ana" };

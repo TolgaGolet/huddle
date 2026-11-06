@@ -72,6 +72,17 @@ describe("ParticipantsList moderation", () => {
     expect(onKick).not.toHaveBeenCalled();
   });
 
+  it("never offers to kick or demote the room's creator", () => {
+    const { onKick, onSetOwner } = setup({ ownerIds: new Set(["u-me", "u-bo"]), creatorId: "u-bo" });
+    openMenu();
+
+    expect(screen.queryByRole("button", { name: "Kick from room" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove as owner" })).toBeNull();
+    expect(screen.getByText(/Room creator/)).toBeTruthy();
+    expect(onKick).not.toHaveBeenCalled();
+    expect(onSetOwner).not.toHaveBeenCalled();
+  });
+
   it("offers a non-owner only the volume", () => {
     setup({ canModerate: false });
     openMenu();

@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { AppSocket, RoomSettings } from "../types";
 import RoomSettingsPanel from "./RoomSettingsPanel";
 
-const settings: RoomSettings = { pinPermission: "everyone", screenSharePermission: "owners", messagePermission: "everyone", waitingRoom: false, hasPassword: true, ownerIds: [] };
+const settings: RoomSettings = { pinPermission: "everyone", screenSharePermission: "owners", messagePermission: "everyone", waitingRoom: false, hasPassword: true, ownerIds: [], creatorId: null };
 
 function fakeSocket() {
   const handlers = new Map<string, (data: unknown) => void>();

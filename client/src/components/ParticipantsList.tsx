@@ -16,6 +16,8 @@ interface Props {
   connecting?: Set<string>;
   /** userIds. */
   ownerIds?: ReadonlySet<string>;
+  /** userId of the room's creator, whom nobody can kick or demote. */
+  creatorId?: string | null;
   /** This user can manage others, through these. */
   canModerate?: boolean;
   onSetOwner?: (userId: string, isOwner: boolean) => void;
@@ -38,6 +40,7 @@ export default function ParticipantsList({
   maxParticipants,
   connecting,
   ownerIds,
+  creatorId,
   canModerate,
   onSetOwner,
   onKick,
@@ -72,6 +75,7 @@ export default function ParticipantsList({
             isSpeaking={speaking.has(p.id)}
             isLocal={isLocal}
             isOwner={ownerIds?.has(p.userId)}
+            isCreator={p.userId === creatorId}
             isConnecting={connecting?.has(p.id)}
             onOpenMenu={onOpenMenu}
           />
@@ -87,6 +91,7 @@ export default function ParticipantsList({
           onClose={() => setCtx(null)}
           moderation={canModerate ? {
             targetIsOwner: !!ownerIds?.has(ctx.userId),
+            targetIsCreator: ctx.userId === creatorId,
             onToggleOwner: () => {
               onSetOwner?.(ctx.userId, !ownerIds?.has(ctx.userId));
               setCtx(null);

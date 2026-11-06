@@ -5,7 +5,7 @@ import MessageContextMenu from "./MessageContextMenu";
 
 function setup(overrides: Partial<React.ComponentProps<typeof MessageContextMenu>> = {}) {
   const handlers = { onEdit: vi.fn(), onDelete: vi.fn(), onTogglePin: vi.fn(), onClose: vi.fn(), onDismiss: vi.fn() };
-  render(<MessageContextMenu messageId="m1" x={10} y={20} isOwn canEdit isPinned={false} {...handlers} {...overrides} />);
+  render(<MessageContextMenu messageId="m1" x={10} y={20} canDelete canEdit isPinned={false} {...handlers} {...overrides} />);
   return handlers;
 }
 
@@ -28,8 +28,14 @@ describe("MessageContextMenu", () => {
     expect(items()).toEqual(["Delete message", "Pin message"]);
   });
 
+  it("offers delete on someone else's message to an owner", () => {
+    setup({ canDelete: true, canEdit: false });
+
+    expect(items()).toEqual(["Delete message", "Pin message"]);
+  });
+
   it("offers only pinning on someone else's message", () => {
-    setup({ isOwn: false, canEdit: false });
+    setup({ canDelete: false, canEdit: false });
 
     expect(items()).toEqual(["Pin message"]);
   });

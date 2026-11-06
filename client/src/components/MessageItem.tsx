@@ -3,7 +3,7 @@ import { MoreVertical, Pin, Reply } from "lucide-react";
 import type { ChatEntry, ChatMessage } from "../types";
 import { formatMessage } from "../lib/messageFormatter";
 import { avatarTextColor } from "../lib/avatarColor";
-import { hasReacted } from "../lib/reactions";
+import { hasReacted } from "../types";
 import { formatTime } from "../lib/formatTime";
 import MessageEditor from "./MessageEditor";
 import RoomImage from "./RoomImage";

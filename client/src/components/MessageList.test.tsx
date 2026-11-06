@@ -27,13 +27,14 @@ const poll = (id: string, overrides: Partial<PollMessage> = {}): PollMessage =>
     type: "poll",
     question: "Pizza?",
     allowMultiple: false,
+    lockVotes: false,
     options: [{ id: "a", text: "Yes", voters: [] }],
     ...overrides,
   }) as PollMessage;
 
 const scrollIntoView = vi.fn();
 
-function setup(history: ChatEntry[] = [], pinnedMessageId: string | null = null, { noSocket = false } = {}) {
+function setup(history: ChatEntry[] = [], pinnedMessageId: string | null = null, { noSocket = false, isOwner = false } = {}) {
   const socket = fakeSocket();
   const isAtBottomRef = { current: true };
   const onReply = vi.fn();
@@ -45,6 +46,7 @@ function setup(history: ChatEntry[] = [], pinnedMessageId: string | null = null,
         chatHistory={h}
         pinnedMessageId={pinned}
         localUserId={ME}
+        isOwner={isOwner}
         canSendMessages={canSendMessages}
         isAtBottomRef={isAtBottomRef}
         onReply={onReply}
@@ -308,6 +310,23 @@ describe("deleting", () => {
 
     expect(emitsOf(socket, "chat-delete")).toEqual([]);
     expect(document.activeElement).toBe(screen.getByRole("group", { name: "Message from Ana" }));
+  });
+
+  it("isn't offered on someone else's message", () => {
+    setup([message("a")]);
+    moreActions();
+
+    expect(screen.queryByRole("menuitem", { name: "Delete message" })).toBeNull();
+  });
+
+  it("lets an owner delete someone else's message, naming its sender", () => {
+    const { socket } = setup([message("a")], null, { isOwner: true });
+    moreActions();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete message" }));
+
+    expect(screen.getByRole("dialog", { name: "Delete Ana's message?" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(emitsOf(socket, "chat-delete")).toEqual([["chat-delete", { messageId: "a" }]]);
   });
 });
 

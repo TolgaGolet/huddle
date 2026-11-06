@@ -18,6 +18,8 @@ export const MAX_CHAT_TEXT_LENGTH = 4000;
 export const MAX_POLL_QUESTION_LENGTH = 200;
 export const MAX_POLL_OPTION_LENGTH = 100;
 export const MAX_POLL_OPTIONS = 10;
+/** The only lengths a poll can run for; a poll without one stays open. Well inside MAX_ROOM_LIFETIME_MS. */
+export const POLL_DURATIONS_MS: readonly number[] = [1, 5, 15, 30, 60, 180].map((minutes) => minutes * 60_000);
 export const MAX_IMAGES_PER_MESSAGE = 10;
 export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
 export const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif"]);

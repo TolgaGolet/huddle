@@ -1,10 +1,17 @@
 import { useState, useRef, useEffect } from "react";
 import { X, Plus, Trash2 } from "lucide-react";
-import { MAX_POLL_OPTION_LENGTH, MAX_POLL_OPTIONS, MAX_POLL_QUESTION_LENGTH } from "../types";
+import { MAX_POLL_OPTION_LENGTH, MAX_POLL_OPTIONS, MAX_POLL_QUESTION_LENGTH, POLL_DURATIONS_MS, type PollCreate } from "../types";
+
+function durationLabel(ms: number): string {
+  const minutes = ms / 60_000;
+  if (minutes < 60) return `${minutes} min`;
+  const hours = minutes / 60;
+  return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+}
 
 interface Props {
   /** Returns false if the poll wasn't sent, which keeps the form and what's typed in it. */
-  onSubmit: (data: { question: string; options: string[]; allowMultiple: boolean }) => boolean;
+  onSubmit: (data: PollCreate) => boolean;
   onClose: () => void;
 }
 
@@ -12,6 +19,9 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState(["", ""]);
   const [allowMultiple, setAllowMultiple] = useState(false);
+  const [lockVotes, setLockVotes] = useState(false);
+  /** "" for no end time; select values are strings. */
+  const [duration, setDuration] = useState("");
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -44,7 +54,9 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
     const trimmedQ = question.trim();
     const validOptions = options.map((o) => o.trim()).filter(Boolean);
     if (!trimmedQ || validOptions.length < 2) return;
-    if (onSubmit({ question: trimmedQ, options: validOptions, allowMultiple })) onClose();
+    const poll: PollCreate = { question: trimmedQ, options: validOptions, allowMultiple, lockVotes };
+    if (duration) poll.durationMs = Number(duration);
+    if (onSubmit(poll)) onClose();
   }
 
   const canSubmit = question.trim() && options.filter((o) => o.trim()).length >= 2;
@@ -125,6 +137,36 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
           />
           <span className="text-xs text-gray-400">Allow multiple selections</span>
         </label>
+
+        <label className="flex items-center gap-2 cursor-pointer">
+          {/* eslint-disable-next-line jsx-a11y/control-has-associated-label -- labelled by the wrapping <label>, which the rule can't see. */}
+          <input
+            type="checkbox"
+            checked={lockVotes}
+            onChange={(e) => setLockVotes(e.target.checked)}
+            className="rounded border-gray-600 bg-gray-900 text-indigo-500 focus:ring-indigo-500 cursor-pointer"
+          />
+          <span className="text-xs text-gray-400">Votes can't be changed</span>
+        </label>
+
+        <div className="flex items-center gap-2">
+          <label htmlFor="poll-duration" className="text-xs text-gray-400">
+            Ends after
+          </label>
+          <select
+            id="poll-duration"
+            value={duration}
+            onChange={(e) => setDuration(e.target.value)}
+            className="px-2 py-1 rounded-lg bg-gray-900 border border-gray-600 text-base md:text-xs text-gray-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+          >
+            <option value="">No time limit</option>
+            {POLL_DURATIONS_MS.map((ms) => (
+              <option key={ms} value={ms}>
+                {durationLabel(ms)}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <button
           type="button"

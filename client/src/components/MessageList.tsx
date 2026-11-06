@@ -1,7 +1,7 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { ChevronDown, Pin, X } from "lucide-react";
 import type { AppSocket, ChatEntry, ChatMessage } from "../types";
-import { isPollMessage } from "../types";
+import { isPollMessage, mayDeleteMessage } from "../types";
 import { avatarTextColor } from "../lib/avatarColor";
 import { isEditable } from "../lib/messageEdit";
 import PollDisplay from "./PollDisplay";
@@ -17,6 +17,8 @@ interface Props {
   /** Stable identity, for "is this mine?" checks. */
   localUserId: string;
   canPin?: boolean;
+  /** Owners can delete anyone's messages (`mayDeleteMessage`). */
+  isOwner?: boolean;
   /** Also allows editing, as an edit can say anything. */
   canSendMessages?: boolean;
   isAtBottomRef: React.RefObject<boolean>;
@@ -31,7 +33,7 @@ interface ContextMenuState {
   y: number;
 }
 
-function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin, canSendMessages = true, isAtBottomRef, onReply, onFocusComposer }: Props) {
+function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin, isOwner = false, canSendMessages = true, isAtBottomRef, onReply, onFocusComposer }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
@@ -53,6 +55,8 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin
     [chatHistory, pinnedMessageId],
   );
   const contextMenuEntry = contextMenu && chatHistory.find((entry) => entry.id === contextMenu.messageId);
+  const isOwnMenuEntry = contextMenuEntry?.senderId === localUserId;
+  const confirmDeleteEntry = confirmDeleteId ? chatHistory.find((entry) => entry.id === confirmDeleteId) : undefined;
 
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -166,6 +170,11 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin
     socket.emit("poll-vote", { pollId, optionId });
   }, [socket]);
 
+  const handlePollSubmit = useCallback((pollId: string, optionIds: string[]) => {
+    if (!socket) return;
+    socket.emit("poll-submit", { pollId, optionIds });
+  }, [socket]);
+
   function handleDeleteMessage(messageId: string) {
     setContextMenu(null);
     setConfirmDeleteId(messageId);
@@ -262,6 +271,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin
                   isPinned={entry.id === pinnedMessageId}
                   localUserId={localUserId}
                   onVote={handlePollVote}
+                  onSubmit={handlePollSubmit}
                   onContextMenu={openContextMenu}
                 />
               </div>
@@ -287,10 +297,10 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin
           messageId={contextMenu.messageId}
           x={contextMenu.x}
           y={contextMenu.y}
-          isOwn={contextMenuEntry.senderId === localUserId}
+          canDelete={mayDeleteMessage(contextMenuEntry.senderId, localUserId, isOwner)}
           isPinned={contextMenuEntry.id === pinnedMessageId}
           canPin={canPin}
-          canEdit={canSendMessages && contextMenuEntry.senderId === localUserId && isEditable(contextMenuEntry)}
+          canEdit={canSendMessages && isOwnMenuEntry && isEditable(contextMenuEntry)}
           onEdit={() => startEdit(contextMenu.messageId)}
           onDelete={() => handleDeleteMessage(contextMenu.messageId)}
           onTogglePin={() => handlePinMessage(contextMenu.messageId)}
@@ -321,6 +331,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin
       {/* Delete confirmation dialog */}
       {confirmDeleteId && (
         <DeleteMessageDialog
+          senderName={confirmDeleteEntry && confirmDeleteEntry.senderId !== localUserId ? confirmDeleteEntry.senderName : undefined}
           onCancel={() => setConfirmDeleteId(null)}
           onConfirm={confirmDelete}
           returnFocus={() => messageFocusTarget(confirmDeleteId)}

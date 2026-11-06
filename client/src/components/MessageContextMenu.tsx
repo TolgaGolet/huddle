@@ -6,7 +6,8 @@ interface Props {
   messageId: string;
   x: number;
   y: number;
-  isOwn: boolean;
+  /** Own messages, or anyone's for an owner. */
+  canDelete: boolean;
   isPinned: boolean;
   canEdit: boolean;
   /** False when only owners can pin. */
@@ -20,7 +21,7 @@ interface Props {
   onDismiss: () => void;
 }
 
-export default function MessageContextMenu({ messageId, x, y, isOwn, isPinned, canEdit, canPin = true, onEdit, onDelete, onTogglePin, onClose, onDismiss }: Props) {
+export default function MessageContextMenu({ messageId, x, y, canDelete, isPinned, canEdit, canPin = true, onEdit, onDelete, onTogglePin, onClose, onDismiss }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Move focus into the context menu when it opens, so keyboard users land on
@@ -68,7 +69,7 @@ export default function MessageContextMenu({ messageId, x, y, isOwn, isPinned, c
           <Pencil size={12} /> Edit message
         </button>
       )}
-      {isOwn && (
+      {canDelete && (
         <button
           type="button"
           role="menuitem"

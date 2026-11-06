@@ -33,10 +33,21 @@ const ICE_SERVERS: RTCConfiguration = (() => {
 })();
 
 const STATS_SAMPLE_INTERVAL_MS = 5000;
+// How long a joiner holds its first offers for the mic. A capture that's already
+// allowed settles in well under a second; this only bounds an unanswered prompt.
+export const MIC_SETTLE_TIMEOUT_MS = 5000;
 
 interface UseWebRTCOptions {
   socket: AppSocket | null;
   localStream: MediaStream | null;
+  /**
+   * The mic has produced a stream or failed. The joiner holds its first offers
+   * until then (or `MIC_SETTLE_TIMEOUT_MS`): Firefox gathers restricted ICE
+   * candidates before a getUserMedia grant, which fails to connect behind
+   * CGNAT, and the trackless-sender recovery path left the joiner unheard.
+   * Once true it counts as settled for the hook's lifetime.
+   */
+  micSettled: boolean;
   onScreenShareStopped?: () => void;
   /**
    * Invoked once (per socket) after the WebRTC signaling listeners
@@ -48,7 +59,7 @@ interface UseWebRTCOptions {
   onSignalingReady?: () => void;
 }
 
-export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignalingReady }: UseWebRTCOptions) {
+export function useWebRTC({ socket, localStream, micSettled, onScreenShareStopped, onSignalingReady }: UseWebRTCOptions) {
   // All per-peer negotiation and recovery state lives on the session.
   const sessionsRef = useRef<Map<string, PeerSession>>(new Map());
   // Candidates that arrive while no session exists for the peer; a session
@@ -57,6 +68,10 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
   const remoteAudioRef = useRef(new RemoteAudioManager());
   const localStreamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<AppSocket | null>(null);
+  const micSettledRef = useRef(micSettled);
+  // Roster from `room-joined` waiting for the mic to settle (see `micSettled`).
+  const pendingRosterRef = useRef<string[] | null>(null);
+  const pendingRosterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onScreenShareStoppedRef = useRef(onScreenShareStopped);
   const onSignalingReadyRef = useRef(onSignalingReady);
   const [remoteAnalysers, setRemoteAnalysers] = useState<Map<string, AnalyserNode>>(new Map());
@@ -72,6 +87,9 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
 
   localStreamRef.current = localStream;
   socketRef.current = socket;
+  // Latched: a re-acquire that briefly drops the stream, or a dismissed error,
+  // must not make a later rejoin hold its offers again.
+  if (micSettled) micSettledRef.current = true;
   onScreenShareStoppedRef.current = onScreenShareStopped;
   onSignalingReadyRef.current = onSignalingReady;
 
@@ -177,6 +195,29 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     [removePeer],
   );
 
+  const clearPendingRoster = useCallback(() => {
+    pendingRosterRef.current = null;
+    if (pendingRosterTimerRef.current !== null) {
+      clearTimeout(pendingRosterTimerRef.current);
+      pendingRosterTimerRef.current = null;
+    }
+  }, []);
+
+  const flushPendingRoster = useCallback(
+    (reason: "mic" | "timeout") => {
+      const ids = pendingRosterRef.current;
+      clearPendingRoster();
+      if (!ids) return;
+      huddleLog("socket", { event: "offers-released", reason, count: ids.length });
+      for (const id of ids) createPeer(id);
+    },
+    [clearPendingRoster, createPeer],
+  );
+
+  useEffect(() => {
+    if (micSettled) flushPendingRoster("mic");
+  }, [micSettled, flushPendingRoster]);
+
   useEffect(() => {
     if (!socket) return;
 
@@ -210,6 +251,8 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     };
 
     const handleParticipantLeft = ({ id }: { id: string }) => {
+      const pending = pendingRosterRef.current;
+      if (pending) pendingRosterRef.current = pending.filter((p) => p !== id);
       removePeer(id);
     };
 
@@ -239,13 +282,19 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
         micReady,
         roster: participants.map((p) => p.id),
       });
+      if (!micSettledRef.current) {
+        // Offer once the mic settles, so the offer carries the track and the
+        // candidates are gathered under the mic grant (see `micSettled`).
+        clearPendingRoster();
+        pendingRosterRef.current = participants.map((p) => p.id);
+        pendingRosterTimerRef.current = setTimeout(() => flushPendingRoster("timeout"), MIC_SETTLE_TIMEOUT_MS);
+        return;
+      }
       for (const p of participants) {
-        // Always create the peer immediately so receive-audio, video, and
-        // screen share work even before (or without) a microphone. The audio
-        // m-line is deterministic regardless of mic readiness: `PeerSession`
-        // adds a `sendrecv` audio transceiver whether or not a track exists,
-        // and the track is attached later via `replaceTrack` (no second
-        // renegotiation required).
+        // A mic that failed (or `flushPendingRoster` on timeout) still gets a peer,
+        // so receive-audio and screen share work without a microphone:
+        // `PeerSession` adds a `sendrecv` audio transceiver whether or not a
+        // track exists, and a late track is attached via `replaceTrack`.
         createPeer(p.id);
       }
     };
@@ -260,6 +309,7 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
     // transport state that will not survive the reconnect, so close everything
     // and let the fresh `room-joined` (after rejoin) recreate connections.
     const handleLocalDisconnect = () => {
+      clearPendingRoster();
       resetAllPeers();
     };
 
@@ -283,12 +333,13 @@ export function useWebRTC({ socket, localStream, onScreenShareStopped, onSignali
       socket.off("room-joined", handleRoomJoined);
       socket.off("screen-share-stopped", handleScreenShareStopped);
       socket.off("disconnect", handleLocalDisconnect);
+      clearPendingRoster();
       // eslint-disable-next-line react-hooks/exhaustive-deps -- must see peers created after this effect ran.
       for (const [id] of sessionsRef.current) {
         removePeer(id);
       }
     };
-  }, [socket, createPeer, removePeer, resetAllPeers, stopScreenShare]);
+  }, [socket, createPeer, removePeer, resetAllPeers, stopScreenShare, clearPendingRoster, flushPendingRoster]);
 
   useEffect(() => {
     const mgr = remoteAudioRef.current;

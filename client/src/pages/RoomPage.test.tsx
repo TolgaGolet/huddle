@@ -175,7 +175,7 @@ describe("arriving", () => {
   });
 
   it("stops a screen share the settings no longer allow", async () => {
-    const settings = { pinPermission: "everyone", screenSharePermission: "everyone", messagePermission: "everyone", waitingRoom: false, hasPassword: false, ownerIds: [] as string[] } as const;
+    const settings = { pinPermission: "everyone", screenSharePermission: "everyone", messagePermission: "everyone", waitingRoom: false, hasPassword: false, ownerIds: [] as string[], creatorId: null } as const;
     mockSocket({ settings });
     setup();
     await act(async () => fireEvent.click(firstButton(/share/i)));
@@ -188,7 +188,7 @@ describe("arriving", () => {
   });
 
   it("offers settings and moderation only as allowed", () => {
-    const settings = { pinPermission: "owners", screenSharePermission: "owners", messagePermission: "owners", waitingRoom: false, hasPassword: false, ownerIds: ["someone"] as string[] } as const;
+    const settings = { pinPermission: "owners", screenSharePermission: "owners", messagePermission: "owners", waitingRoom: false, hasPassword: false, ownerIds: ["someone"] as string[], creatorId: "someone" } as const;
     mockSocket({ settings });
 
     setup();
@@ -212,6 +212,17 @@ describe("arriving", () => {
     vi.mocked(useWebRTC).mock.lastCall![0].onSignalingReady!();
 
     expect(joinRoom).toHaveBeenCalledOnce();
+  });
+
+  it("tells WebRTC the mic has settled only once it has a stream or an error", () => {
+    const settled = () => vi.mocked(useWebRTC).mock.lastCall![0].micSettled;
+    setup();
+    expect(settled()).toBe(false);
+    cleanup();
+
+    mockMic("denied");
+    setup();
+    expect(settled()).toBe(true);
   });
 
   it("reports only this user's own speech", () => {

@@ -12,6 +12,8 @@ interface Props {
   localUserId: string;
   roomId: string;
   canPin?: boolean;
+  /** Owners can delete anyone's messages. */
+  isOwner?: boolean;
   canSendMessages?: boolean;
 }
 
@@ -21,7 +23,7 @@ interface Props {
  * its effects run before useWebRTC's, which sends the join, so `room-joined` can't
  * arrive before useChat is listening.
  */
-function RoomChat({ socket, httpToken, imageSession, localUserId, roomId, canPin, canSendMessages }: Props) {
+function RoomChat({ socket, httpToken, imageSession, localUserId, roomId, canPin, isOwner, canSendMessages }: Props) {
   const { history, pinnedMessageId } = useChat(socket);
   return (
     <ErrorBoundary fallback={ChatCrashed}>
@@ -34,6 +36,7 @@ function RoomChat({ socket, httpToken, imageSession, localUserId, roomId, canPin
           localUserId={localUserId}
           roomId={roomId}
           canPin={canPin}
+          isOwner={isOwner}
           canSendMessages={canSendMessages}
         />
       </ImageSessionContext>

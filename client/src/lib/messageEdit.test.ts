@@ -26,7 +26,7 @@ describe("isEditable", () => {
   });
 
   it("rejects a poll", () => {
-    const poll: PollMessage = { id: "p1", type: "poll", senderId: "u1", senderName: "Ana", question: "?", options: [], allowMultiple: false, timestamp: 0 };
+    const poll: PollMessage = { id: "p1", type: "poll", senderId: "u1", senderName: "Ana", question: "?", options: [], allowMultiple: false, lockVotes: false, timestamp: 0 };
     expect(isEditable(poll)).toBe(false);
   });
 });

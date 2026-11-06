@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { asAppSocket, emitsOf, fakeSocket, type FakeSocket } from "../test/fakeSocket";
 import type { AppSocket } from "../types";
-import { useWebRTC } from "./useWebRTC";
+import { MIC_SETTLE_TIMEOUT_MS, useWebRTC } from "./useWebRTC";
 
 // PeerSession (negotiation) and RemoteAudioManager have their own tests. This covers
 // what the hook adds: which session gets what, and what React state comes out.
@@ -79,11 +79,19 @@ function fakeTrack(kind: string) {
 
 let socket: FakeSocket;
 
-function setup(overrides: { onScreenShareStopped?: () => void; onSignalingReady?: () => void; localStream?: MediaStream | null } = {}) {
+type Props = { socket: AppSocket | null; localStream: MediaStream | null; micSettled?: boolean };
+
+function setup(overrides: { onScreenShareStopped?: () => void; onSignalingReady?: () => void; localStream?: MediaStream | null; micSettled?: boolean } = {}) {
   return renderHook(
-    (props: { socket: AppSocket | null; localStream: MediaStream | null }) =>
-      useWebRTC({ ...props, onScreenShareStopped: overrides.onScreenShareStopped, onSignalingReady: overrides.onSignalingReady }),
-    { initialProps: { socket: asAppSocket(socket) as AppSocket | null, localStream: overrides.localStream ?? null } },
+    ({ micSettled = true, ...props }: Props) =>
+      useWebRTC({ ...props, micSettled, onScreenShareStopped: overrides.onScreenShareStopped, onSignalingReady: overrides.onSignalingReady }),
+    {
+      initialProps: {
+        socket: asAppSocket(socket) as AppSocket | null,
+        localStream: overrides.localStream ?? null,
+        micSettled: overrides.micSettled,
+      } as Props,
+    },
   );
 }
 
@@ -138,7 +146,7 @@ describe("signaling setup", () => {
 
   it("does nothing without a socket", () => {
     const onSignalingReady = vi.fn();
-    renderHook(() => useWebRTC({ socket: null, localStream: null, onSignalingReady }));
+    renderHook(() => useWebRTC({ socket: null, localStream: null, micSettled: true, onSignalingReady }));
 
     expect(onSignalingReady).not.toHaveBeenCalled();
   });
@@ -310,6 +318,76 @@ describe("peers", () => {
     rerender({ socket: asAppSocket(socket), localStream: new FakeStream() as unknown as MediaStream });
 
     expect(sessionFor("a").attachLocalTrack).not.toHaveBeenCalled();
+  });
+});
+
+// Regression: a Firefox joiner that offered before its mic gathered restricted ICE
+// candidates, failed to connect and stayed unheard after the ICE restart.
+describe("waiting for the mic before the first offers", () => {
+  const settle = (rerender: (p: Props) => void) =>
+    act(() => rerender({ socket: asAppSocket(socket), localStream: null, micSettled: true }));
+
+  it("holds the roster until the mic settles", async () => {
+    const { rerender } = setup({ micSettled: false });
+    await fire("room-joined", roster("a", "b"));
+    expect(FakeSession.all).toHaveLength(0);
+
+    settle(rerender);
+
+    expect(FakeSession.all.map((s) => s.peerId)).toEqual(["a", "b"]);
+  });
+
+  it("offers anyway after a timeout, so an unanswered prompt still connects", async () => {
+    vi.useFakeTimers();
+    const { rerender } = setup({ micSettled: false });
+    await fire("room-joined", roster("a"));
+
+    act(() => void vi.advanceTimersByTime(MIC_SETTLE_TIMEOUT_MS));
+    expect(sessionsFor("a")).toHaveLength(1);
+
+    settle(rerender);
+    expect(sessionsFor("a")).toHaveLength(1);
+  });
+
+  it("skips someone who left while waiting", async () => {
+    const { rerender } = setup({ micSettled: false });
+    await fire("room-joined", roster("a", "b"));
+    await fire("participant-left", { id: "a" });
+
+    settle(rerender);
+
+    expect(FakeSession.all.map((s) => s.peerId)).toEqual(["b"]);
+  });
+
+  it("forgets the roster when our transport drops", async () => {
+    vi.useFakeTimers();
+    const { rerender } = setup({ micSettled: false });
+    await fire("room-joined", roster("a"));
+    await fire("disconnect");
+
+    settle(rerender);
+    act(() => void vi.advanceTimersByTime(MIC_SETTLE_TIMEOUT_MS));
+
+    expect(FakeSession.all).toHaveLength(0);
+  });
+
+  // Regression: a re-acquire (noise-suppression toggle) briefly nulls the stream,
+  // so a rejoin in that window held its offers for up to MIC_SETTLE_TIMEOUT_MS.
+  it("stays settled once the mic has settled", async () => {
+    const { rerender } = setup({ micSettled: true });
+    act(() => rerender({ socket: asAppSocket(socket), localStream: null, micSettled: false }));
+
+    await fire("room-joined", roster("a"));
+
+    expect(sessionsFor("a")).toHaveLength(1);
+  });
+
+  it("still answers offers while waiting", async () => {
+    setup({ micSettled: false });
+
+    await fire("offer", { from: "c", offer: {} });
+
+    expect(sessionFor("c").handleOffer).toHaveBeenCalled();
   });
 });
 

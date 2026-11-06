@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { addChatMessage, findEntry, emptyReactions, hasPermission, removeMessage, touchRoom, type ChatMessage, type RoomCtx } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
-import { isPollMessage, quoteText } from "./protocol.js";
+import { isPollMessage, mayDeleteMessage, quoteText } from "./protocol.js";
 import { onRoom, type AppServer, type AppSocket } from "./socketRoute.js";
 import {
   noPayload,
@@ -143,7 +143,7 @@ export function setupChat(io: AppServer): void {
     onRoom(socket, "chat-delete", parseMessageId, ({ roomId, room, participant }, { messageId }) => {
       const entry = findEntry(room, messageId);
       if (!entry) return;
-      if (entry.senderId !== participant.userId) return;
+      if (!mayDeleteMessage(entry.senderId, participant.userId, room.owners.has(participant.userId))) return;
 
       removeMessage(room, messageId);
       io.to(roomId).emit("chat-message-delete", { messageId });

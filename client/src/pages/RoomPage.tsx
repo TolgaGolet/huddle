@@ -145,7 +145,7 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
   }, [joinRoom]);
 
   const { remoteAnalysers, screenStreams, peerConnectionStates, remotePlaybackBlocked, resumeRemotePlayback, startScreenShare, stopScreenShare, setRemoteVolume } =
-    useWebRTC({ socket, localStream, onScreenShareStopped: handleScreenShareStopped, onSignalingReady: handleSignalingReady });
+    useWebRTC({ socket, localStream, micSettled: localStream !== null || micError !== null, onScreenShareStopped: handleScreenShareStopped, onSignalingReady: handleSignalingReady });
 
   // Steam-chat style voice transmission threshold gate:
   // Suppresses transmitting slight noises, fan hums, mouse clicks when below threshold.
@@ -324,6 +324,7 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
               maxParticipants={MAX_PARTICIPANTS}
               connecting={connecting}
               ownerIds={ownerIds}
+              creatorId={roomSettings?.creatorId}
               canModerate={isOwner}
               onSetOwner={handleSetOwner}
               onKick={handleKick}
@@ -356,6 +357,7 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
               localUserId={userId ?? ""}
               roomId={roomId}
               canPin={canPin}
+              isOwner={isOwner}
               canSendMessages={canSendMessages}
             />
           </div>

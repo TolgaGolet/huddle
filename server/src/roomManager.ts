@@ -30,6 +30,8 @@ export interface Room {
   ownerToken: string | null;
   /** userIds. Kept across reconnects, so an owner keeps the role if they return. */
   owners: Set<string>;
+  /** userId of the creator, whom no other owner can kick or demote. Cleared when they leave on purpose. */
+  creatorId: string | null;
   /** When the last owner present disappeared; see promoteAfterGrace. */
   ownerlessSince: number | null;
   settings: RoomPermissions;
@@ -143,6 +145,7 @@ export function createRoom(password?: string, creatorIp: string | null = null, p
     creatorIp,
     ownerToken: randomBytes(32).toString("base64url"),
     owners: new Set(),
+    creatorId: null,
     ownerlessSince: null,
     settings: { ...DEFAULT_ROOM_PERMISSIONS, ...permissions },
     memberIds: new Set(),

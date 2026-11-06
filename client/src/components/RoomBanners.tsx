@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { useNow } from "../hooks/useNow";
 import { Clock, MicOff, UserPlus, Volume2, X, type LucideIcon } from "lucide-react";
 import type { WaitingPerson } from "../types";
 import { micErrorMessage, type MicError } from "../lib/micError";
@@ -20,11 +21,7 @@ function RoomBanner({ icon: Icon, role, message, children }: { icon: LucideIcon;
 
 /** Owns its clock, so the countdown doesn't re-render the room every second. */
 function RoomClosingBanner({ closing }: { closing: RoomClosingDeadline }) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const now = useNow(closing.closesAt);
   return (
     <RoomBanner icon={Clock} role="alert" message={roomClosingMessage(closing.reason)}>
       {/* Hidden from screen readers, which would otherwise announce every second. */}

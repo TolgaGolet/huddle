@@ -7,7 +7,7 @@
 // The user-facing limits live in limits.ts, which the client also imports.
 
 import type { ChatMessage } from "./roomManager.js";
-import type { RoomPermission, RoomPermissions } from "./protocol.js";
+import type { PollCreate, RoomPermission, RoomPermissions } from "./protocol.js";
 import {
   CLIENT_KEY_PATTERN,
   isValidNewPassword,
@@ -18,6 +18,7 @@ import {
   MAX_POLL_OPTION_LENGTH,
   MAX_POLL_OPTIONS,
   MAX_POLL_QUESTION_LENGTH,
+  POLL_DURATIONS_MS,
 } from "./limits.js";
 
 const MAX_ID_LENGTH = 32;
@@ -215,9 +216,7 @@ export function parseMessageId(raw: unknown): { messageId: string } | null {
   return messageId ? { messageId } : null;
 }
 
-export function parsePollCreate(
-  raw: unknown,
-): { question: string; options: string[]; allowMultiple: boolean } | null {
+export function parsePollCreate(raw: unknown): PollCreate | null {
   if (!isRecord(raw)) return null;
   const question = trimmedStr(raw.question, MAX_POLL_QUESTION_LENGTH);
   if (!question || !Array.isArray(raw.options)) return null;
@@ -231,7 +230,25 @@ export function parsePollCreate(
     if (t) options.push(t);
   }
   if (options.length < 2 || options.length > MAX_POLL_OPTIONS) return null;
-  return { question, options, allowMultiple: raw.allowMultiple === true };
+  const durationMs = optional(raw.durationMs, (v) => (typeof v === "number" && POLL_DURATIONS_MS.includes(v) ? v : null));
+  if (durationMs === null) return null;
+  const poll: PollCreate = { question, options, allowMultiple: raw.allowMultiple === true, lockVotes: raw.lockVotes === true };
+  if (durationMs !== undefined) poll.durationMs = durationMs;
+  return poll;
+}
+
+/** Distinct option ids, 1..MAX_POLL_OPTIONS of them. Whether they fit the poll is the handler's check. */
+export function parsePollSubmit(raw: unknown): { pollId: string; optionIds: string[] } | null {
+  if (!isRecord(raw) || !Array.isArray(raw.optionIds)) return null;
+  const pollId = id(raw.pollId);
+  if (!pollId || raw.optionIds.length < 1 || raw.optionIds.length > MAX_POLL_OPTIONS) return null;
+  const optionIds: string[] = [];
+  for (const o of raw.optionIds) {
+    const optionId = id(o);
+    if (!optionId || optionIds.includes(optionId)) return null;
+    optionIds.push(optionId);
+  }
+  return { pollId, optionIds };
 }
 
 export function parsePollVote(raw: unknown): { pollId: string; optionId: string } | null {
