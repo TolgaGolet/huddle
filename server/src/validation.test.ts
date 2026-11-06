@@ -26,6 +26,10 @@ import {
   parseKick,
   parseRoomPermissions,
   parseSetOwner,
+  parseWatchChangeVideo,
+  parseWatchJoin,
+  parseWatchPlayback,
+  parseWatchStart,
 } from "./validation.js";
 
 // Non-object payloads every parser must reject. These used to crash the
@@ -43,6 +47,10 @@ describe.each([
   ["parsePollCreate", parsePollCreate],
   ["parsePollVote", parsePollVote],
   ["parsePollSubmit", parsePollSubmit],
+  ["parseWatchStart", parseWatchStart],
+  ["parseWatchJoin", parseWatchJoin],
+  ["parseWatchChangeVideo", parseWatchChangeVideo],
+  ["parseWatchPlayback", parseWatchPlayback],
 ] as const)("%s", (_name, parse) => {
   it.each(junk)("rejects %j without throwing", (raw) => {
     expect(parse(raw)).toBeNull();
@@ -300,5 +308,28 @@ describe("parsePollSubmit", () => {
     expect(parsePollSubmit({ pollId: "p", optionIds: ["a", "a"] })).toBeNull();
     expect(parsePollSubmit({ pollId: "p", optionIds: ["a", 1] })).toBeNull();
     expect(parsePollSubmit({ pollId: "p", optionIds: Array.from({ length: MAX_POLL_OPTIONS + 1 }, (_, i) => `o${i}`) })).toBeNull();
+  });
+});
+
+describe("watch party parsers", () => {
+  it("accept only a YouTube video id, never a link or other text", () => {
+    expect(parseWatchStart({ videoId: "dQw4w9WgXcQ", allowOthersToChange: true })).toEqual({ videoId: "dQw4w9WgXcQ", allowOthersToChange: true });
+    expect(parseWatchStart({ videoId: "dQw4w9WgXcQ" })).toEqual({ videoId: "dQw4w9WgXcQ", allowOthersToChange: false });
+    expect(parseWatchStart({ videoId: "https://youtu.be/dQw4w9WgXcQ" })).toBeNull();
+    expect(parseWatchChangeVideo({ videoId: "short" })).toBeNull();
+    expect(parseWatchChangeVideo({ videoId: "dQw4w9WgXc<" })).toBeNull();
+    expect(parseWatchJoin({ partyId: "abc" })).toEqual({ partyId: "abc" });
+  });
+
+  it("accept playback with a known state and rate, clamping the position", () => {
+    const videoId = "dQw4w9WgXcQ";
+    expect(parseWatchPlayback({ videoId, state: "playing", position: 12.5, rate: 1.5 })).toEqual({ videoId, state: "playing", position: 12.5, rate: 1.5 });
+    expect(parseWatchPlayback({ videoId, state: "paused", position: -3, rate: 1 })?.position).toBe(0);
+    expect(parseWatchPlayback({ videoId, state: "paused", position: 1e12, rate: 1 })?.position).toBe(24 * 60 * 60);
+    expect(parseWatchPlayback({ videoId, state: "stopped", position: 0, rate: 1 })).toBeNull();
+    expect(parseWatchPlayback({ videoId, state: "paused", position: Number.NaN, rate: 1 })).toBeNull();
+    expect(parseWatchPlayback({ videoId, state: "paused", position: 0, rate: 16 })).toBeNull();
+    expect(parseWatchPlayback({ state: "paused", position: 0, rate: 1 })).toBeNull();
+    expect(parseWatchPlayback({ videoId: "bad", state: "paused", position: 0, rate: 1 })).toBeNull();
   });
 });

@@ -12,7 +12,9 @@ describe("securityHeaders", () => {
 
     const headers = set.mock.calls[0][0] as Record<string, string>;
     // Regression: 'unsafe-eval' was only there for heic2any, which is gone.
-    expect(headers["Content-Security-Policy"]).toContain("script-src 'self';");
+    // YouTube's player script is the only foreign one, for the watch party.
+    expect(headers["Content-Security-Policy"]).toContain("script-src 'self' https://www.youtube.com;");
+    expect(headers["Content-Security-Policy"]).toContain("frame-src https://www.youtube-nocookie.com;");
     expect(headers["Content-Security-Policy"]).toContain("frame-ancestors 'none'");
     expect(headers["X-Frame-Options"]).toBe("DENY");
     expect(headers["X-Content-Type-Options"]).toBe("nosniff");

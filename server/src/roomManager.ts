@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
 import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS, MAX_REMEMBERED_MEMBERS } from "./limits.js";
-import { isPollMessage, permits, type PermissionKey, type RoomPermissions, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry } from "./protocol.js";
+import { isPollMessage, permits, type PermissionKey, type RoomPermissions, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry, type WatchPlayback } from "./protocol.js";
 
 export type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry };
 
@@ -45,6 +45,21 @@ export interface Room {
   createdAt: number;
   /** Last speech, chat or join. See roomLifetime.ts, which closes the room once this is too old. */
   lastActivityAt: number;
+  /** At most one per room. See watchPartyHandler.ts. */
+  watchParty: WatchParty | null;
+}
+
+export interface WatchParty {
+  id: string;
+  hostId: string;
+  allowOthersToChange: boolean;
+  videoId: string;
+  /** socket.id -> userId, in the order they joined. A member who reconnects joins again. */
+  members: Map<string, string>;
+  /** As last reported; projected to now when sent (projectPosition). */
+  playback: WatchPlayback;
+  /** Server time `playback` was set. */
+  updatedAt: number;
 }
 
 export interface WaitingEntry {
@@ -154,6 +169,7 @@ export function createRoom(password?: string, creatorIp: string | null = null, p
     waiting: new Map(),
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
+    watchParty: null,
   };
   rooms.set(id, room);
   return room;
@@ -287,12 +303,23 @@ export function addParticipant(room: Room, socketId: string, name: string, userI
   return participant;
 }
 
-export function removeParticipant(roomId: string, socketId: string): void {
+/** `deliberate`: they left the room on purpose or were kicked, rather than losing their connection. */
+type ParticipantRemovedListener = (room: Room, socketId: string, deliberate: boolean) => void;
+const participantRemovedListeners = new Set<ParticipantRemovedListener>();
+
+/** Register cleanup for a participant leaving by any path but the room closing. Returns an unsubscribe function. */
+export function onParticipantRemoved(fn: ParticipantRemovedListener): () => void {
+  participantRemovedListeners.add(fn);
+  return () => participantRemovedListeners.delete(fn);
+}
+
+export function removeParticipant(roomId: string, socketId: string, deliberate = false): void {
   socketRoomMap.delete(socketId);
   revokeHttpToken(socketId);
   const room = getRoom(roomId);
   if (!room) return;
   room.participants.delete(socketId);
+  participantRemovedListeners.forEach((fn) => fn(room, socketId, deliberate));
   if (room.participants.size === 0) {
     // Don't delete immediately: every participant may be reconnecting after
     // a shared network blip. The room is purged (lazily via getRoom() or by

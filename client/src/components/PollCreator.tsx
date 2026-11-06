@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { X, Plus, Trash2 } from "lucide-react";
 import { MAX_POLL_OPTION_LENGTH, MAX_POLL_OPTIONS, MAX_POLL_QUESTION_LENGTH, POLL_DURATIONS_MS, type PollCreate } from "../types";
+import { useClickOutside } from "../hooks/useClickOutside";
 
 function durationLabel(ms: number): string {
   const minutes = ms / 60_000;
@@ -24,15 +25,7 @@ export default function PollCreator({ onSubmit, onClose }: Props) {
   const [duration, setDuration] = useState("");
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        onClose();
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [onClose]);
+  useClickOutside(ref, onClose);
 
   function addOption() {
     if (options.length < MAX_POLL_OPTIONS) {

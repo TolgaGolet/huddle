@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Search, X } from "lucide-react";
 import type { GifItem } from "../types";
 import { fetchTrending, fetchSearch } from "../lib/giphyClient";
+import { useClickOutside } from "../hooks/useClickOutside";
 
 interface Props {
   /** Null while reconnecting; the picker loads again once it's back. */
@@ -18,16 +19,7 @@ export default function GifPicker({ httpToken, onSelect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const query = search.trim();
 
-  // Close on outside click
-  useEffect(() => {
-    function onMouseDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        onClose();
-      }
-    }
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [onClose]);
+  useClickOutside(ref, onClose);
 
   // Trending (empty query) loads immediately; searches are debounced.
   useEffect(() => {

@@ -20,6 +20,12 @@ export const MAX_POLL_OPTION_LENGTH = 100;
 export const MAX_POLL_OPTIONS = 10;
 /** The only lengths a poll can run for; a poll without one stays open. Well inside MAX_ROOM_LIFETIME_MS. */
 export const POLL_DURATIONS_MS: readonly number[] = [1, 5, 15, 30, 60, 180].map((minutes) => minutes * 60_000);
+/** Furthest a watch party's playback position can be, in seconds; well past any real video. */
+export const MAX_WATCH_POSITION_S = 24 * 60 * 60;
+/** The playback speeds YouTube offers, the only ones a watch party accepts. */
+export const WATCH_RATES: readonly number[] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+/** How long a watch party whose members all lost their connection waits for one to come back. */
+export const WATCH_PARTY_GRACE_MS = 60_000;
 export const MAX_IMAGES_PER_MESSAGE = 10;
 export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
 export const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif"]);

@@ -10,6 +10,7 @@ import { giphyRouter } from "./giphyRouter.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
+import { setupWatchParty } from "./watchPartyHandler.js";
 import { clearStaleImages, createImageRouter, deleteRoomImages, releaseMessageImages } from "./imageRouter.js";
 import { errorSummary } from "./errorLog.js";
 import { apiNotFound, httpErrorHandler } from "./httpErrors.js";
@@ -87,6 +88,7 @@ setupSignaling(io, proxyHops);
 setupModeration(io, proxyHops);
 setupChat(io);
 setupPolls(io);
+setupWatchParty(io);
 
 const clientDist = path.join(__dirname, "../../client/dist");
 app.use(express.static(clientDist));

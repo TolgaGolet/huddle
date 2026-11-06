@@ -227,4 +227,17 @@ describe("Composer", () => {
     const update = onReplyingToChange.mock.lastCall![0] as (current: ChatMessage | null) => ChatMessage | null;
     expect(update(later)).toBe(later);
   });
+
+  it("starts a watch party from its popover and reports one already running", async () => {
+    const { socket } = setup();
+    fireEvent.click(screen.getByLabelText("Watch together"));
+    fireEvent.change(screen.getByLabelText("YouTube link"), { target: { value: "https://youtu.be/dQw4w9WgXcQ" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start watch party" }));
+
+    expect(socket.emit).toHaveBeenCalledWith("watch-start", { videoId: "dQw4w9WgXcQ", allowOthersToChange: true });
+    expect(screen.queryByLabelText("YouTube link")).toBeNull();
+
+    act(() => socket.fire("watch-start-refused", { reason: "active" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/already running/);
+  });
 });

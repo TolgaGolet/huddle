@@ -24,8 +24,9 @@ export default function PrivacyPage() {
         </p>
         <h2 className="text-base font-semibold text-white mt-6 mb-2">Other services</h2>
         <p className="mb-4">
-          GIFs come from Giphy, which sees your IP address when your browser loads one, and search terms are sent to it. Google's
-          STUN servers help browsers connect. The hosting provider handles all traffic to this site.
+          GIFs come from Giphy, which sees your IP address when your browser loads one, and search terms are sent to it. Joining a
+          watch party loads its video from YouTube, so Google sees your IP address and what you watch; nothing is loaded from
+          YouTube until you join. Google's STUN servers help browsers connect. The hosting provider handles all traffic to this site.
         </p>
         <Link to="/" className="text-indigo-400 hover:underline">Back to Huddle</Link>
       </main>

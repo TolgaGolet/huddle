@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { addChatMessage, findEntry, emptyReactions, hasPermission, removeMessage, touchRoom, type ChatMessage, type RoomCtx } from "./roomManager.js";
 import { isRoomImageUrl } from "./imageRouter.js";
-import { isPollMessage, mayDeleteMessage, quoteText } from "./protocol.js";
+import { attachmentLabel, hasEditableContent, isPollMessage, mayDeleteMessage, quoteText } from "./protocol.js";
 import { onRoom, type AppServer, type AppSocket } from "./socketRoute.js";
 import {
   noPayload,
@@ -41,7 +41,7 @@ function isGiphyUrl(url: string): boolean {
 
 /** Built from the server's own history, so nobody can attribute words to someone else. */
 function quoteOf(quoted: ChatMessage): NonNullable<ChatMessage["replyTo"]> {
-  return { id: quoted.id, senderName: quoted.senderName, text: quoteText(quoted.text) || "[Image]", imageUrl: quoted.imageUrls?.[0] };
+  return { id: quoted.id, senderName: quoted.senderName, text: quoteText(quoted.text) || attachmentLabel(quoted), imageUrl: quoted.imageUrls?.[0] };
 }
 
 export function setupChat(io: AppServer): void {
@@ -126,10 +126,8 @@ export function setupChat(io: AppServer): void {
       const msg = findEntry(room, messageId);
       if (!msg || isPollMessage(msg)) return;
 
-      // Only the sender can edit their own message. GIFs and image-only
-      // messages cannot be edited to text.
-      if (msg.senderId !== participant.userId) return;
-      if (msg.gifUrl || msg.imageUrls?.length) return;
+      // Only the sender can edit their own message, and only plain text.
+      if (msg.senderId !== participant.userId || !hasEditableContent(msg)) return;
 
       touchRoom(room);
       msg.text = text;

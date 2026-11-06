@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useImperativeHandle, useLayoutEffect } from "react";
-import { Send, Loader2, Smile, BarChart3, Reply, X, Image as ImageIcon } from "lucide-react";
+import { Send, Loader2, Smile, BarChart3, Reply, X, Image as ImageIcon, Clapperboard } from "lucide-react";
 import type { AppSocket, ChatMessage, ClientToServerEvents, PollCreate } from "../types";
-import { createBucket, MAX_CHAT_TEXT_LENGTH, MAX_IMAGES_PER_MESSAGE, RATE_LIMITS } from "../types";
+import { attachmentLabel, createBucket, MAX_CHAT_TEXT_LENGTH, MAX_IMAGES_PER_MESSAGE, RATE_LIMITS } from "../types";
 import FormattingToolbar, { formatForShortcut, formatSelection, restoreSelection } from "./FormattingToolbar";
 import EmojiPicker from "./EmojiPicker";
 import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
+import WatchPartyCreator from "./WatchPartyCreator";
 import RoomImage from "./RoomImage";
 import { useImageDraft } from "../hooks/useImageDraft";
 import { useTyping } from "../hooks/useTyping";
@@ -31,7 +32,7 @@ interface Props {
   onBeforeSend: () => void;
 }
 
-type Popover = "emoji" | "gif" | "poll";
+type Popover = "emoji" | "gif" | "poll" | "watch";
 type ChatMessagePayload = Parameters<ClientToServerEvents["chat-message"]>[0];
 
 // Human-readable typing indicator, WhatsApp-style:
@@ -60,6 +61,7 @@ const SERVER_LIMIT_ERROR = "You're doing that too fast.";
 const SERVER_NOTICE_MS = 4000;
 const NO_PERMISSION_TEXT = "Only owners can send messages";
 const NOT_PERMITTED_ERROR = "Not sent: only owners can send messages now.";
+const WATCH_PARTY_ACTIVE_ERROR = "A watch party is already running. Join it from its invite in the chat.";
 
 export default function Composer({ ref, socket, httpToken, roomId, canSend = true, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
   const [text, setText] = useState("");
@@ -213,7 +215,8 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
     void doSend();
   }
 
-  function handleCreatePoll(data: PollCreate): boolean {
+  /** The guards every popover send shares; false leaves the popover open. */
+  function sendFromPopover(emit: (socket: AppSocket) => void): boolean {
     if (!canSendRef.current) return false;
     if (!socket?.connected) {
       setUploadError(CONNECTION_LOST_ERROR);
@@ -221,9 +224,13 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
     }
     if (!takeSendToken()) return false;
     onBeforeSend();
-    socket.emit("poll-create", data);
+    emit(socket);
     return true;
   }
+
+  const handleCreatePoll = (data: PollCreate) => sendFromPopover((s) => s.emit("poll-create", data));
+  const handleStartWatchParty = (videoId: string, allowOthersToChange: boolean) =>
+    sendFromPopover((s) => s.emit("watch-start", { videoId, allowOthersToChange }));
 
   function handleGifSelect(gifUrl: string, gifTitle: string) {
     if (!socket || sending || !canSendRef.current) return;
@@ -276,11 +283,14 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
     };
     const onLimited = show(SERVER_LIMIT_ERROR);
     const onNotPermitted = show(NOT_PERMITTED_ERROR);
+    const onWatchRefused = show(WATCH_PARTY_ACTIVE_ERROR);
     socket.on("rate-limited", onLimited);
     socket.on("not-permitted", onNotPermitted);
+    socket.on("watch-start-refused", onWatchRefused);
     return () => {
       socket.off("rate-limited", onLimited);
       socket.off("not-permitted", onNotPermitted);
+      socket.off("watch-start-refused", onWatchRefused);
       clearTimeout(timer);
     };
   }, [socket]);
@@ -288,7 +298,7 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
   // Losing the permission closes the pickers. The draft stays, in case it comes back.
   if (!canSend && openPopover !== null) setOpenPopover(null);
 
-  // Close the emoji, GIF and poll popovers with Escape while one is open.
+  // Close the emoji, GIF, poll and watch party popovers with Escape while one is open.
   const popoverOpen = openPopover !== null;
   useEffect(() => {
     if (!popoverOpen) return;
@@ -323,7 +333,7 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
                 skeletonClassName="mt-1 h-8 w-8 rounded"
               />
             ) : (
-              <p className="text-xs text-gray-400 truncate">{replyingTo.text || "[Image]"}</p>
+              <p className="text-xs text-gray-400 truncate">{replyingTo.text || attachmentLabel(replyingTo)}</p>
             )}
           </div>
           <button
@@ -354,6 +364,12 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
       {openPopover === "poll" && (
         <PollCreator
           onSubmit={handleCreatePoll}
+          onClose={() => setOpenPopover(null)}
+        />
+      )}
+      {openPopover === "watch" && (
+        <WatchPartyCreator
+          onSubmit={handleStartWatchParty}
           onClose={() => setOpenPopover(null)}
         />
       )}
@@ -392,6 +408,21 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
         <div className="flex flex-wrap items-center justify-between">
           <FormattingToolbar textareaRef={textareaRef} text={text} setText={setText} />
           <div className="flex items-center gap-0.5 pointer-coarse:gap-0">
+            <button
+              type="button"
+              onClick={() => togglePopover("watch")}
+              // Stands out from the icon buttons: it starts something for the whole room.
+              className={`touch-target mr-1 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 ${
+                openPopover === "watch"
+                  ? "bg-indigo-500 text-white"
+                  : "bg-indigo-600/90 text-white hover:bg-indigo-500"
+              }`}
+              aria-label="Watch together"
+              aria-expanded={openPopover === "watch"}
+            >
+              <Clapperboard size={13} aria-hidden />
+              Watch together
+            </button>
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}

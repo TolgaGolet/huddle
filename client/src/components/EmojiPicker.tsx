@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { CATEGORIES, EMOJI_NAMES, loadRecentEmojis, saveRecentEmoji } from "../lib/emojiData";
+import { useClickOutside } from "../hooks/useClickOutside";
 
 interface Props {
   onSelect: (emoji: string) => void;
@@ -13,15 +14,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props) {
   const [hoveredEmoji, setHoveredEmoji] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        onClose();
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [onClose]);
+  useClickOutside(ref, onClose);
 
   function handleSelect(emoji: string) {
     const updated = saveRecentEmoji(emoji);

@@ -1,7 +1,7 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { ChevronDown, Pin, X } from "lucide-react";
 import type { AppSocket, ChatEntry, ChatMessage } from "../types";
-import { isPollMessage, mayDeleteMessage } from "../types";
+import { attachmentLabel, isPollMessage, mayDeleteMessage } from "../types";
 import { avatarTextColor } from "../lib/avatarColor";
 import { isEditable } from "../lib/messageEdit";
 import PollDisplay from "./PollDisplay";
@@ -239,7 +239,7 @@ function MessageList({ socket, chatHistory, pinnedMessageId, localUserId, canPin
               <p className="text-xs text-gray-300 truncate">
                 {isPollMessage(pinnedMessage)
                   ? `Poll: ${pinnedMessage.question}`
-                  : pinnedMessage.text || (pinnedMessage.imageUrls?.length ? "[Image]" : "[GIF]")}
+                  : pinnedMessage.text || attachmentLabel(pinnedMessage)}
               </p>
             </button>
           </div>

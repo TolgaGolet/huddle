@@ -2,11 +2,12 @@ import type { Socket } from "socket.io-client";
 import type { ClientToServerEvents, ServerToClientEvents } from "../../../server/src/protocol.ts";
 
 // Limits and the wire protocol are defined once, in the server's limits.ts,
-// rateLimit.ts, joinErrors.ts and protocol.ts; importing them keeps both sides in sync.
+// rateLimit.ts, joinErrors.ts, protocol.ts and youtube.ts; importing them keeps both sides in sync.
 export * from "../../../server/src/limits.ts";
 export * from "../../../server/src/rateLimit.ts";
 export * from "../../../server/src/joinErrors.ts";
 export * from "../../../server/src/protocol.ts";
+export * from "../../../server/src/youtube.ts";
 
 export type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 

@@ -7,6 +7,7 @@ import { hasReacted } from "../types";
 import { formatTime } from "../lib/formatTime";
 import MessageEditor from "./MessageEditor";
 import RoomImage from "./RoomImage";
+import WatchInviteCard from "./WatchInviteCard";
 
 /** Must keep a stable identity, or every message re-renders along with the list. */
 export interface MessageActions {
@@ -103,7 +104,9 @@ function MessageItem({ msg, isPinned, isEditing, isHighlighted, localUserId, act
         <span className="text-[10px] text-gray-400">{formatTime(msg.timestamp)}</span>
       </div>
 
-      {msg.gifUrl ? (
+      {msg.watchInvite ? (
+        <WatchInviteCard partyId={msg.watchInvite.partyId} videoId={msg.watchInvite.videoId} senderName={msg.senderName} />
+      ) : msg.gifUrl ? (
         <div className="mt-1">
           <a href="https://giphy.com" target="_blank" rel="noopener noreferrer" className="group/gif inline-block">
             <img

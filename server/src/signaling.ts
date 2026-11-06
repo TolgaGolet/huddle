@@ -15,6 +15,7 @@ import {
   type Room,
 } from "./roomManager.js";
 import { roomClosingNotice } from "./roomLifetime.js";
+import { watchPartyStateOf } from "./watchPartyHandler.js";
 import { announceSettings, announceWaiting, promoteIfOwnerless, roomSettingsOf, waitingEntryFor } from "./roomModeration.js";
 import { countSecurityEvent } from "./securityLog.js";
 import { deriveUserId } from "./identity.js";
@@ -59,24 +60,24 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
     };
 
     // Removes a participant and tells the others; their share ends with them.
-    const removeAndAnnounce = (roomId: string, id: string) => {
+    const removeAndAnnounce = (roomId: string, id: string, deliberate = false) => {
       const room = getRoom(roomId);
       if (room?.screenSharerId === id) {
         room.screenSharerId = null;
         socket.to(roomId).emit("screen-share-stopped", { id });
       }
       const participant = room?.participants.get(id);
-      removeParticipant(roomId, id);
+      removeParticipant(roomId, id, deliberate);
       if (participant) socket.to(roomId).emit("participant-left", { id, userId: participant.userId });
     };
 
     // Remove this socket from the room it has joined (if any) and tell the
     // others. Used on disconnect, and by a successful join-room into another
     // room so the socket never leaves a ghost participant behind.
-    const leaveCurrentRoom = () => {
+    const leaveCurrentRoom = (deliberate = false) => {
       const roomId = socketRoomMap.get(socket.id);
       if (!roomId) return;
-      removeAndAnnounce(roomId, socket.id);
+      removeAndAnnounce(roomId, socket.id, deliberate);
       void socket.leave(roomId);
       // The room lingers for ROOM_GRACE_MS after the last participant leaves
       // (in case everyone is reconnecting after a shared network blip); its
@@ -145,6 +146,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
         screenSharer: room.screenSharerId,
         closing: roomClosingNotice(room),
         settings: roomSettingsOf(room),
+        watchParty: watchPartyStateOf(room),
       });
 
       socket.to(room.id).emit("participant-joined", participant);
@@ -284,7 +286,9 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       const roomId = socketRoomMap.get(socket.id);
       const room = roomId ? getRoom(roomId) : undefined;
       const userId = room?.participants.get(socket.id)?.userId;
-      leaveCurrentRoom();
+      // A kick adds them to blockedUsers before disconnecting them.
+      const kicked = !!userId && !!room?.blockedUsers.has(userId);
+      leaveCurrentRoom(reason === LEFT_ON_PURPOSE || kicked);
       // Unlike a lost connection, leaving ends membership and ownership: Back or a
       // return visit starts over, and someone else can take over at once.
       if (room && userId && reason === LEFT_ON_PURPOSE) {

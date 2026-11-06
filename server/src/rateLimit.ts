@@ -59,6 +59,9 @@ export const RATE_LIMITS = {
   join: { burst: 10, perSecond: 0.2 },
   activity: { burst: 5, perSecond: 0.2 },
   moderation: { burst: 10, perSecond: 1 },
+  watchControl: { burst: 10, perSecond: 1 },
+  // Scrubbing through a video sends a seek per drag step.
+  watchSync: { burst: 20, perSecond: 4 },
 } as const satisfies Record<string, RateLimit>;
 
 export type RateLimitGroup = keyof typeof RATE_LIMITS;
@@ -87,4 +90,9 @@ export const EVENT_LIMITS: Readonly<Record<keyof ClientToServerEvents, RateLimit
   "update-room-settings": "moderation",
   "change-room-password": "moderation",
   "admit-waiting": "moderation",
+  "watch-start": "messages",
+  "watch-join": "watchControl",
+  "watch-leave": "watchControl",
+  "watch-change-video": "watchControl",
+  "watch-playback": "watchSync",
 };

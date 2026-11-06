@@ -8,6 +8,7 @@ import { useCaptureAudio } from "../hooks/useCaptureAudio";
 import { useMicrophone } from "../hooks/useMicrophone";
 import { useVoiceActivityReport } from "../hooks/useVoiceActivityReport";
 import { useVoiceActivity } from "../hooks/useVoiceActivity";
+import { useWatchParty } from "../hooks/useWatchParty";
 import { useAudioSettings } from "../hooks/useAudioSettings";
 import { useTransmissionGate } from "../hooks/useTransmissionGate";
 import LeaveRoomDialog from "../components/LeaveRoomDialog";
@@ -20,6 +21,8 @@ import WaitingScreen from "../components/WaitingScreen";
 import VoiceControls from "../components/VoiceControls";
 import SettingsPopup from "../components/SettingsPopup";
 import ScreenViewer from "../components/ScreenViewer";
+import WatchPartyPanel from "../components/WatchPartyPanel";
+import { WatchPartyContext } from "../lib/watchPartyContext";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS, permits } from "../types";
 import { resyncCallStateWhenLimited } from "../lib/callStateResync";
@@ -144,6 +147,9 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
     joinRoom();
   }, [joinRoom]);
 
+  // Before useWebRTC, whose effect sends the join: room-joined carries the party.
+  const watch = useWatchParty(socket, roomId);
+
   const { remoteAnalysers, screenStreams, peerConnectionStates, remotePlaybackBlocked, resumeRemotePlayback, startScreenShare, stopScreenShare, setRemoteVolume } =
     useWebRTC({ socket, localStream, micSettled: localStream !== null || micError !== null, onScreenShareStopped: handleScreenShareStopped, onSignalingReady: handleSignalingReady });
 
@@ -224,14 +230,18 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
     }
   }, [participants, peerVolumes, setRemoteVolume]);
 
-  const localParticipant: Participant = {
-    id: localId,
-    userId: userId ?? "",
-    name,
-    isMuted: announcedMuted,
-  };
+  // Memoized so the memoized WatchPartyPanel skips the re-renders `speaking` causes.
+  const allParticipants = useMemo(() => {
+    const localParticipant: Participant = { id: localId, userId: userId ?? "", name, isMuted: announcedMuted };
+    return [localParticipant, ...participants];
+  }, [localId, userId, name, announcedMuted, participants]);
 
-  const allParticipants = [localParticipant, ...participants];
+  // A context, so a party change re-renders only the invite cards, not the memoized chat.
+  const { party: watchParty, isMember: isWatchMember, join: joinWatchParty } = watch;
+  const watchContext = useMemo(
+    () => ({ party: watchParty, isMember: isWatchMember, join: joinWatchParty }),
+    [watchParty, isWatchMember, joinWatchParty],
+  );
 
   // "Connecting…" indicator: a remote participant is connecting while their
   // peer connection is not yet `connected` (new/connecting/failed — `failed`
@@ -252,6 +262,9 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
   const firstScreenStream = screenStreams.entries().next().value;
   const screenSharerName =
     firstScreenStream && allParticipants.find((p) => p.id === firstScreenStream[0])?.name;
+
+  // The player is for the party's members; everyone else sees its invite in the chat.
+  const watchSnapshot = watch.isMember ? watch.snapshot : null;
 
   const voiceControlsProps = {
     isMuted: announcedMuted,
@@ -337,29 +350,45 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
 
         {/* Screen share (theater) + chat: stacked below md, side by side from md */}
         <main className="flex-1 flex flex-col md:flex-row overflow-hidden min-w-0 min-h-0">
-          {firstScreenStream && (
-            <ScreenViewer
-              stream={firstScreenStream[1]}
-              sharerName={screenSharerName || "Someone"}
-            />
+          {(firstScreenStream || watchSnapshot) && (
+            <div className="flex flex-col min-w-0 shrink-0 md:shrink md:flex-1 md:min-h-0">
+              {watchSnapshot && (
+                <WatchPartyPanel
+                  socket={socket}
+                  snapshot={watchSnapshot}
+                  localUserId={userId ?? ""}
+                  participants={allParticipants}
+                  onLeave={watch.leave}
+                  onChangeVideo={watch.changeVideo}
+                />
+              )}
+              {firstScreenStream && (
+                <ScreenViewer
+                  stream={firstScreenStream[1]}
+                  sharerName={screenSharerName || "Someone"}
+                />
+              )}
+            </div>
           )}
           <div
             className={
-              firstScreenStream
+              firstScreenStream || watchSnapshot
                 ? "flex-1 min-h-0 md:flex-none md:w-80 md:shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-gray-800"
                 : "flex-1 min-h-0 flex flex-col"
             }
           >
-            <RoomChat
-              socket={socket}
-              httpToken={httpToken}
-              imageSession={imageSession}
-              localUserId={userId ?? ""}
-              roomId={roomId}
-              canPin={canPin}
-              isOwner={isOwner}
-              canSendMessages={canSendMessages}
-            />
+            <WatchPartyContext value={watchContext}>
+              <RoomChat
+                socket={socket}
+                httpToken={httpToken}
+                imageSession={imageSession}
+                localUserId={userId ?? ""}
+                roomId={roomId}
+                canPin={canPin}
+                isOwner={isOwner}
+                canSendMessages={canSendMessages}
+              />
+            </WatchPartyContext>
           </div>
         </main>
       </div>

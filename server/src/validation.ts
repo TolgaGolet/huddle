@@ -7,7 +7,8 @@
 // The user-facing limits live in limits.ts, which the client also imports.
 
 import type { ChatMessage } from "./roomManager.js";
-import type { PollCreate, RoomPermission, RoomPermissions } from "./protocol.js";
+import type { PollCreate, RoomPermission, RoomPermissions, WatchPlayback } from "./protocol.js";
+import { YOUTUBE_VIDEO_ID_PATTERN } from "./youtube.js";
 import {
   CLIENT_KEY_PATTERN,
   isValidNewPassword,
@@ -18,7 +19,9 @@ import {
   MAX_POLL_OPTION_LENGTH,
   MAX_POLL_OPTIONS,
   MAX_POLL_QUESTION_LENGTH,
+  MAX_WATCH_POSITION_S,
   POLL_DURATIONS_MS,
+  WATCH_RATES,
 } from "./limits.js";
 
 const MAX_ID_LENGTH = 32;
@@ -257,4 +260,34 @@ export function parsePollVote(raw: unknown): { pollId: string; optionId: string 
   const optionId = id(raw.optionId);
   if (!pollId || !optionId) return null;
   return { pollId, optionId };
+}
+
+/** The id parseYouTubeVideoId gives the client's form, so the two accept the same videos. */
+const youtubeVideoId = (v: unknown) => (typeof v === "string" && YOUTUBE_VIDEO_ID_PATTERN.test(v) ? v : null);
+
+export function parseWatchStart(raw: unknown): { videoId: string; allowOthersToChange: boolean } | null {
+  if (!isRecord(raw)) return null;
+  const videoId = youtubeVideoId(raw.videoId);
+  return videoId ? { videoId, allowOthersToChange: raw.allowOthersToChange === true } : null;
+}
+
+export function parseWatchJoin(raw: unknown): { partyId: string } | null {
+  const partyId = isRecord(raw) ? id(raw.partyId) : null;
+  return partyId ? { partyId } : null;
+}
+
+export function parseWatchChangeVideo(raw: unknown): { videoId: string } | null {
+  const videoId = isRecord(raw) ? youtubeVideoId(raw.videoId) : null;
+  return videoId ? { videoId } : null;
+}
+
+export function parseWatchPlayback(raw: unknown): (WatchPlayback & { videoId: string }) | null {
+  if (!isRecord(raw)) return null;
+  const { state, position, rate } = raw;
+  const videoId = youtubeVideoId(raw.videoId);
+  if (!videoId) return null;
+  if (state !== "playing" && state !== "paused") return null;
+  if (typeof position !== "number" || !Number.isFinite(position)) return null;
+  if (typeof rate !== "number" || !WATCH_RATES.includes(rate)) return null;
+  return { videoId, state, position: Math.min(Math.max(position, 0), MAX_WATCH_POSITION_S), rate };
 }

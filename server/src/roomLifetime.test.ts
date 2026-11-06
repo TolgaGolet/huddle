@@ -121,6 +121,27 @@ describe("sweepRoomLifetimes", () => {
     expect(getRoom(room.id)).toBe(room);
   });
 
+  it("counts a watch party playing for someone as activity, but not a paused one", () => {
+    const room = occupiedRoom();
+    room.watchParty = {
+      id: "party",
+      hostId: "u",
+      allowOthersToChange: false,
+      videoId: "dQw4w9WgXcQ",
+      members: new Map([[`socket-${room.id}`, "u"]]),
+      playback: { state: "playing", position: 0, rate: 1 },
+      updatedAt: Date.now(),
+    };
+    const { io } = fakeIo();
+
+    sweepRoomLifetimes(io, room.lastActivityAt + ROOM_INACTIVE_MS);
+    expect(getRoom(room.id)).toBe(room);
+
+    room.watchParty.playback.state = "paused";
+    sweepRoomLifetimes(io, room.lastActivityAt + ROOM_INACTIVE_MS);
+    expect(getRoom(room.id)).toBeUndefined();
+  });
+
   it("leaves an empty room to its own grace period", () => {
     const room = createRoom();
     const { io, sent } = fakeIo();

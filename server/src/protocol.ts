@@ -35,6 +35,8 @@ export interface ChatMessage {
   gifUrl?: string;
   imageUrls?: string[];
   edited?: boolean;
+  /** Set only by the server, on the message announcing a watch party. */
+  watchInvite?: { partyId: string; videoId: string };
 }
 
 // Keeps a quote from doubling a message's weight in the room-joined history.
@@ -119,6 +121,17 @@ export function mayDeleteMessage(senderId: string, userId: string, isOwner: bool
   return senderId === userId || isOwner;
 }
 
+/** Plain text only: GIFs, images and watch-party invites can't be edited. Shared so the client offers Edit only where the server allows it. */
+export function hasEditableContent(msg: Pick<ChatMessage, "gifUrl" | "imageUrls" | "watchInvite">): boolean {
+  return !msg.gifUrl && !msg.imageUrls?.length && !msg.watchInvite;
+}
+
+/** What stands in for a message's text in previews and quotes when it has none. */
+export function attachmentLabel(msg: Pick<ChatMessage, "imageUrls" | "watchInvite">): string {
+  if (msg.watchInvite) return "[Watch party]";
+  return msg.imageUrls?.length ? "[Image]" : "[GIF]";
+}
+
 /** Whom an owner can kick, promote or demote: anyone else present but the room's creator. */
 export function isModeratable(targetId: string, actorId: string, creatorId: string | null): boolean {
   return targetId !== actorId && targetId !== creatorId;
@@ -149,6 +162,38 @@ export interface RoomClosing {
   reason: RoomClosingReason;
   /** A duration, not a time, so that a client's wrong clock doesn't matter. */
   remainingMs: number;
+}
+
+export type WatchPlaybackState = "playing" | "paused";
+
+export interface WatchPlayback {
+  state: WatchPlaybackState;
+  /** Seconds into the video when this was sent. */
+  position: number;
+  rate: number;
+}
+
+/** A room's watch party, as sent to everyone in the room. */
+export interface WatchPartyState {
+  id: string;
+  /** userId of whoever controls the video when others may not change it. */
+  hostId: string;
+  allowOthersToChange: boolean;
+  videoId: string;
+  /** userIds, in the order they joined. */
+  memberIds: string[];
+  playback: WatchPlayback;
+}
+
+/** Where playback is `elapsedMs` after `playback` was true. */
+export function projectPosition(playback: WatchPlayback, elapsedMs: number): number {
+  if (playback.state !== "playing" || elapsedMs <= 0) return playback.position;
+  return playback.position + (elapsedMs / 1000) * playback.rate;
+}
+
+/** Shared so the client offers the change-video input only to those the server lets use it. */
+export function mayChangeWatchVideo(party: Pick<WatchPartyState, "hostId" | "allowOthersToChange">, userId: string): boolean {
+  return party.allowOthersToChange || party.hostId === userId;
 }
 
 export function isPollMessage(entry: ChatEntry): entry is PollMessage {
@@ -197,6 +242,13 @@ export interface ClientToServerEvents {
   /** An empty password makes the room open. */
   "change-room-password": (data: { password: string }) => void;
   "admit-waiting": (data: { id: string }) => void;
+  /** Starts the room's watch party and announces it in the chat. The id comes from parseYouTubeVideoId (youtube.ts). */
+  "watch-start": (data: { videoId: string; allowOthersToChange: boolean }) => void;
+  "watch-join": (data: { partyId: string }) => void;
+  "watch-leave": () => void;
+  "watch-change-video": (data: { videoId: string }) => void;
+  /** A member played, paused, sought or changed speed, in the video they name (stale ones are dropped). */
+  "watch-playback": (data: WatchPlayback & { videoId: string }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -215,6 +267,7 @@ export interface ServerToClientEvents {
     /** Set if the room is already within a closing warning. */
     closing: RoomClosing | null;
     settings: RoomSettings;
+    watchParty: WatchPartyState | null;
   }) => void;
   "participant-joined": (participant: Participant) => void;
   "participant-left": (data: { id: string; userId: string }) => void;
@@ -245,4 +298,10 @@ export interface ServerToClientEvents {
   /** To the owner who tried: the person couldn't come in because the room is full. */
   "admit-refused": (data: { id: string }) => void;
   "room-password-result": (data: { ok: boolean }) => void;
+  /** The room's watch party changed (members, video, settings), or ended (null). */
+  "watch-party": (party: WatchPartyState | null) => void;
+  /** Another member changed playback. Sent to members only. */
+  "watch-playback": (data: WatchPlayback) => void;
+  /** Only one watch party at a time: one was already running. */
+  "watch-start-refused": (data: { reason: "active" }) => void;
 }
