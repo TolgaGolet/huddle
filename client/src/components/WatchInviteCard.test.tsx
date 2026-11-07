@@ -9,7 +9,7 @@ import WatchInviteCard from "./WatchInviteCard";
 const party = makeParty({ videoId: "9bZkp7q19f0", memberIds: ["u1", "u2"] });
 
 function setup(active: WatchPartyState | null, isMember = false) {
-  const join = vi.fn();
+  const join = vi.fn(() => true);
   const parties = active ? [active] : [];
   render(
     <WatchPartyContext value={watchContextValue({ parties, joinedPartyId: isMember && active ? active.id : null, join })}>

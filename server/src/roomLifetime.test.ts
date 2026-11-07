@@ -148,6 +148,16 @@ describe("sweepRoomLifetimes", () => {
     expect(getRoom(room.id)).toBeUndefined();
   });
 
+  it("doesn't count a game party as activity, so a forgotten one can't keep a room open", () => {
+    const room = occupiedRoom();
+    const party = { id: "game", gameId: "ragamuffin", hostId: "u", members: new Map([[`socket-${room.id}`, "u"]]) };
+    room.gameParties.set(party.id, party);
+    const { io } = fakeIo();
+
+    sweepRoomLifetimes(io, room.lastActivityAt + ROOM_INACTIVE_MS);
+    expect(getRoom(room.id)).toBeUndefined();
+  });
+
   it("leaves an empty room to its own grace period", () => {
     const room = createRoom();
     const { io, sent } = fakeIo();

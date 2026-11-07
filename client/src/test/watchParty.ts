@@ -18,5 +18,5 @@ export function makeParty(overrides: Partial<WatchPartyState> = {}): WatchPartyS
 }
 
 export function watchContextValue(overrides: Partial<WatchPartyContextValue> = {}): WatchPartyContextValue {
-  return { parties: [], joinedPartyId: null, join: () => {}, end: () => {}, isOwner: false, prepareStart: () => {}, ...overrides };
+  return { parties: [], joinedPartyId: null, join: () => true, end: () => {}, isOwner: false, prepareStart: () => {}, ...overrides };
 }

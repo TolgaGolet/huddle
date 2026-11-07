@@ -25,6 +25,7 @@ import {
   parseRelayTarget,
   parseAdmitWaiting,
   parseChangePassword,
+  parseGameStart,
   parseKick,
   parseRoomPermissions,
   parseSetOwner,
@@ -58,6 +59,7 @@ describe.each([
   ["parseWatchPlayback", parseWatchPlayback],
   ["parseWatchEntry", parseWatchEntry],
   ["parseWatchQueueMove", parseWatchQueueMove],
+  ["parseGameStart", parseGameStart],
 ] as const)("%s", (_name, parse) => {
   it.each(junk)("rejects %j without throwing", (raw) => {
     expect(parse(raw)).toBeNull();
@@ -324,6 +326,15 @@ describe("parsePollSubmit", () => {
     expect(parsePollSubmit({ pollId: "p", optionIds: ["a", "a"] })).toBeNull();
     expect(parsePollSubmit({ pollId: "p", optionIds: ["a", 1] })).toBeNull();
     expect(parsePollSubmit({ pollId: "p", optionIds: Array.from({ length: MAX_POLL_OPTIONS + 1 }, (_, i) => `o${i}`) })).toBeNull();
+  });
+});
+
+describe("parseGameStart", () => {
+  it("accepts only a game in the catalog", () => {
+    expect(parseGameStart({ gameId: "ragamuffin" })).toEqual({ gameId: "ragamuffin" });
+    expect(parseGameStart({ gameId: "not-a-game" })).toBeNull();
+    expect(parseGameStart({ gameId: 5 })).toBeNull();
+    expect(parseGameStart({})).toBeNull();
   });
 });
 

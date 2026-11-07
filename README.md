@@ -35,6 +35,8 @@ The server reads these from `server/.env`:
 | `GIPHY_HOURLY_LIMIT` | Giphy calls allowed per hour (default `90`, for a free beta key). Raise it for a production key. |
 | `YOUTUBE_API_KEY` | A YouTube Data API v3 key, which enables search in watch parties. Without it, pasting links still works. |
 | `YOUTUBE_DAILY_SEARCH_LIMIT` | Searches allowed per day (default `90`, which fits the free 10,000-unit quota). |
+| `RAGAMUFFIN_URL` | The https URL of the RagaMuffin game, embedded in game parties (default `https://ragamuffin.infinityfreeapp.com/`). A restart is enough to change it. |
+| `RAGAMUFFIN_EMBED` | `true` shows the game inside the room (its origin is then allowed in the CSP's `frame-src`); the default `false` opens it in its own tab, since its current free host refuses to be framed. |
 | `PUBLIC_ORIGIN` | The site's own origin, such as `https://huddle.example`. Only needed if a proxy rewrites both `Host` and `X-Forwarded-Host`, which makes the server refuse real users. |
 
 The client reads `VITE_ICE_SERVERS` at build time; see below.

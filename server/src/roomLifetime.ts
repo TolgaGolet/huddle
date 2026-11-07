@@ -50,6 +50,8 @@ export function sweepRoomLifetimes(io: AppServer, now = Date.now()): void {
     for (const party of room.watchParties.values()) {
       if (party.playback.state === "playing" && party.members.size > 0) touchRoom(room, now);
     }
+    // A game party is not counted: the server can't tell a game being played from
+    // a party someone forgot to leave, so it would keep an idle room open.
 
     const status = closingStatus(room, now);
     if (status && now >= status.closesAt) {

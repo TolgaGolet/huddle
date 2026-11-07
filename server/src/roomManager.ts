@@ -47,6 +47,17 @@ export interface Room {
   lastActivityAt: number;
   /** By id, at most MAX_WATCH_PARTIES. See watchPartyHandler.ts. */
   watchParties: Map<string, WatchParty>;
+  /** By id, at most MAX_GAME_PARTIES. See gamePartyHandler.ts. */
+  gameParties: Map<string, GameParty>;
+}
+
+export interface GameParty {
+  id: string;
+  /** From the catalog in games.ts. */
+  gameId: string;
+  hostId: string;
+  /** socket.id -> userId, in the order they joined. A member who reconnects joins again. */
+  members: Map<string, string>;
 }
 
 export interface WatchParty {
@@ -176,6 +187,7 @@ export function createRoom(password?: string, creatorIp: string | null = null, p
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
     watchParties: new Map(),
+    gameParties: new Map(),
   };
   rooms.set(id, room);
   return room;

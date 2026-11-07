@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
+import { useElementFullscreen } from "../hooks/useElementFullscreen";
 import { Ban, Clapperboard, Crown, ListPlus, LogOut, Maximize, Minimize, Play, Search } from "lucide-react";
 import type { AppSocket, Participant } from "../types";
 import { MAX_WATCH_QUEUE, MAX_YOUTUBE_QUERY_LENGTH, mayControlWatchParty, parseYouTubeVideoId } from "../types";
@@ -41,9 +42,8 @@ export default memo(WatchPartyPanel);
 
 function WatchPartyPanel({ socket, snapshot, playbackFeed, localUserId, httpToken, isOwner, participants, onLeave, onEnd, actions }: Props) {
   const { party } = snapshot;
-  const containerRef = useRef<HTMLDivElement>(null);
+  const { ref: containerRef, isFullscreen, toggle: toggleFullscreen } = useElementFullscreen<HTMLDivElement>();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [text, setText] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
@@ -70,18 +70,6 @@ function WatchPartyPanel({ socket, snapshot, playbackFeed, localUserId, httpToke
 
   // Someone else took control away: their search results are no use now.
   if (!canControl && search) setSearch(null);
-
-  useEffect(() => {
-    const handler = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
-    document.addEventListener("fullscreenchange", handler);
-    return () => document.removeEventListener("fullscreenchange", handler);
-  }, []);
-
-  const toggleFullscreen = useCallback(() => {
-    if (!containerRef.current) return;
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void containerRef.current.requestFullscreen().catch(() => {});
-  }, []);
 
   // Everyone reports the end: the server moves on for one with control, or once
   // every member without it has ended, in case the controller's player is stuck.

@@ -47,9 +47,9 @@ describe("ScreenViewer", () => {
   });
 
   it("exits when already fullscreen, and reflects the browser's state", () => {
-    render(<ScreenViewer stream={stream} sharerName="Ana" />);
+    const { container } = render(<ScreenViewer stream={stream} sharerName="Ana" />);
     const exitFullscreen = vi.fn();
-    setDocument({ fullscreenEnabled: true, fullscreenElement: document.body, exitFullscreen });
+    setDocument({ fullscreenEnabled: true, fullscreenElement: container.firstElementChild, exitFullscreen });
     act(() => void document.dispatchEvent(new Event("fullscreenchange")));
 
     fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));

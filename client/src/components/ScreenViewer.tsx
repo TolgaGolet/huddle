@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef } from "react";
+import { useElementFullscreen } from "../hooks/useElementFullscreen";
 import { Maximize, Minimize } from "lucide-react";
 import { isFullscreenShortcut } from "../lib/fullscreenShortcut";
 
@@ -9,31 +10,13 @@ interface Props {
 
 export default function ScreenViewer({ stream, sharerName }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const { ref: containerRef, isFullscreen, toggle: toggleFullscreen } = useElementFullscreen<HTMLDivElement>();
 
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.srcObject = stream;
     }
   }, [stream]);
-
-  useEffect(() => {
-    const handler = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    document.addEventListener("fullscreenchange", handler);
-    return () => document.removeEventListener("fullscreenchange", handler);
-  }, []);
-
-  const toggleFullscreen = useCallback(() => {
-    if (!containerRef.current) return;
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    } else {
-      containerRef.current.requestFullscreen();
-    }
-  }, []);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {

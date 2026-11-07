@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AppSocket, ChatMessage } from "../types";
 import { uploadImages } from "../lib/imageUpload";
+import { GamePartyContext } from "../lib/gamePartyContext";
+import { gameContextValue, RAGAMUFFIN } from "../test/gameParty";
 import Composer, { type ComposerHandle } from "./Composer";
 
 vi.mock("../lib/imageUpload", async (original) => ({
@@ -240,5 +242,31 @@ describe("Composer", () => {
     // Another party started meanwhile, filling the room.
     act(() => socket.fire("watch-start-refused", { reason: "limit", max: 2 }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/At most 2 watch parties/);
+  });
+
+  it("starts a game party from its popover and reports the limit", async () => {
+    const socket = fakeSocket();
+    render(
+      <GamePartyContext value={gameContextValue({ games: [RAGAMUFFIN] })}>
+        <Composer
+          ref={{ current: null }}
+          socket={socket as unknown as AppSocket}
+          httpToken="token"
+          roomId="room"
+          canSend
+          replyingTo={null}
+          onReplyingToChange={() => {}}
+          onBeforeSend={() => {}}
+        />
+      </GamePartyContext>,
+    );
+    fireEvent.click(screen.getByLabelText("Play together"));
+    fireEvent.click(screen.getByRole("button", { name: "Start a game party: RagaMuffin" }));
+
+    expect(socket.emit).toHaveBeenCalledWith("game-start", { gameId: "ragamuffin" });
+    expect(screen.queryByRole("button", { name: /Start a game party/ })).toBeNull();
+
+    act(() => socket.fire("game-start-refused", { reason: "limit", max: 2 }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/At most 2 game parties/);
   });
 });

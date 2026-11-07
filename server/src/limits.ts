@@ -30,6 +30,10 @@ export const WATCH_PARTY_GRACE_MS = 60_000;
 export const MAX_WATCH_PARTIES = 2;
 /** Videos waiting in one watch party's queue, which is sent with every party state. */
 export const MAX_WATCH_QUEUE = 50;
+/** Game parties running in one room at once. Each member is in one party at most, of either kind. */
+export const MAX_GAME_PARTIES = 2;
+/** How long a game party whose members all lost their connection waits for one to come back. */
+export const GAME_PARTY_GRACE_MS = 60_000;
 export const MAX_YOUTUBE_QUERY_LENGTH = 100;
 export const MAX_IMAGES_PER_MESSAGE = 10;
 export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;

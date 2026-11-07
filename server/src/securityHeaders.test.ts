@@ -14,6 +14,7 @@ describe("securityHeaders", () => {
     // Regression: 'unsafe-eval' was only there for heic2any, which is gone.
     // YouTube's player script is the only foreign one, for the watch party.
     expect(headers["Content-Security-Policy"]).toContain("script-src 'self' https://www.youtube.com;");
+    // RagaMuffin opens in a tab by default (games.ts), so only the player is framed.
     expect(headers["Content-Security-Policy"]).toContain("frame-src https://www.youtube-nocookie.com;");
     expect(headers["Content-Security-Policy"]).toContain("frame-ancestors 'none'");
     expect(headers["X-Frame-Options"]).toBe("DENY");
@@ -22,7 +23,6 @@ describe("securityHeaders", () => {
   });
 });
 
-// Regression: an unset NODE_ENV dropped the image cookie's Secure flag.
 describe("isDevelopment", () => {
   it("is true only when explicitly set, so the default is the safe one", () => {
     vi.stubEnv("NODE_ENV", "development");

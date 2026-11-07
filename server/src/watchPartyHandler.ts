@@ -2,19 +2,9 @@ import { nanoid } from "nanoid";
 import { MAX_WATCH_PARTIES, MAX_WATCH_QUEUE, WATCH_PARTY_GRACE_MS } from "./limits.js";
 import { mayControlWatchParty, partiesBesidesNew, projectPosition, type WatchPartyState } from "./protocol.js";
 import { maySendMessages } from "./chatHandler.js";
+import { createPartyMembership, hostOf, partyInvite, partyWith } from "./partyMembership.js";
 import { ownerOnly } from "./roomModeration.js";
-import {
-  addChatMessage,
-  emptyReactions,
-  getRoom,
-  onParticipantRemoved,
-  onRoomDestroyed,
-  touchRoom,
-  type ChatMessage,
-  type Room,
-  type RoomCtx,
-  type WatchParty,
-} from "./roomManager.js";
+import { addChatMessage, getRoom, onRoomDestroyed, touchRoom, type Room, type RoomCtx, type WatchParty } from "./roomManager.js";
 import { onRoom, type AppServer } from "./socketRoute.js";
 import {
   noPayload,
@@ -29,15 +19,8 @@ import {
 } from "./validation.js";
 import { lookupVideoTitle } from "./youtubeData.js";
 
-/**
- * Who controls the video: the host while they're watching, otherwise the
- * longest-present member, or nobody could change it. A host who only lost
- * their connection gets it back by rejoining; one who leaves hands it on.
- */
-function controllerOf(party: WatchParty): string {
-  const memberIds = [...party.members.values()];
-  return memberIds.length && !memberIds.includes(party.hostId) ? memberIds[0] : party.hostId;
-}
+/** Who controls the video: the party's host (hostOf), so there is always someone who can change it. */
+const controllerOf = hostOf;
 
 function projectedPlayback(party: WatchParty, now: number): WatchPartyState["playback"] {
   return { ...party.playback, position: projectPosition(party.playback, now - party.updatedAt) };
@@ -62,19 +45,13 @@ export function watchPartiesOf(room: Room, now = Date.now()): WatchPartyState[] 
   return [...room.watchParties.values()].map((party) => stateOf(party, now));
 }
 
-/** The party this socket is in. A socket is in one at most. */
-function partyOf(room: Room, socketId: string): WatchParty | undefined {
-  for (const party of room.watchParties.values()) if (party.members.has(socketId)) return party;
-  return undefined;
-}
-
 function permitted(party: WatchParty, userId: string): boolean {
   return mayControlWatchParty({ hostId: controllerOf(party), allowOthersToChange: party.allowOthersToChange }, userId);
 }
 
 /** The party this socket is in, if its user may control it: for search, which only they can use. */
 export function controlledPartyOf(room: Room, socketId: string, userId: string): WatchParty | undefined {
-  const party = partyOf(room, socketId);
+  const party = partyWith(room.watchParties, socketId);
   return party && permitted(party, userId) ? party : undefined;
 }
 
@@ -93,20 +70,13 @@ interface WatchPartyOptions {
 }
 
 /**
- * Up to MAX_WATCH_PARTIES per room, and a socket in one at most. The server
+ * Up to MAX_WATCH_PARTIES per room, with membership shared with game parties
+ * (partyMembership.ts). The server
  * holds each party's playback and projects it when sending, so a late joiner
  * starts at the right second without trusting anyone's clock. Members are
  * sockets: a client that reconnects joins again.
  */
 export function setupWatchParty(io: AppServer, { lookupTitle = lookupVideoTitle }: WatchPartyOptions = {}): void {
-  // Parties whose members all lost their connection, waiting for one to come back.
-  const endTimers = new Map<string, { roomId: string; timer: NodeJS.Timeout }>();
-
-  function cancelEnd(partyId: string): void {
-    clearTimeout(endTimers.get(partyId)?.timer);
-    endTimers.delete(partyId);
-  }
-
   // Rooms with a title waiting to be announced (see announceSoon).
   const pendingAnnounces = new Map<string, NodeJS.Timeout>();
 
@@ -133,48 +103,13 @@ export function setupWatchParty(io: AppServer, { lookupTitle = lookupVideoTitle 
     pendingAnnounces.set(roomId, timer);
   }
 
-  /** Removes the party without announcing it; true if it existed. */
-  function drop(room: Room, partyId: string): boolean {
-    cancelEnd(partyId);
-    return room.watchParties.delete(partyId);
-  }
-
-  function end(room: Room, partyId: string): void {
-    if (drop(room, partyId)) announce(room);
-  }
-
-  function endWhenNobodyReturns(room: Room, partyId: string): void {
-    cancelEnd(partyId);
-    const roomId = room.id;
-    const timer = setTimeout(() => {
-      endTimers.delete(partyId);
-      const current = getRoom(roomId);
-      if (current?.watchParties.get(partyId)?.members.size === 0) end(current, partyId);
-    }, WATCH_PARTY_GRACE_MS).unref();
-    endTimers.set(partyId, { roomId, timer });
-  }
-
-  /**
-   * Takes the socket out of its party without announcing it; true if it was in one.
-   * `deliberate`: they left the party or the room on purpose (or were kicked), rather than losing their connection.
-   */
-  function leaveParty(room: Room, socketId: string, deliberate: boolean): boolean {
-    const party = partyOf(room, socketId);
-    const userId = party?.members.get(socketId);
-    if (!party || userId === undefined) return false;
-    party.members.delete(socketId);
-    if (party.members.size === 0) {
-      if (deliberate) drop(room, party.id);
-      else endWhenNobodyReturns(room, party.id);
-    } else if (deliberate && userId === party.hostId) {
-      party.hostId = controllerOf(party);
-    }
-    return true;
-  }
-
-  function removeMember(room: Room, socketId: string, deliberate: boolean): void {
-    if (leaveParty(room, socketId, deliberate)) announce(room);
-  }
+  const { partyOf, end, removeMember, leaveCurrent, join } = createPartyMembership({
+    io,
+    kind: "watch",
+    partiesOf: (room) => room.watchParties,
+    graceMs: WATCH_PARTY_GRACE_MS,
+    announce,
+  });
 
   /** Records a change made by a member and tells the room. */
   function changed(room: Room): void {
@@ -225,9 +160,7 @@ export function setupWatchParty(io: AppServer, { lookupTitle = lookupVideoTitle 
     io.to([...party.members.keys()]).emit("watch-playback", { ...party.playback, entryId: party.entryId });
   }
 
-  onParticipantRemoved(removeMember);
   onRoomDestroyed((roomId) => {
-    for (const [partyId, pending] of endTimers) if (pending.roomId === roomId) cancelEnd(partyId);
     clearTimeout(pendingAnnounces.get(roomId));
     pendingAnnounces.delete(roomId);
   });
@@ -241,8 +174,8 @@ export function setupWatchParty(io: AppServer, { lookupTitle = lookupVideoTitle 
         socket.emit("watch-start-refused", { reason: "limit", max: MAX_WATCH_PARTIES });
         return;
       }
-      // One party per socket: starting one leaves the last (announced below).
-      leaveParty(room, socket.id, true);
+      // One party per socket: starting one leaves the last (a watch party's is announced below).
+      leaveCurrent(room, socket.id);
       const party: WatchParty = {
         id: nanoid(10),
         hostId: participant.userId,
@@ -259,16 +192,7 @@ export function setupWatchParty(io: AppServer, { lookupTitle = lookupVideoTitle 
       };
       room.watchParties.set(party.id, party);
       play(room, party, videoId);
-      const now = party.updatedAt;
-      const invite: ChatMessage = {
-        id: nanoid(10),
-        senderId: participant.userId,
-        senderName: participant.name,
-        text: "",
-        timestamp: now,
-        reactions: emptyReactions(),
-        watchInvite: { partyId: party.id, videoId },
-      };
+      const invite = partyInvite(participant, { watchInvite: { partyId: party.id, videoId } }, party.updatedAt);
       addChatMessage(room, invite);
       // The party first, so the invite's card can show it as soon as it arrives.
       changed(room);
@@ -278,10 +202,7 @@ export function setupWatchParty(io: AppServer, { lookupTitle = lookupVideoTitle 
     onRoom(socket, "watch-join", parseWatchJoin, ({ room, participant }, { partyId }) => {
       const party = room.watchParties.get(partyId);
       if (!party || party.members.has(socket.id)) return;
-      // One party per socket: joining one leaves the last (announced below).
-      leaveParty(room, socket.id, true);
-      cancelEnd(party.id);
-      party.members.set(socket.id, participant.userId);
+      join(room, party, socket.id, participant.userId);
       changed(room);
       // Their copy of the party may be old: playback goes only to members, and a
       // reconnect misses some. The party state above can't be applied by a member

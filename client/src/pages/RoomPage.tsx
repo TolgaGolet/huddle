@@ -9,6 +9,7 @@ import { useMicrophone } from "../hooks/useMicrophone";
 import { useVoiceActivityReport } from "../hooks/useVoiceActivityReport";
 import { useVoiceActivity } from "../hooks/useVoiceActivity";
 import { useWatchParty } from "../hooks/useWatchParty";
+import { useGameParty } from "../hooks/useGameParty";
 import { useAudioSettings } from "../hooks/useAudioSettings";
 import { useTransmissionGate } from "../hooks/useTransmissionGate";
 import LeaveRoomDialog from "../components/LeaveRoomDialog";
@@ -22,7 +23,9 @@ import VoiceControls from "../components/VoiceControls";
 import SettingsPopup from "../components/SettingsPopup";
 import ScreenViewer from "../components/ScreenViewer";
 import WatchPartyPanel from "../components/WatchPartyPanel";
+import GamePartyPanel from "../components/GamePartyPanel";
 import { WatchPartyContext } from "../lib/watchPartyContext";
+import { GamePartyContext } from "../lib/gamePartyContext";
 import type { Participant } from "../types";
 import { MAX_PARTICIPANTS, permits } from "../types";
 import { resyncCallStateWhenLimited } from "../lib/callStateResync";
@@ -147,8 +150,9 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
     joinRoom();
   }, [joinRoom]);
 
-  // Before useWebRTC, whose effect sends the join: room-joined carries the party.
+  // Before useWebRTC, whose effect sends the join: room-joined carries the parties.
   const watch = useWatchParty(socket, roomId);
+  const game = useGameParty(socket, roomId);
 
   const { remoteAnalysers, screenStreams, peerConnectionStates, remotePlaybackBlocked, resumeRemotePlayback, startScreenShare, stopScreenShare, setRemoteVolume } =
     useWebRTC({ socket, localStream, micSettled: localStream !== null || micError !== null, onScreenShareStopped: handleScreenShareStopped, onSignalingReady: handleSignalingReady });
@@ -242,6 +246,11 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
     () => ({ parties: watchParties, joinedPartyId, join: joinWatchParty, end: endWatchParty, isOwner, prepareStart: prepareWatchStart }),
     [watchParties, joinedPartyId, joinWatchParty, endWatchParty, isOwner, prepareWatchStart],
   );
+  const { parties: gameParties, games, joinedPartyId: joinedGamePartyId, join: joinGameParty, end: endGameParty, prepareStart: prepareGameStart } = game;
+  const gameContext = useMemo(
+    () => ({ parties: gameParties, games, joinedPartyId: joinedGamePartyId, join: joinGameParty, end: endGameParty, isOwner, prepareStart: prepareGameStart }),
+    [gameParties, games, joinedGamePartyId, joinGameParty, endGameParty, isOwner, prepareGameStart],
+  );
 
   // "Connecting…" indicator: a remote participant is connecting while their
   // peer connection is not yet `connected` (new/connecting/failed — `failed`
@@ -262,6 +271,7 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
   const firstScreenStream = screenStreams.entries().next().value;
   const screenSharerName =
     firstScreenStream && allParticipants.find((p) => p.id === firstScreenStream[0])?.name;
+  const theaterOpen = !!(firstScreenStream || watch.snapshot || game.party);
 
   // The player is for the party's members; everyone else sees its invite in the chat.
 
@@ -349,7 +359,7 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
 
         {/* Screen share (theater) + chat: stacked below md, side by side from md */}
         <main className="flex-1 flex flex-col md:flex-row overflow-hidden min-w-0 min-h-0">
-          {(firstScreenStream || watch.snapshot) && (
+          {theaterOpen && (
             <div className="flex flex-col min-w-0 shrink-0 md:shrink md:flex-1 md:min-h-0">
               {watch.snapshot && (
                 <WatchPartyPanel
@@ -365,6 +375,18 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
                   actions={watch.actions}
                 />
               )}
+              {game.party && game.game && (
+                <GamePartyPanel
+                  key={game.party.id}
+                  party={game.party}
+                  game={game.game}
+                  localUserId={userId ?? ""}
+                  isOwner={isOwner}
+                  participants={allParticipants}
+                  onLeave={game.leave}
+                  onEnd={game.end}
+                />
+              )}
               {firstScreenStream && (
                 <ScreenViewer
                   stream={firstScreenStream[1]}
@@ -375,22 +397,24 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
           )}
           <div
             className={
-              firstScreenStream || watch.snapshot
+              theaterOpen
                 ? "flex-1 min-h-0 md:flex-none md:w-80 md:shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-gray-800"
                 : "flex-1 min-h-0 flex flex-col"
             }
           >
             <WatchPartyContext value={watchContext}>
-              <RoomChat
-                socket={socket}
-                httpToken={httpToken}
-                imageSession={imageSession}
-                localUserId={userId ?? ""}
-                roomId={roomId}
-                canPin={canPin}
-                isOwner={isOwner}
-                canSendMessages={canSendMessages}
-              />
+              <GamePartyContext value={gameContext}>
+                <RoomChat
+                  socket={socket}
+                  httpToken={httpToken}
+                  imageSession={imageSession}
+                  localUserId={userId ?? ""}
+                  roomId={roomId}
+                  canPin={canPin}
+                  isOwner={isOwner}
+                  canSendMessages={canSendMessages}
+                />
+              </GamePartyContext>
             </WatchPartyContext>
           </div>
         </main>

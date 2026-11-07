@@ -5,8 +5,8 @@ export interface WatchPartyContextValue {
   parties: WatchPartyState[];
   /** The party this client is in, if any (one at most). */
   joinedPartyId: string | null;
-  /** Leaves the current party, if any. */
-  join: (partyId: string) => void;
+  /** Leaves the current party, if any. False if it couldn't be sent (reconnecting). */
+  join: (partyId: string) => boolean;
   /** Owners only. */
   end: (partyId: string) => void;
   isOwner: boolean;
@@ -21,7 +21,7 @@ export interface WatchPartyContextValue {
 export const WatchPartyContext = createContext<WatchPartyContextValue>({
   parties: [],
   joinedPartyId: null,
-  join: () => {},
+  join: () => false,
   end: () => {},
   isOwner: false,
   prepareStart: () => {},

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useImperativeHandle, useLayoutEffect } from "react";
-import { Send, Loader2, Smile, BarChart3, Reply, X, Image as ImageIcon, Clapperboard } from "lucide-react";
+import { Send, Loader2, Smile, BarChart3, Reply, X, Image as ImageIcon, Clapperboard, Gamepad2 } from "lucide-react";
 import type { AppSocket, ChatMessage, ClientToServerEvents, PollCreate } from "../types";
 import { attachmentLabel, createBucket, MAX_CHAT_TEXT_LENGTH, MAX_IMAGES_PER_MESSAGE, RATE_LIMITS } from "../types";
 import FormattingToolbar, { formatForShortcut, formatSelection, restoreSelection } from "./FormattingToolbar";
@@ -7,6 +7,7 @@ import EmojiPicker from "./EmojiPicker";
 import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
 import WatchPartyCreator, { WATCH_PARTY_LIMIT_TEXT } from "./WatchPartyCreator";
+import GamePartyCreator, { GAME_PARTY_LIMIT_TEXT } from "./GamePartyCreator";
 import RoomImage from "./RoomImage";
 import { useImageDraft } from "../hooks/useImageDraft";
 import { useTyping } from "../hooks/useTyping";
@@ -32,7 +33,7 @@ interface Props {
   onBeforeSend: () => void;
 }
 
-type Popover = "emoji" | "gif" | "poll" | "watch";
+type Popover = "emoji" | "gif" | "poll" | "watch" | "game";
 type ChatMessagePayload = Parameters<ClientToServerEvents["chat-message"]>[0];
 
 // Human-readable typing indicator, WhatsApp-style:
@@ -230,6 +231,7 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
   const handleCreatePoll = (data: PollCreate) => sendFromPopover((s) => s.emit("poll-create", data));
   const handleStartWatchParty = (videoId: string, allowOthersToChange: boolean) =>
     sendFromPopover((s) => s.emit("watch-start", { videoId, allowOthersToChange }));
+  const handleStartGameParty = (gameId: string) => sendFromPopover((s) => s.emit("game-start", { gameId }));
 
   function handleGifSelect(gifUrl: string, gifTitle: string) {
     if (!socket || sending || !canSendRef.current) return;
@@ -284,13 +286,16 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
     const onNotPermitted = show(NOT_PERMITTED_ERROR);
     // The popup offers starting only below the limit, but another party can start meanwhile.
     const onWatchRefused = show(WATCH_PARTY_LIMIT_TEXT);
+    const onGameRefused = show(GAME_PARTY_LIMIT_TEXT);
     socket.on("rate-limited", onLimited);
     socket.on("not-permitted", onNotPermitted);
     socket.on("watch-start-refused", onWatchRefused);
+    socket.on("game-start-refused", onGameRefused);
     return () => {
       socket.off("rate-limited", onLimited);
       socket.off("not-permitted", onNotPermitted);
       socket.off("watch-start-refused", onWatchRefused);
+      socket.off("game-start-refused", onGameRefused);
       clearTimeout(timer);
     };
   }, [socket]);
@@ -298,7 +303,7 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
   // Losing the permission closes the pickers. The draft stays, in case it comes back.
   if (!canSend && openPopover !== null) setOpenPopover(null);
 
-  // Close the emoji, GIF, poll and watch party popovers with Escape while one is open.
+  // Close the emoji, GIF, poll, watch party and game party popovers with Escape while one is open.
   const popoverOpen = openPopover !== null;
   useEffect(() => {
     if (!popoverOpen) return;
@@ -373,6 +378,12 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
           onClose={() => setOpenPopover(null)}
         />
       )}
+      {openPopover === "game" && (
+        <GamePartyCreator
+          onSubmit={handleStartGameParty}
+          onClose={() => setOpenPopover(null)}
+        />
+      )}
 
       <input ref={fileInputRef} type="file" accept="image/*" multiple aria-label="Choose images to send" className="hidden" onChange={(event) => {
         if (event.target.files) addImages(event.target.files);
@@ -422,6 +433,20 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
             >
               <Clapperboard size={13} aria-hidden />
               Watch together
+            </button>
+            <button
+              type="button"
+              onClick={() => togglePopover("game")}
+              className={`touch-target mr-1 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                openPopover === "game"
+                  ? "bg-emerald-500 text-white"
+                  : "bg-emerald-600/90 text-white hover:bg-emerald-500"
+              }`}
+              aria-label="Play together"
+              aria-expanded={openPopover === "game"}
+            >
+              <Gamepad2 size={13} aria-hidden />
+              Play together
             </button>
             <button
               type="button"

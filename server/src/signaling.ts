@@ -16,6 +16,8 @@ import {
 } from "./roomManager.js";
 import { roomClosingNotice } from "./roomLifetime.js";
 import { watchPartiesOf } from "./watchPartyHandler.js";
+import { gamePartiesOf } from "./gamePartyHandler.js";
+import { GAMES } from "./games.js";
 import { announceSettings, announceWaiting, promoteIfOwnerless, roomSettingsOf, waitingEntryFor } from "./roomModeration.js";
 import { countSecurityEvent } from "./securityLog.js";
 import { deriveUserId } from "./identity.js";
@@ -147,6 +149,8 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
         closing: roomClosingNotice(room),
         settings: roomSettingsOf(room),
         watchParties: watchPartiesOf(room),
+        gameParties: gamePartiesOf(room),
+        games: GAMES,
       });
 
       socket.to(room.id).emit("participant-joined", participant);

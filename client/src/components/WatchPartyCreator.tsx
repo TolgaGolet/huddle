@@ -1,11 +1,13 @@
 import { useContext, useId, useRef, useState } from "react";
-import { Clapperboard, Users, X } from "lucide-react";
+import { Clapperboard, X } from "lucide-react";
 import { MAX_WATCH_PARTIES, MAX_YOUTUBE_URL_LENGTH, parseYouTubeVideoId, partiesBesidesNew } from "../types";
 import { WatchPartyContext } from "../lib/watchPartyContext";
+import { GamePartyContext } from "../lib/gamePartyContext";
 import { thumbnailUrl } from "../lib/youtubeApi";
 import { useClickOutside } from "../hooks/useClickOutside";
 import YouTubeLink from "./YouTubeLink";
 import { queueTitle } from "./WatchQueue";
+import PartyList from "./PartyList";
 
 interface Props {
   /** Returns false if the party wasn't started, which keeps the form and what's typed in it. */
@@ -18,14 +20,13 @@ export const WATCH_PARTY_LIMIT_TEXT = `At most ${MAX_WATCH_PARTIES} watch partie
 
 export default function WatchPartyCreator({ onSubmit, onClose }: Props) {
   const { parties, joinedPartyId, join, end, isOwner, prepareStart } = useContext(WatchPartyContext);
+  // Starting or joining a watch party leaves a game party too.
+  const inGameParty = !!useContext(GamePartyContext).joinedPartyId;
   const [link, setLink] = useState("");
   const [allowOthersToChange, setAllowOthersToChange] = useState(true);
   const [showError, setShowError] = useState(false);
-  /** The party whose End button was pressed once, waiting for the confirmation. */
-  const [confirmingEnd, setConfirmingEnd] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const errorId = useId();
-  const listHeadingId = useId();
 
   useClickOutside(ref, onClose);
 
@@ -70,86 +71,22 @@ export default function WatchPartyCreator({ onSubmit, onClose }: Props) {
           everybody at the same second. An invite is posted in the chat, and the video loads from YouTube only for those who join.
         </p>
 
-        {parties.length > 0 && (
-          <section aria-labelledby={listHeadingId} className="space-y-1.5">
-            <h4 id={listHeadingId} className="text-xs font-medium text-gray-300">
-              Watch parties in this room ({parties.length}/{MAX_WATCH_PARTIES})
-            </h4>
-            <ul className="space-y-1.5">
-              {parties.map((party) => {
-                const watching = party.id === joinedPartyId;
-                const title = queueTitle(party);
-                const summary = (
-                  <>
-                    <img src={thumbnailUrl(party.videoId)} alt="" className="h-9 aspect-video shrink-0 rounded object-cover bg-gray-800" />
-                    <span className="flex-1 min-w-0">
-                      <span className="block truncate text-xs text-gray-100">{title}</span>
-                      <span className="flex items-center gap-1 text-[11px] text-gray-400">
-                        <Users size={11} aria-hidden />
-                        {party.memberIds.length} watching
-                      </span>
-                    </span>
-                  </>
-                );
-                return (
-                  <li key={party.id} className="flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-900/60 p-1.5">
-                    {watching ? (
-                      <div className="flex flex-1 min-w-0 items-center gap-2">
-                        {summary}
-                        <span className="shrink-0 text-[11px] font-medium text-green-400">You&apos;re watching</span>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          join(party.id);
-                          onClose();
-                        }}
-                        aria-label={`Join watch party: ${title}`}
-                        className="flex flex-1 min-w-0 items-center gap-2 rounded text-left hover:bg-gray-800 cursor-pointer"
-                      >
-                        {summary}
-                        <span className="shrink-0 rounded-lg bg-indigo-600 px-2 py-1 text-[11px] font-medium text-white">Join</span>
-                      </button>
-                    )}
-                    {isOwner &&
-                      (confirmingEnd === party.id ? (
-                        <span className="flex shrink-0 items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setConfirmingEnd(null)}
-                            className="touch-target rounded px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-700 cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setConfirmingEnd(null);
-                              end(party.id);
-                            }}
-                            aria-label={`End for everyone: ${title}`}
-                            className="touch-target rounded bg-red-600 px-1.5 py-1 text-[11px] font-medium text-white hover:bg-red-500 cursor-pointer"
-                          >
-                            End for all
-                          </button>
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmingEnd(party.id)}
-                          aria-label={`End watch party: ${title}`}
-                          className="touch-target shrink-0 rounded px-1.5 py-1 text-[11px] text-red-300 hover:bg-red-500/10 cursor-pointer"
-                        >
-                          End
-                        </button>
-                      ))}
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        )}
+        <PartyList
+          kind="watch party"
+          verb="watching"
+          max={MAX_WATCH_PARTIES}
+          parties={parties}
+          joinedPartyId={joinedPartyId}
+          isOwner={isOwner}
+          nameOf={queueTitle}
+          iconOf={(party) => (
+            <img src={thumbnailUrl(party.videoId)} alt="" className="h-9 aspect-video shrink-0 rounded object-cover bg-gray-800" />
+          )}
+          joinClass="bg-indigo-600"
+          join={join}
+          end={end}
+          onJoined={onClose}
+        />
 
         {atLimit ? (
           <p role="status" className="rounded-lg border border-gray-700 bg-gray-900/60 p-3 text-xs text-gray-300">
@@ -196,7 +133,11 @@ export default function WatchPartyCreator({ onSubmit, onClose }: Props) {
               <span className="text-xs text-gray-400">Others can control the video (play, pause, change, queue)</span>
             </label>
 
-            {joinedPartyId && <p className="text-[11px] text-gray-400">Starting a party leaves the one you&apos;re watching.</p>}
+            {(joinedPartyId || inGameParty) && (
+              <p className="text-[11px] text-gray-400">
+                Starting a party leaves the {joinedPartyId ? "one you're watching" : "game you're playing"}.
+              </p>
+            )}
 
             <button
               type="submit"

@@ -16,7 +16,7 @@ function setup({
   onSubmit = vi.fn(() => true),
 } = {}) {
   const onClose = vi.fn();
-  const join = vi.fn();
+  const join = vi.fn(() => true);
   const end = vi.fn();
   const prepareStart = vi.fn();
   render(

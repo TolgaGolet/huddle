@@ -37,6 +37,8 @@ export interface ChatMessage {
   edited?: boolean;
   /** Set only by the server, on the message announcing a watch party. */
   watchInvite?: { partyId: string; videoId: string };
+  /** Set only by the server, on the message announcing a game party. */
+  gameInvite?: { partyId: string; gameId: string };
 }
 
 // Keeps a quote from doubling a message's weight in the room-joined history.
@@ -121,14 +123,15 @@ export function mayDeleteMessage(senderId: string, userId: string, isOwner: bool
   return senderId === userId || isOwner;
 }
 
-/** Plain text only: GIFs, images and watch-party invites can't be edited. Shared so the client offers Edit only where the server allows it. */
-export function hasEditableContent(msg: Pick<ChatMessage, "gifUrl" | "imageUrls" | "watchInvite">): boolean {
-  return !msg.gifUrl && !msg.imageUrls?.length && !msg.watchInvite;
+/** Plain text only: GIFs, images and party invites can't be edited. Shared so the client offers Edit only where the server allows it. */
+export function hasEditableContent(msg: Pick<ChatMessage, "gifUrl" | "imageUrls" | "watchInvite" | "gameInvite">): boolean {
+  return !msg.gifUrl && !msg.imageUrls?.length && !msg.watchInvite && !msg.gameInvite;
 }
 
 /** What stands in for a message's text in previews and quotes when it has none. */
-export function attachmentLabel(msg: Pick<ChatMessage, "imageUrls" | "watchInvite">): string {
+export function attachmentLabel(msg: Pick<ChatMessage, "imageUrls" | "watchInvite" | "gameInvite">): string {
   if (msg.watchInvite) return "[Watch party]";
+  if (msg.gameInvite) return "[Game party]";
   return msg.imageUrls?.length ? "[Image]" : "[GIF]";
 }
 
@@ -200,6 +203,28 @@ export interface WatchPartyState {
   queue: WatchQueueEntry[];
 }
 
+/** A built-in game, from the server's catalog (games.ts), which reads its URL from the env. */
+export interface GameInfo {
+  id: string;
+  name: string;
+  /** One line for the start popup. */
+  description: string;
+  /** An https URL, for the party's members. */
+  url: string;
+  /** Shown in a frame in the party's panel; false: its host won't allow that, so members open it in a tab. */
+  embed: boolean;
+}
+
+/** One of a room's game parties, as sent to everyone in the room. */
+export interface GamePartyState {
+  id: string;
+  gameId: string;
+  /** userId of whoever started it, or the longest-present member once they left. */
+  hostId: string;
+  /** userIds, in the order they joined. */
+  memberIds: string[];
+}
+
 /** A YouTube search result, from the server's proxy (youtubeRouter.ts). The thumbnail is derived from the id. */
 export interface YouTubeSearchResult {
   videoId: string;
@@ -228,7 +253,7 @@ export function mayControlWatchParty(party: Pick<WatchPartyState, "hostId" | "al
 
 /**
  * The parties a room keeps besides the one about to start, to compare with
- * MAX_WATCH_PARTIES: starting one leaves the starter's last, which ends it if
+ * MAX_WATCH_PARTIES (or MAX_GAME_PARTIES): starting one leaves the starter's last, which ends it if
  * they were alone in it. Shared so the client offers what the server accepts.
  */
 export function partiesBesidesNew(partyCount: number, aloneInOwnParty: boolean): number {
@@ -309,6 +334,15 @@ export interface ClientToServerEvents {
   "watch-ended": (data: { entryId: string }) => void;
   /** Owners only: ends any of the room's parties. */
   "watch-end": (data: { partyId: string }) => void;
+  /**
+   * Starts a party for a game from the catalog and announces it in the chat.
+   * Starting or joining a game party leaves the sender's watch or game party, and the reverse.
+   */
+  "game-start": (data: { gameId: string }) => void;
+  "game-join": (data: { partyId: string }) => void;
+  "game-leave": () => void;
+  /** Owners only: ends any of the room's game parties. */
+  "game-end": (data: { partyId: string }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -328,6 +362,9 @@ export interface ServerToClientEvents {
     closing: RoomClosing | null;
     settings: RoomSettings;
     watchParties: WatchPartyState[];
+    gameParties: GamePartyState[];
+    /** The games a party can be started for. */
+    games: readonly GameInfo[];
   }) => void;
   "participant-joined": (participant: Participant) => void;
   "participant-left": (data: { id: string; userId: string }) => void;
@@ -370,4 +407,8 @@ export interface ServerToClientEvents {
   "watch-playback": (data: WatchPlayback & { entryId: string }) => void;
   /** The room already has `max` watch parties running. */
   "watch-start-refused": (data: { reason: "limit"; max: number }) => void;
+  /** All of the room's game parties, sent whenever one starts, changes members or ends. */
+  "game-parties": (parties: GamePartyState[]) => void;
+  /** The room already has `max` game parties running. */
+  "game-start-refused": (data: { reason: "limit"; max: number }) => void;
 }

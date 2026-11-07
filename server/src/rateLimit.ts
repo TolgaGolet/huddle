@@ -103,4 +103,8 @@ export const EVENT_LIMITS: Readonly<Record<keyof ClientToServerEvents, RateLimit
   "watch-queue-move": "watchControl",
   "watch-ended": "watchControl",
   "watch-end": "moderation",
+  "game-start": "messages",
+  "game-join": "watchControl",
+  "game-leave": "watchControl",
+  "game-end": "moderation",
 };
