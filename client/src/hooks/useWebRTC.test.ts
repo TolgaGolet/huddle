@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { asAppSocket, emitsOf, fakeSocket, type FakeSocket } from "../test/fakeSocket";
 import type { AppSocket } from "../types";
-import { MIC_SETTLE_TIMEOUT_MS, useWebRTC } from "./useWebRTC";
+import { MIC_SETTLE_TIMEOUT_MS, OFFER_HANDOFF_TIMEOUT_MS, useWebRTC } from "./useWebRTC";
 
 // PeerSession (negotiation) and RemoteAudioManager have their own tests. This covers
 // what the hook adds: which session gets what, and what React state comes out.
@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
     addScreenTrack = vi.fn();
     removeScreenTrack = vi.fn();
     sampleStats = vi.fn(async () => {});
+    connected = false;
     constructor(
       public peerId: string,
       public pc: unknown,
@@ -25,10 +26,11 @@ const mocks = vi.hoisted(() => {
         onTrack: (e: unknown) => void;
         onConnectionState: (s: string) => void;
         requestRecreate: () => void;
+        handOffOffer: () => void;
         getLocalStream: () => unknown;
         emit: (event: string, ...args: unknown[]) => void;
       },
-      public options: { screenTrack: unknown; earlyCandidates?: unknown[] },
+      public options: { screenTrack: unknown; earlyCandidates?: unknown[]; mayHandOffOffer?: boolean },
     ) {
       FakeSession.all.push(this);
     }
@@ -388,6 +390,121 @@ describe("waiting for the mic before the first offers", () => {
     await fire("offer", { from: "c", offer: {} });
 
     expect(sessionFor("c").handleOffer).toHaveBeenCalled();
+  });
+});
+
+// Regression: a Firefox joiner's offers to Chromium failed and stayed unheard,
+// while the same pair connected at once when Chromium offered.
+describe("handing the offer to the peer", () => {
+  it("lets only the joiner's first sessions hand off", async () => {
+    setup();
+    await fire("room-joined", roster("a"));
+    await fire("offer", { from: "b", offer: {} });
+    act(() => sessionFor("a").host.requestRecreate());
+
+    expect(sessionsFor("a")[0].options.mayHandOffOffer).toBe(true);
+    expect(sessionsFor("a")[1].options.mayHandOffOffer).toBe(false);
+    expect(sessionFor("b").options.mayHandOffOffer).toBe(false);
+  });
+
+  it("closes the session and asks the peer to offer", async () => {
+    setup();
+    await fire("room-joined", roster("a"));
+    const session = sessionFor("a");
+
+    act(() => session.host.handOffOffer());
+
+    expect(session.dispose).toHaveBeenCalled();
+    expect(emitsOf(socket, "offer-request")).toEqual([["offer-request", { to: "a" }]]);
+  });
+
+  it("answers the peer's offer on a fresh session, and cancels the fallback", async () => {
+    vi.useFakeTimers();
+    setup();
+    await fire("room-joined", roster("a"));
+    act(() => sessionFor("a").host.handOffOffer());
+
+    await fire("offer-request-accepted", { from: "a" });
+    await fire("offer", { from: "a", offer: {} });
+    act(() => void vi.advanceTimersByTime(OFFER_HANDOFF_TIMEOUT_MS));
+
+    expect(sessionsFor("a")).toHaveLength(2);
+    expect(sessionFor("a").handleOffer).toHaveBeenCalled();
+  });
+
+  // Regression: an ICE-restart offer from the peer's old connection, crossing
+  // the request, was answered and cancelled the fallback; the peer then
+  // replaced that connection, and the pair never connected.
+  it("ignores the peer's offers and candidates until it accepts the hand-off", async () => {
+    vi.useFakeTimers();
+    setup();
+    await fire("room-joined", roster("a"));
+    act(() => sessionFor("a").host.handOffOffer());
+
+    await fire("ice-candidate", { from: "a", candidate: { candidate: "old" } });
+    await fire("offer", { from: "a", offer: {} });
+    expect(sessionsFor("a")).toHaveLength(1);
+
+    await fire("offer-request-accepted", { from: "a" });
+    await fire("offer", { from: "a", offer: {} });
+    expect(sessionsFor("a")).toHaveLength(2);
+    expect(sessionFor("a").options.earlyCandidates).toBeUndefined();
+  });
+
+  it("offers again itself if the peer never does", async () => {
+    vi.useFakeTimers();
+    setup();
+    await fire("room-joined", roster("a"));
+    act(() => sessionFor("a").host.handOffOffer());
+
+    act(() => void vi.advanceTimersByTime(OFFER_HANDOFF_TIMEOUT_MS));
+
+    expect(sessionsFor("a")).toHaveLength(2);
+    expect(sessionFor("a").options.mayHandOffOffer).toBe(false);
+  });
+
+  it("drops the fallback when the peer leaves or our transport drops", async () => {
+    vi.useFakeTimers();
+    setup();
+    await fire("room-joined", roster("a", "b"));
+    act(() => {
+      sessionFor("a").host.handOffOffer();
+      sessionFor("b").host.handOffOffer();
+    });
+
+    await fire("participant-left", { id: "a" });
+    await fire("disconnect");
+    act(() => void vi.advanceTimersByTime(OFFER_HANDOFF_TIMEOUT_MS));
+
+    expect(sessionsFor("a")).toHaveLength(1);
+    expect(sessionsFor("b")).toHaveLength(1);
+  });
+
+  it("replaces its session with one that offers when asked", async () => {
+    setup();
+    await fire("offer", { from: "c", offer: {} });
+    const answering = sessionFor("c");
+
+    await fire("offer-request", { from: "c" });
+
+    expect(answering.dispose).toHaveBeenCalled();
+    expect(sessionsFor("c")).toHaveLength(2);
+    expect(sessionFor("c").options.mayHandOffOffer).toBe(false);
+    expect(emitsOf(socket, "offer-request-accepted")).toEqual([["offer-request-accepted", { to: "c" }]]);
+  });
+
+  // Regression: a late or repeated request tore down a working connection.
+  it("acts on one request per peer, and never over a connected session", async () => {
+    setup();
+    await fire("offer", { from: "c", offer: {} });
+    await fire("offer-request", { from: "c" });
+    await fire("offer-request", { from: "c" });
+    expect(sessionsFor("c")).toHaveLength(2);
+
+    await fire("offer", { from: "d", offer: {} });
+    sessionFor("d").connected = true;
+    await fire("offer-request", { from: "d" });
+    expect(sessionsFor("d")).toHaveLength(1);
   });
 });
 

@@ -69,6 +69,7 @@ function setup(opts?: ConstructorParameters<typeof PeerSession>[3]) {
     onTrack: vi.fn(),
     onConnectionState: vi.fn(),
     requestRecreate: vi.fn(),
+    handOffOffer: vi.fn(),
   } satisfies PeerSessionHost;
   const session = new PeerSession("b", pc as unknown as RTCPeerConnection, host, opts);
   return { pc, host, session, track };
@@ -280,6 +281,59 @@ describe("ICE recovery", () => {
   });
 });
 
+// Regression: a Firefox joiner's offers to Chromium failed ICE, and after the
+// restarts it stayed unheard; the same pair worked at once with Chromium offering.
+describe("handing the offer to the peer", () => {
+  it("asks the peer to offer when a joiner's first attempt fails, instead of restarting", async () => {
+    const { pc, host } = setup({ mayHandOffOffer: true });
+
+    pc.fireConnectionState("failed");
+    pc.fireConnectionState("failed");
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(host.handOffOffer).toHaveBeenCalledOnce();
+    expect(pc.restartIce).not.toHaveBeenCalled();
+  });
+
+  it("restarts as before once the peer has connected, or for any other session", async () => {
+    const connected = setup({ mayHandOffOffer: true });
+    connected.pc.fireConnectionState("connected");
+    connected.pc.fireConnectionState("failed");
+
+    const answering = setup();
+    answering.pc.fireConnectionState("failed");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    for (const { pc, host } of [connected, answering]) {
+      expect(host.handOffOffer).not.toHaveBeenCalled();
+      expect(pc.restartIce).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("doesn't hand off a session disposed while its stats were read", async () => {
+    const { pc, host, session } = setup({ mayHandOffOffer: true });
+
+    pc.fireConnectionState("failed");
+    session.dispose();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.handOffOffer).not.toHaveBeenCalled();
+  });
+
+  it("logs candidate types and pair states, not addresses, on failure", async () => {
+    const { pc } = setup({ mayHandOffOffer: true });
+    pc.stats.set("L1", { id: "L1", type: "local-candidate", candidateType: "srflx", protocol: "udp", address: "203.0.113.5" });
+    pc.stats.set("P1", { id: "P1", type: "candidate-pair", state: "failed", localCandidateId: "L1" });
+
+    pc.fireConnectionState("failed");
+    await vi.advanceTimersByTimeAsync(0);
+
+    const summary = vi.mocked(console.log).mock.calls.find((c) => (c[1] as { event?: string })?.event === "ice-summary");
+    expect(summary?.[1]).toMatchObject({ state: "failed", local: { "srflx/udp": 1 }, pairs: { failed: 1 } });
+    expect(JSON.stringify(summary)).not.toContain("203.0");
+  });
+});
+
 describe("audio recovery", () => {
   function connected(setupResult: ReturnType<typeof setup>) {
     const { pc, session } = setupResult;
@@ -420,6 +474,7 @@ describe("audio m-line at creation", () => {
       onTrack: vi.fn(),
       onConnectionState: vi.fn(),
       requestRecreate: vi.fn(),
+      handOffOffer: vi.fn(),
     } satisfies PeerSessionHost;
 
     new PeerSession("b", pc as unknown as RTCPeerConnection, host);

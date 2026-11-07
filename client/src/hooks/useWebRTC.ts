@@ -36,6 +36,9 @@ const STATS_SAMPLE_INTERVAL_MS = 5000;
 // How long a joiner holds its first offers for the mic. A capture that's already
 // allowed settles in well under a second; this only bounds an unanswered prompt.
 export const MIC_SETTLE_TIMEOUT_MS = 5000;
+// How long a hand-off waits for the peer's offer before offering again itself
+// (a peer on an older build ignores `offer-request`).
+export const OFFER_HANDOFF_TIMEOUT_MS = 10000;
 
 interface UseWebRTCOptions {
   socket: AppSocket | null;
@@ -72,6 +75,14 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
   // Roster from `room-joined` waiting for the mic to settle (see `micSettled`).
   const pendingRosterRef = useRef<string[] | null>(null);
   const pendingRosterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Peers we asked to offer (`handOffOffer`), with the fallback timer for each.
+  // Until `accepted` (their `offer-request-accepted`), an offer from them comes
+  // from the connection being replaced: answering it, and then getting the
+  // fresh connection's offer on that session, left the pair unconnected.
+  const handOffsRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; accepted: boolean }>>(new Map());
+  // Peers whose `offer-request` we acted on, once per peer socket: a late or
+  // repeated one must not tear down the connection it already replaced.
+  const offerRequestsHandledRef = useRef<Set<string>>(new Set());
   const onScreenShareStoppedRef = useRef(onScreenShareStopped);
   const onSignalingReadyRef = useRef(onSignalingReady);
   const [remoteAnalysers, setRemoteAnalysers] = useState<Map<string, AnalyserNode>>(new Map());
@@ -111,6 +122,16 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
     setScreenStreams((prev) => withoutStream(prev, peerId));
   }, []);
 
+  const clearHandOff = useCallback((peerId: string) => {
+    clearTimeout(handOffsRef.current.get(peerId)?.timer);
+    handOffsRef.current.delete(peerId);
+  }, []);
+
+  const clearAllHandOffs = useCallback(() => {
+    for (const { timer } of handOffsRef.current.values()) clearTimeout(timer);
+    handOffsRef.current.clear();
+    offerRequestsHandledRef.current.clear();
+  }, []);
   const resetAllPeers = useCallback(() => {
     for (const [id] of sessionsRef.current) {
       removePeer(id);
@@ -138,13 +159,15 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
     onScreenShareStoppedRef.current?.();
   }, []);
 
+  /** `mayHandOffOffer` only for the joiner's first offer to a roster peer; see `PeerSessionOptions`. */
   const createPeer = useCallback(
-    (peerId: string) => {
+    (peerId: string, mayHandOffOffer = false) => {
       const sock = socketRef.current;
       if (!sock) return null;
 
       const existing = sessionsRef.current.get(peerId);
       if (existing) return existing;
+      clearHandOff(peerId);
 
       const earlyCandidates = earlyCandidatesRef.current.get(peerId);
       earlyCandidatesRef.current.delete(peerId);
@@ -186,13 +209,24 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
             // fires and the offer is on its way.
             createPeer(peerId);
           },
+          handOffOffer: () => {
+            removePeer(peerId);
+            sock.emit("offer-request", { to: peerId });
+            // Their offer creates our answering session in handleOffer. If it
+            // never comes, offer again ourselves, as before the hand-off.
+            const timer = setTimeout(() => {
+              handOffsRef.current.delete(peerId);
+              if (socketRef.current === sock && !sessionsRef.current.has(peerId)) createPeer(peerId);
+            }, OFFER_HANDOFF_TIMEOUT_MS);
+            handOffsRef.current.set(peerId, { timer, accepted: false });
+          },
         },
-        { screenTrack: screenTrackRef.current, earlyCandidates },
+        { screenTrack: screenTrackRef.current, earlyCandidates, mayHandOffOffer },
       );
       sessionsRef.current.set(peerId, session);
       return session;
     },
-    [removePeer],
+    [removePeer, clearHandOff],
   );
 
   const clearPendingRoster = useCallback(() => {
@@ -209,7 +243,7 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
       clearPendingRoster();
       if (!ids) return;
       huddleLog("socket", { event: "offers-released", reason, count: ids.length });
-      for (const id of ids) createPeer(id);
+      for (const id of ids) createPeer(id, true);
     },
     [clearPendingRoster, createPeer],
   );
@@ -221,12 +255,19 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
   useEffect(() => {
     if (!socket) return;
 
+    /** An offer or candidate from a peer we handed off to, sent before it accepted: see `handOffsRef`. */
+    const isFromReplacedConnection = (peerId: string) => handOffsRef.current.get(peerId)?.accepted === false;
+
     const handleOffer = async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
       try {
         // Read the live id: it is undefined before "connect" and changes on reconnect.
         // Check it before createPeer so a stale offer never leaves an orphan peer.
         const selfId = socket.id;
         if (!selfId) return; // not connected; the offer will be re-sent after rejoin
+        if (isFromReplacedConnection(from)) {
+          huddleLog("negotiate", { from, event: "offer-ignored", reason: "hand-off-pending" });
+          return;
+        }
 
         const session = createPeer(from);
         await session?.handleOffer(offer, selfId);
@@ -242,6 +283,7 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
     const handleIceCandidate = async ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
       const session = sessionsRef.current.get(from);
       if (!session) {
+        if (isFromReplacedConnection(from)) return;
         const early = earlyCandidatesRef.current.get(from) ?? [];
         bufferCandidate(early, candidate);
         earlyCandidatesRef.current.set(from, early);
@@ -250,7 +292,34 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
       await session.addCandidate(candidate);
     };
 
+    // The peer's offer to us failed (see `handOffOffer`): replace our session
+    // with a fresh one that offers.
+    // Once per peer socket, and never over a connection that works: a late or
+    // repeated request (say, after the asker's fallback offer connected) would
+    // only drop working audio.
+    const handleOfferRequest = ({ from }: { from: string }) => {
+      if (!socket.id) return;
+      const handled = offerRequestsHandledRef.current;
+      if (handled.has(from) || sessionsRef.current.get(from)?.connected) {
+        huddleLog("negotiate", { from, event: "offer-request-ignored" });
+        return;
+      }
+      handled.add(from);
+      huddleLog("negotiate", { from, event: "offer-requested" });
+      // Before the fresh session's offer, which is sent asynchronously.
+      socket.emit("offer-request-accepted", { to: from });
+      removePeer(from);
+      createPeer(from);
+    };
+
+    const handleOfferRequestAccepted = ({ from }: { from: string }) => {
+      const handOff = handOffsRef.current.get(from);
+      if (handOff) handOff.accepted = true;
+    };
+
     const handleParticipantLeft = ({ id }: { id: string }) => {
+      clearHandOff(id);
+      offerRequestsHandledRef.current.delete(id);
       const pending = pendingRosterRef.current;
       if (pending) pendingRosterRef.current = pending.filter((p) => p !== id);
       removePeer(id);
@@ -274,7 +343,9 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
       // The joining client is the sole initial offerer for every existing
       // participant in the roster. Existing clients answer the offer, which
       // lazily creates their answering peer in `handleOffer`. This eliminates
-      // the initial-offer glare where both sides negotiated at once.
+      // the initial-offer glare where both sides negotiated at once. If such a
+      // first offer fails, the session hands the offer to the peer instead
+      // (`mayHandOffOffer`).
       const micReady = !!localStreamRef.current;
       huddleLog("socket", {
         event: "room-joined-roster",
@@ -295,7 +366,7 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
         // so receive-audio and screen share work without a microphone:
         // `PeerSession` adds a `sendrecv` audio transceiver whether or not a
         // track exists, and a late track is attached via `replaceTrack`.
-        createPeer(p.id);
+        createPeer(p.id, true);
       }
     };
 
@@ -310,12 +381,15 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
     // and let the fresh `room-joined` (after rejoin) recreate connections.
     const handleLocalDisconnect = () => {
       clearPendingRoster();
+      clearAllHandOffs();
       resetAllPeers();
     };
 
     socket.on("offer", handleOffer);
     socket.on("answer", handleAnswer);
     socket.on("ice-candidate", handleIceCandidate);
+    socket.on("offer-request", handleOfferRequest);
+    socket.on("offer-request-accepted", handleOfferRequestAccepted);
     socket.on("participant-left", handleParticipantLeft);
     socket.on("room-joined", handleRoomJoined);
     socket.on("screen-share-stopped", handleScreenShareStopped);
@@ -329,17 +403,20 @@ export function useWebRTC({ socket, localStream, micSettled, onScreenShareStoppe
       socket.off("offer", handleOffer);
       socket.off("answer", handleAnswer);
       socket.off("ice-candidate", handleIceCandidate);
+      socket.off("offer-request", handleOfferRequest);
+      socket.off("offer-request-accepted", handleOfferRequestAccepted);
       socket.off("participant-left", handleParticipantLeft);
       socket.off("room-joined", handleRoomJoined);
       socket.off("screen-share-stopped", handleScreenShareStopped);
       socket.off("disconnect", handleLocalDisconnect);
       clearPendingRoster();
+      clearAllHandOffs();
       // eslint-disable-next-line react-hooks/exhaustive-deps -- must see peers created after this effect ran.
       for (const [id] of sessionsRef.current) {
         removePeer(id);
       }
     };
-  }, [socket, createPeer, removePeer, resetAllPeers, stopScreenShare, clearPendingRoster, flushPendingRoster]);
+  }, [socket, createPeer, removePeer, resetAllPeers, stopScreenShare, clearPendingRoster, flushPendingRoster, clearHandOff, clearAllHandOffs]);
 
   useEffect(() => {
     const mgr = remoteAudioRef.current;

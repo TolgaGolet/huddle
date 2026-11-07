@@ -47,7 +47,9 @@ export function sweepRoomLifetimes(io: AppServer, now = Date.now()): void {
     // The server can't see media, but it does know a screen share is running.
     if (room.screenSharerId) touchRoom(room, now);
     // Nor a video, but it does know a watch party is playing for someone.
-    if (room.watchParty?.playback.state === "playing" && room.watchParty.members.size > 0) touchRoom(room, now);
+    for (const party of room.watchParties.values()) {
+      if (party.playback.state === "playing" && party.members.size > 0) touchRoom(room, now);
+    }
 
     const status = closingStatus(room, now);
     if (status && now >= status.closesAt) {

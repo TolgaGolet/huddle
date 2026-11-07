@@ -8,6 +8,7 @@ import {
   MAX_POLL_OPTION_LENGTH,
   MAX_POLL_OPTIONS,
   MAX_POLL_QUESTION_LENGTH,
+  MAX_WATCH_QUEUE,
 } from "./limits.js";
 import {
   parseChatEdit,
@@ -21,13 +22,16 @@ import {
   parsePollSubmit,
   parsePollVote,
   parseRelay,
+  parseRelayTarget,
   parseAdmitWaiting,
   parseChangePassword,
   parseKick,
   parseRoomPermissions,
   parseSetOwner,
   parseWatchChangeVideo,
+  parseWatchEntry,
   parseWatchJoin,
+  parseWatchQueueMove,
   parseWatchPlayback,
   parseWatchStart,
 } from "./validation.js";
@@ -39,6 +43,7 @@ const junk: unknown[] = [undefined, null, 5, "x", true, [], [1, 2]];
 describe.each([
   ["parseJoinRoom", parseJoinRoom],
   ["parseRelay(offer)", parseRelay("offer")],
+  ["parseRelayTarget", parseRelayTarget],
   ["parseMute", parseMute],
   ["parseChatMessage", parseChatMessage],
   ["parseChatReaction", parseChatReaction],
@@ -51,6 +56,8 @@ describe.each([
   ["parseWatchJoin", parseWatchJoin],
   ["parseWatchChangeVideo", parseWatchChangeVideo],
   ["parseWatchPlayback", parseWatchPlayback],
+  ["parseWatchEntry", parseWatchEntry],
+  ["parseWatchQueueMove", parseWatchQueueMove],
 ] as const)("%s", (_name, parse) => {
   it.each(junk)("rejects %j without throwing", (raw) => {
     expect(parse(raw)).toBeNull();
@@ -117,6 +124,15 @@ describe("parseRelay", () => {
     expect(parseRelay("candidate")({ to: "s1", candidate: { candidate: "c".repeat(2100) } })).toBeNull();
     expect(parseRelay("offer")({ to: "s1", offer: { type: "offer", sdp: "v".repeat(33 * 1024) } })).toBeNull();
     expect(parseRelay("offer")({ to: "s1", offer: { type: "offer", sdp: "v".repeat(20 * 1024) } })).not.toBeNull();
+  });
+});
+
+describe("parseRelayTarget", () => {
+  it("requires a target id", () => {
+    expect(parseRelayTarget({ to: "s1" })).toEqual({ to: "s1" });
+    expect(parseRelayTarget({ to: "" })).toBeNull();
+    expect(parseRelayTarget({ to: 1 })).toBeNull();
+    expect(parseRelayTarget({})).toBeNull();
   });
 });
 
@@ -322,14 +338,24 @@ describe("watch party parsers", () => {
   });
 
   it("accept playback with a known state and rate, clamping the position", () => {
-    const videoId = "dQw4w9WgXcQ";
-    expect(parseWatchPlayback({ videoId, state: "playing", position: 12.5, rate: 1.5 })).toEqual({ videoId, state: "playing", position: 12.5, rate: 1.5 });
-    expect(parseWatchPlayback({ videoId, state: "paused", position: -3, rate: 1 })?.position).toBe(0);
-    expect(parseWatchPlayback({ videoId, state: "paused", position: 1e12, rate: 1 })?.position).toBe(24 * 60 * 60);
-    expect(parseWatchPlayback({ videoId, state: "stopped", position: 0, rate: 1 })).toBeNull();
-    expect(parseWatchPlayback({ videoId, state: "paused", position: Number.NaN, rate: 1 })).toBeNull();
-    expect(parseWatchPlayback({ videoId, state: "paused", position: 0, rate: 16 })).toBeNull();
+    const entryId = "e1";
+    expect(parseWatchPlayback({ entryId, state: "playing", position: 12.5, rate: 1.5 })).toEqual({ entryId, state: "playing", position: 12.5, rate: 1.5 });
+    expect(parseWatchPlayback({ entryId, state: "paused", position: -3, rate: 1 })?.position).toBe(0);
+    expect(parseWatchPlayback({ entryId, state: "paused", position: 1e12, rate: 1 })?.position).toBe(24 * 60 * 60);
+    expect(parseWatchPlayback({ entryId, state: "stopped", position: 0, rate: 1 })).toBeNull();
+    expect(parseWatchPlayback({ entryId, state: "paused", position: Number.NaN, rate: 1 })).toBeNull();
+    expect(parseWatchPlayback({ entryId, state: "paused", position: 0, rate: 16 })).toBeNull();
     expect(parseWatchPlayback({ state: "paused", position: 0, rate: 1 })).toBeNull();
-    expect(parseWatchPlayback({ videoId: "bad", state: "paused", position: 0, rate: 1 })).toBeNull();
+    expect(parseWatchPlayback({ entryId: 42, state: "paused", position: 0, rate: 1 })).toBeNull();
+  });
+
+  it("accept a queue move only to a whole index inside the queue's limit", () => {
+    expect(parseWatchQueueMove({ entryId: "e1", toIndex: 0 })).toEqual({ entryId: "e1", toIndex: 0 });
+    expect(parseWatchQueueMove({ entryId: "e1", toIndex: MAX_WATCH_QUEUE - 1 })).toEqual({ entryId: "e1", toIndex: MAX_WATCH_QUEUE - 1 });
+    expect(parseWatchQueueMove({ entryId: "e1", toIndex: MAX_WATCH_QUEUE })).toBeNull();
+    expect(parseWatchQueueMove({ entryId: "e1", toIndex: -1 })).toBeNull();
+    expect(parseWatchQueueMove({ entryId: "e1", toIndex: 1.5 })).toBeNull();
+    expect(parseWatchQueueMove({ toIndex: 0 })).toBeNull();
+    expect(parseWatchEntry({ entryId: "e1" })).toEqual({ entryId: "e1" });
   });
 });

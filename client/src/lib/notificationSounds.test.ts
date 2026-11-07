@@ -10,9 +10,13 @@ class FakeContext {
   constructor() {
     FakeContext.created.push(this);
   }
+  peakGains: number[] = [];
   createGain = () => ({
     connect: vi.fn(),
-    gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+    gain: {
+      setValueAtTime: vi.fn((value: number) => this.peakGains.push(value)),
+      exponentialRampToValueAtTime: vi.fn(),
+    },
   });
   createOscillator = () => {
     const osc = { type: "", connect: vi.fn(), start: vi.fn(), stop: vi.fn(), frequency: { setValueAtTime: vi.fn() } };
@@ -74,6 +78,27 @@ describe("notification sounds", () => {
     expect(notes).toHaveLength(3);
     expect(notes[0].stop.mock.calls[0][0]).toBeCloseTo(notes[1].start.mock.calls[0][0]);
     expect(notes[1].stop.mock.calls[0][0]).toBeCloseTo(notes[2].start.mock.calls[0][0]);
+  });
+
+  it("plays every cue loud enough to hear over a call, without letting two overlapping cues clip", async () => {
+    const sounds = await load();
+    const cues = [
+      sounds.playJoinSound,
+      sounds.playLeaveSound,
+      sounds.playDisconnectedSound,
+      sounds.playMuteSound,
+      sounds.playUnmuteSound,
+      sounds.playMessageSound,
+    ];
+
+    cues.forEach((play) => play());
+
+    const peaks = FakeContext.created[0].peakGains;
+    expect(peaks).toHaveLength(cues.length);
+    for (const peak of peaks) {
+      expect(peak).toBeGreaterThanOrEqual(0.2);
+      expect(peak * 2).toBeLessThan(1);
+    }
   });
 
   it("makes mute and unmute distinguishable by pitch direction", async () => {

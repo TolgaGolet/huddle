@@ -1,3 +1,4 @@
+import type { WatchPlayback } from "./protocol.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { INACTIVE_WARNING_MS, LIFETIME_WARNING_MS, MAX_ROOM_LIFETIME_MS, ROOM_INACTIVE_MS } from "./limits.js";
 import { closingStatus, roomClosingNotice, sweepRoomLifetimes } from "./roomLifetime.js";
@@ -123,21 +124,26 @@ describe("sweepRoomLifetimes", () => {
 
   it("counts a watch party playing for someone as activity, but not a paused one", () => {
     const room = occupiedRoom();
-    room.watchParty = {
+    const party = {
       id: "party",
       hostId: "u",
       allowOthersToChange: false,
       videoId: "dQw4w9WgXcQ",
+      entryId: "entry",
+      title: null,
       members: new Map([[`socket-${room.id}`, "u"]]),
-      playback: { state: "playing", position: 0, rate: 1 },
+      playback: { state: "playing", position: 0, rate: 1 } as WatchPlayback,
       updatedAt: Date.now(),
+      queue: [],
+      endedBy: new Set<string>(),
     };
+    room.watchParties.set(party.id, party);
     const { io } = fakeIo();
 
     sweepRoomLifetimes(io, room.lastActivityAt + ROOM_INACTIVE_MS);
     expect(getRoom(room.id)).toBe(room);
 
-    room.watchParty.playback.state = "paused";
+    party.playback = { ...party.playback, state: "paused" };
     sweepRoomLifetimes(io, room.lastActivityAt + ROOM_INACTIVE_MS);
     expect(getRoom(room.id)).toBeUndefined();
   });

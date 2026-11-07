@@ -15,6 +15,8 @@ export const IP_LIMITS = {
   uploadImages: perMinute(30),
   imageSession: perMinute(60),
   giphy: perMinute(60),
+  /** Searches only; the key's daily budget (youtubeData.ts) is the tighter limit. */
+  youtube: perMinute(20),
   /** Wrong passwords per room and IP. Per socket would reset on every new connection. */
   passwordGuesses: perMinute(12),
   /** Wrong passwords per room from all IPs, so that many addresses don't mean many more guesses. */

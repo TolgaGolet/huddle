@@ -228,7 +228,7 @@ describe("Composer", () => {
     expect(update(later)).toBe(later);
   });
 
-  it("starts a watch party from its popover and reports one already running", async () => {
+  it("starts a watch party from its popover and reports the limit", async () => {
     const { socket } = setup();
     fireEvent.click(screen.getByLabelText("Watch together"));
     fireEvent.change(screen.getByLabelText("YouTube link"), { target: { value: "https://youtu.be/dQw4w9WgXcQ" } });
@@ -237,7 +237,8 @@ describe("Composer", () => {
     expect(socket.emit).toHaveBeenCalledWith("watch-start", { videoId: "dQw4w9WgXcQ", allowOthersToChange: true });
     expect(screen.queryByLabelText("YouTube link")).toBeNull();
 
-    act(() => socket.fire("watch-start-refused", { reason: "active" }));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/already running/);
+    // Another party started meanwhile, filling the room.
+    act(() => socket.fire("watch-start-refused", { reason: "limit", max: 2 }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/At most 2 watch parties/);
   });
 });

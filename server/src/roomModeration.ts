@@ -69,11 +69,12 @@ export function promoteAfterGrace(io: AppServer, room: Room, now: number): void 
   if (now - room.ownerlessSince >= OWNER_GRACE_MS) promoteLongestPresent(io, room);
 }
 
+/** Runs `action` only for an owner, as every moderation event requires. */
+export const ownerOnly = <T>(action: (ctx: RoomCtx, data: T) => void) => (ctx: RoomCtx, data: T) => {
+  if (ctx.room.owners.has(ctx.participant.userId)) action(ctx, data);
+};
+
 export function setupModeration(io: AppServer, proxyHops = 0): void {
-  /** Runs `action` only for an owner, as every moderation event requires. */
-  const ownerOnly = <T>(action: (ctx: RoomCtx, data: T) => void) => (ctx: RoomCtx, data: T) => {
-    if (ctx.room.owners.has(ctx.participant.userId)) action(ctx, data);
-  };
 
   io.on("connection", (socket) => {
     onRoom(socket, "set-owner", parseSetOwner, ownerOnly(({ room, participant }, { userId, isOwner }) => {

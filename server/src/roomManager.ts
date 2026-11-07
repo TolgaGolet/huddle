@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
 import { MAX_CHAT_HISTORY, MAX_PARTICIPANTS, MAX_REMEMBERED_MEMBERS } from "./limits.js";
-import { isPollMessage, permits, type PermissionKey, type RoomPermissions, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry, type WatchPlayback } from "./protocol.js";
+import { isPollMessage, permits, type PermissionKey, type RoomPermissions, type Participant, type ReactionUser, type ChatMessage, type PollOption, type PollMessage, type ChatEntry, type WatchPlayback, type WatchQueueEntry } from "./protocol.js";
 
 export type { Participant, ReactionUser, ChatMessage, PollOption, PollMessage, ChatEntry };
 
@@ -45,8 +45,8 @@ export interface Room {
   createdAt: number;
   /** Last speech, chat or join. See roomLifetime.ts, which closes the room once this is too old. */
   lastActivityAt: number;
-  /** At most one per room. See watchPartyHandler.ts. */
-  watchParty: WatchParty | null;
+  /** By id, at most MAX_WATCH_PARTIES. See watchPartyHandler.ts. */
+  watchParties: Map<string, WatchParty>;
 }
 
 export interface WatchParty {
@@ -54,12 +54,18 @@ export interface WatchParty {
   hostId: string;
   allowOthersToChange: boolean;
   videoId: string;
+  /** New per video played; see WatchPartyState. */
+  entryId: string;
+  title: string | null;
   /** socket.id -> userId, in the order they joined. A member who reconnects joins again. */
   members: Map<string, string>;
   /** As last reported; projected to now when sent (projectPosition). */
   playback: WatchPlayback;
   /** Server time `playback` was set. */
   updatedAt: number;
+  queue: WatchQueueEntry[];
+  /** Sockets of members without control whose player ended this entry; cleared per entry. */
+  endedBy: Set<string>;
 }
 
 export interface WaitingEntry {
@@ -169,7 +175,7 @@ export function createRoom(password?: string, creatorIp: string | null = null, p
     waiting: new Map(),
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
-    watchParty: null,
+    watchParties: new Map(),
   };
   rooms.set(id, room);
   return room;

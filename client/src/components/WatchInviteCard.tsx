@@ -14,8 +14,9 @@ function youtubeWatchUrl(videoId: string): string {
 
 /** A watch party's invite in the chat, showing whether it is still running. */
 export default function WatchInviteCard({ partyId, videoId, senderName }: Props) {
-  const { party, isMember, join } = useContext(WatchPartyContext);
-  const active = party?.id === partyId ? party : null;
+  const { parties, joinedPartyId, join } = useContext(WatchPartyContext);
+  const active = parties.find((p) => p.id === partyId) ?? null;
+  const isMember = !!active && joinedPartyId === active.id;
   // The party may have moved on to another video since the invite.
   const currentVideo = active?.videoId ?? videoId;
   const watching = active?.memberIds.length ?? 0;
@@ -33,7 +34,7 @@ export default function WatchInviteCard({ partyId, videoId, senderName }: Props)
         rel="noopener noreferrer"
         className="mt-1 block truncate text-xs text-indigo-400 hover:underline"
       >
-        youtube.com/watch?v={currentVideo}
+        {active?.title ?? `youtube.com/watch?v=${currentVideo}`}
       </a>
       {active ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -46,7 +47,7 @@ export default function WatchInviteCard({ partyId, videoId, senderName }: Props)
           ) : (
             <button
               type="button"
-              onClick={join}
+              onClick={() => join(active.id)}
               className="ml-auto touch-target rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-500 cursor-pointer"
             >
               Join Watch Together

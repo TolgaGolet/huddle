@@ -26,6 +26,11 @@ export const MAX_WATCH_POSITION_S = 24 * 60 * 60;
 export const WATCH_RATES: readonly number[] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 /** How long a watch party whose members all lost their connection waits for one to come back. */
 export const WATCH_PARTY_GRACE_MS = 60_000;
+/** Watch parties running in one room at once. Each member is in one party at most. */
+export const MAX_WATCH_PARTIES = 2;
+/** Videos waiting in one watch party's queue, which is sent with every party state. */
+export const MAX_WATCH_QUEUE = 50;
+export const MAX_YOUTUBE_QUERY_LENGTH = 100;
 export const MAX_IMAGES_PER_MESSAGE = 10;
 export const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
 export const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "avif"]);

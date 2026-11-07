@@ -78,12 +78,22 @@ export function loadYouTubeApi(): Promise<YouTubeNamespace> {
  * sends no Referer (securityHeaders.ts), but YouTube refuses embeds without one
  * (error 153), so the iframe sets its own referrerpolicy.
  */
-export function embedUrl(videoId: string): string {
+export function embedUrl(videoId: string, { controls = true }: { controls?: boolean } = {}): string {
   const params = new URLSearchParams({
     enablejsapi: "1",
     origin: window.location.origin,
     playsinline: "1",
     rel: "0",
   });
+  // For a member who may only watch: their changes would be undone anyway (WatchSync).
+  if (!controls) {
+    params.set("controls", "0");
+    params.set("disablekb", "1");
+  }
   return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?${params}`;
+}
+
+/** A 320x180 thumbnail. Its host is allowed in the CSP's img-src. */
+export function thumbnailUrl(videoId: string): string {
+  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/mqdefault.jpg`;
 }

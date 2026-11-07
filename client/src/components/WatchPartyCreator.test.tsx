@@ -3,30 +3,38 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { WatchPartyState } from "../types";
 import { WatchPartyContext } from "../lib/watchPartyContext";
-import WatchPartyCreator, { INVALID_YOUTUBE_LINK } from "./WatchPartyCreator";
+import { makeParty, watchContextValue } from "../test/watchParty";
+import WatchPartyCreator, { INVALID_YOUTUBE_LINK, WATCH_PARTY_LIMIT_TEXT } from "./WatchPartyCreator";
 
-const party: WatchPartyState = {
-  id: "p1",
-  hostId: "u1",
-  allowOthersToChange: false,
-  videoId: "dQw4w9WgXcQ",
-  memberIds: ["u1"],
-  playback: { state: "playing", position: 0, rate: 1 },
-};
+const party = makeParty({ title: "First video" });
+const second = makeParty({ id: "p2", entryId: "e2", title: "Second video", memberIds: ["a", "b"] });
 
-function setup({ active = null as WatchPartyState | null, isMember = false, onSubmit = vi.fn(() => true) } = {}) {
+function setup({
+  parties = [] as WatchPartyState[],
+  joinedPartyId = null as string | null,
+  isOwner = false,
+  onSubmit = vi.fn(() => true),
+} = {}) {
   const onClose = vi.fn();
   const join = vi.fn();
+  const end = vi.fn();
+  const prepareStart = vi.fn();
   render(
-    <WatchPartyContext value={{ party: active, isMember, join }}>
+    <WatchPartyContext value={watchContextValue({ parties, joinedPartyId, join, end, isOwner, prepareStart })}>
       <WatchPartyCreator onSubmit={onSubmit} onClose={onClose} />
     </WatchPartyContext>,
   );
-  return { onSubmit, onClose, join };
+  return { onSubmit, onClose, join, end, prepareStart };
 }
 
 const linkField = () => screen.getByLabelText("YouTube link") as HTMLInputElement;
 const startButton = () => screen.getByRole("button", { name: "Start watch party" }) as HTMLButtonElement;
+
+function expectYouTubeLink(link: HTMLElement) {
+  expect(link.getAttribute("href")).toBe("https://www.youtube.com/");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toContain("noopener");
+}
 
 afterEach(cleanup);
 
@@ -34,6 +42,11 @@ describe("WatchPartyCreator", () => {
   it("explains what a watch party is", () => {
     setup();
     expect(screen.getByText(/in sync/)).toBeTruthy();
+  });
+
+  it("links to YouTube for finding a video", () => {
+    setup();
+    expectYouTubeLink(screen.getByRole("link", { name: /Open YouTube/ }));
   });
 
   it("can't be submitted empty", () => {
@@ -56,7 +69,7 @@ describe("WatchPartyCreator", () => {
   it("submits the video id with the toggle, on by default, then closes", () => {
     const { onSubmit, onClose } = setup();
     fireEvent.change(linkField(), { target: { value: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5" } });
-    fireEvent.click(screen.getByRole("switch", { name: "Other users can change the video" }));
+    fireEvent.click(screen.getByRole("switch", { name: /Others can control the video/ }));
     fireEvent.click(startButton());
 
     expect(onSubmit).toHaveBeenCalledWith("dQw4w9WgXcQ", false);
@@ -71,17 +84,48 @@ describe("WatchPartyCreator", () => {
     expect(linkField().value).toBe("youtu.be/dQw4w9WgXcQ");
   });
 
-  it("offers to join the running party instead of starting another", () => {
-    const { join, onClose } = setup({ active: party });
-    expect(screen.queryByLabelText("YouTube link")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Join Watch Together" }));
-    expect(join).toHaveBeenCalled();
+  it("lists the running parties and joins one on click, still offering to start another", () => {
+    const { join, onClose } = setup({ parties: [party] });
+    expect(screen.getByText("Watch parties in this room (1/2)")).toBeTruthy();
+    expect(screen.getByLabelText("YouTube link")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Join watch party: First video" }));
+    expect(join).toHaveBeenCalledWith("p1");
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("says so when already watching", () => {
-    setup({ active: party, isMember: true });
-    expect(screen.queryByRole("button", { name: "Join Watch Together" })).toBeNull();
+  it("explains the limit and offers no form once it's reached", () => {
+    setup({ parties: [party, second] });
+    expect(screen.queryByLabelText("YouTube link")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(WATCH_PARTY_LIMIT_TEXT);
+    // Both can still be joined.
+    expect(screen.getByRole("button", { name: "Join watch party: First video" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Join watch party: Second video" })).toBeTruthy();
+  });
+
+  it("says which one they're watching, with no join button for it", () => {
+    setup({ parties: [party, second], joinedPartyId: "p1" });
+    expect(screen.queryByRole("button", { name: "Join watch party: First video" })).toBeNull();
     expect(screen.getByText(/You're watching/)).toBeTruthy();
+  });
+
+  it("lets an owner end a party after confirming", () => {
+    const { end } = setup({ parties: [party], isOwner: true });
+    fireEvent.click(screen.getByRole("button", { name: "End watch party: First video" }));
+    expect(end).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "End for everyone: First video" }));
+    expect(end).toHaveBeenCalledWith("p1");
+  });
+
+  it("offers no End button to others", () => {
+    setup({ parties: [party] });
+    expect(screen.queryByRole("button", { name: /^End/ })).toBeNull();
+  });
+
+  it("tells the hook a start is coming, so the old party's broadcasts don't pull it back", () => {
+    const { prepareStart, onSubmit } = setup({ parties: [party], joinedPartyId: "p1" });
+    fireEvent.change(linkField(), { target: { value: "youtu.be/9bZkp7q19f0" } });
+    fireEvent.click(startButton());
+    expect(prepareStart).toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledWith("9bZkp7q19f0", true);
   });
 });

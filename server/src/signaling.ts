@@ -15,14 +15,14 @@ import {
   type Room,
 } from "./roomManager.js";
 import { roomClosingNotice } from "./roomLifetime.js";
-import { watchPartyStateOf } from "./watchPartyHandler.js";
+import { watchPartiesOf } from "./watchPartyHandler.js";
 import { announceSettings, announceWaiting, promoteIfOwnerless, roomSettingsOf, waitingEntryFor } from "./roomModeration.js";
 import { countSecurityEvent } from "./securityLog.js";
 import { deriveUserId } from "./identity.js";
 import { createIpLimiter, IP_LIMITS, requestIp } from "./ipRateLimit.js";
 import { JOIN_ERROR } from "./joinErrors.js";
 import { MAX_PARTICIPANTS, MAX_WAITING_PER_ROOM } from "./limits.js";
-import { on, onRelay, onRoom, type AppServer } from "./socketRoute.js";
+import { on, onRelay, onRelayRequest, onRoom, type AppServer } from "./socketRoute.js";
 import { noPayload, parseDisconnect, parseJoinRoom, parseMute } from "./validation.js";
 
 /** Longer than the client's join retries last, so only a socket with no intention of joining reaches it. */
@@ -146,7 +146,7 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
         screenSharer: room.screenSharerId,
         closing: roomClosingNotice(room),
         settings: roomSettingsOf(room),
-        watchParty: watchPartyStateOf(room),
+        watchParties: watchPartiesOf(room),
       });
 
       socket.to(room.id).emit("participant-joined", participant);
@@ -254,9 +254,11 @@ export function setupSignaling(io: AppServer, proxyHops = 0): void {
       socket.emit("error", { code: JOIN_ERROR.INVALID_JOIN, message: "Invalid name or room" });
     }, rejectAsLimited); // Answered for the same reason as above.
 
-    onRelay(socket, "offer", "offer");
-    onRelay(socket, "answer", "answer");
-    onRelay(socket, "ice-candidate", "candidate");
+    onRelay(socket, "offer");
+    onRelay(socket, "answer");
+    onRelay(socket, "ice-candidate");
+    onRelayRequest(socket, "offer-request");
+    onRelayRequest(socket, "offer-request-accepted");
 
     onRoom(socket, "mute-toggle", parseMute, ({ roomId, room }, { isMuted }) => {
       setMuted(room, socket.id, isMuted);

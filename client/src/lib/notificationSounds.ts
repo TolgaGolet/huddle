@@ -7,13 +7,20 @@ function getContext(): AudioContext {
   return ctx;
 }
 
-function playTone(frequencies: number[], duration: number, volume = 0.15) {
+/**
+ * Scales every cue together, so their relative loudness stays as tuned below.
+ * Pure sines at the original levels were often lost under call audio; even
+ * the loudest cue stays well under 1, so two overlapping cues can't clip.
+ */
+export const CUE_LOUDNESS = 3;
+
+function playTone(frequencies: number[], duration: number, volume: number) {
   const ac = getContext();
   if (ac.state === "suspended") ac.resume();
 
   const gain = ac.createGain();
   gain.connect(ac.destination);
-  gain.gain.setValueAtTime(volume, ac.currentTime);
+  gain.gain.setValueAtTime(volume * CUE_LOUDNESS, ac.currentTime);
   gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + duration);
 
   const stepDuration = duration / frequencies.length;

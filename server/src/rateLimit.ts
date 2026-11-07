@@ -70,6 +70,8 @@ export type RateLimitGroup = keyof typeof RATE_LIMITS;
 export const EVENT_LIMITS: Readonly<Record<keyof ClientToServerEvents, RateLimitGroup>> = {
   offer: "signaling",
   answer: "signaling",
+  "offer-request": "signaling",
+  "offer-request-accepted": "signaling",
   "ice-candidate": "signaling",
   typing: "typing",
   "chat-message": "messages",
@@ -95,4 +97,10 @@ export const EVENT_LIMITS: Readonly<Record<keyof ClientToServerEvents, RateLimit
   "watch-leave": "watchControl",
   "watch-change-video": "watchControl",
   "watch-playback": "watchSync",
+  "watch-queue-add": "watchControl",
+  "watch-queue-remove": "watchControl",
+  "watch-queue-play": "watchControl",
+  "watch-queue-move": "watchControl",
+  "watch-ended": "watchControl",
+  "watch-end": "moderation",
 };

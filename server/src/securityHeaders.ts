@@ -2,12 +2,12 @@ import type { RequestHandler } from "express";
 
 // Inline styles are for React `style` attributes, and blob: workers for
 // workerTimer.ts. YouTube's script and frame are the watch party's player
-// (lib/youtubeApi.ts). Add any new external host here, or the browser will block it.
+// (lib/youtubeApi.ts), and i.ytimg.com its thumbnails. Add any new external host here, or the browser will block it.
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self' https://www.youtube.com",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' blob: data: https://*.giphy.com",
+  "img-src 'self' blob: data: https://*.giphy.com https://i.ytimg.com",
   "connect-src 'self'",
   "frame-src https://www.youtube-nocookie.com",
   "worker-src 'self' blob:",

@@ -33,6 +33,8 @@ The server reads these from `server/.env`:
 | `PORT` | Port to listen on (default `3001`). |
 | `GIPHY_API_KEY` | Enables the GIF picker. |
 | `GIPHY_HOURLY_LIMIT` | Giphy calls allowed per hour (default `90`, for a free beta key). Raise it for a production key. |
+| `YOUTUBE_API_KEY` | A YouTube Data API v3 key, which enables search in watch parties. Without it, pasting links still works. |
+| `YOUTUBE_DAILY_SEARCH_LIMIT` | Searches allowed per day (default `90`, which fits the free 10,000-unit quota). |
 | `PUBLIC_ORIGIN` | The site's own origin, such as `https://huddle.example`. Only needed if a proxy rewrites both `Host` and `X-Forwarded-Host`, which makes the server refuse real users. |
 
 The client reads `VITE_ICE_SERVERS` at build time; see below.

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Socket } from "socket.io";
-import { on, onRelay, onRoom } from "./socketRoute.js";
+import { on, onRelay, onRelayRequest, onRoom } from "./socketRoute.js";
 import { isRoomImageUrl } from "./imageRouter.js";
 import { addParticipant, createRoom, socketRoomMap } from "./roomManager.js";
 import { parseDisconnect, parseMute } from "./validation.js";
@@ -223,7 +223,7 @@ describe("onRelay", () => {
   it("forwards to a peer in the same room under the original key", () => {
     socketRoomMap.set("a", "r1").set("b", "r1");
     const { socket, fire, sent } = fakeSocket("a");
-    onRelay(socket, "ice-candidate", "candidate");
+    onRelay(socket, "ice-candidate");
 
     fire("ice-candidate", { to: "b", candidate: null });
     expect(sent).toEqual([{ to: "b", event: "ice-candidate", payload: { from: "a", candidate: null } }]);
@@ -232,12 +232,12 @@ describe("onRelay", () => {
   it("drops relays to itself, to another room, or from a socket not in a room", () => {
     socketRoomMap.set("a", "r1").set("c", "r2");
     const { socket, fire, sent } = fakeSocket("a");
-    onRelay(socket, "offer", "offer");
+    onRelay(socket, "offer");
     fire("offer", { to: "a", offer: {} });
     fire("offer", { to: "c", offer: {} });
 
     const lonely = fakeSocket("z");
-    onRelay(lonely.socket, "offer", "offer");
+    onRelay(lonely.socket, "offer");
     lonely.fire("offer", { to: "a", offer: {} });
 
     expect(sent).toEqual([]);
@@ -252,7 +252,7 @@ describe("onRelay", () => {
     socket.nsp.sockets.set("b", {
       conn: { writeBuffer: new Array(257), request: { socket: { writableLength: 0, destroy } } },
     } as unknown as Socket);
-    onRelay(socket, "ice-candidate", "candidate");
+    onRelay(socket, "ice-candidate");
 
     fire("ice-candidate", { to: "b", candidate: null });
 
@@ -267,12 +267,29 @@ describe("onRelay", () => {
     socket.nsp.sockets.set("b", {
       conn: { writeBuffer: new Array(10), request: { socket: { writableLength: 4096, destroy } } },
     } as unknown as Socket);
-    onRelay(socket, "ice-candidate", "candidate");
+    onRelay(socket, "ice-candidate");
 
     fire("ice-candidate", { to: "b", candidate: null });
 
     expect(destroy).not.toHaveBeenCalled();
     expect(sent).toHaveLength(1);
+  });
+});
+
+describe("onRelayRequest", () => {
+  afterEach(() => socketRoomMap.clear());
+
+  it("forwards an offer request only to another socket in the same room", () => {
+    socketRoomMap.set("a", "r1").set("b", "r1").set("c", "r2");
+    const { socket, fire, sent } = fakeSocket("a");
+    onRelayRequest(socket, "offer-request");
+
+    fire("offer-request", { to: "b" });
+    fire("offer-request", { to: "a" });
+    fire("offer-request", { to: "c" });
+    fire("offer-request", { to: 5 });
+
+    expect(sent).toEqual([{ to: "b", event: "offer-request", payload: { from: "a" } }]);
   });
 });
 

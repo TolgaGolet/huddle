@@ -6,7 +6,7 @@ import FormattingToolbar, { formatForShortcut, formatSelection, restoreSelection
 import EmojiPicker from "./EmojiPicker";
 import GifPicker from "./GifPicker";
 import PollCreator from "./PollCreator";
-import WatchPartyCreator from "./WatchPartyCreator";
+import WatchPartyCreator, { WATCH_PARTY_LIMIT_TEXT } from "./WatchPartyCreator";
 import RoomImage from "./RoomImage";
 import { useImageDraft } from "../hooks/useImageDraft";
 import { useTyping } from "../hooks/useTyping";
@@ -61,7 +61,6 @@ const SERVER_LIMIT_ERROR = "You're doing that too fast.";
 const SERVER_NOTICE_MS = 4000;
 const NO_PERMISSION_TEXT = "Only owners can send messages";
 const NOT_PERMITTED_ERROR = "Not sent: only owners can send messages now.";
-const WATCH_PARTY_ACTIVE_ERROR = "A watch party is already running. Join it from its invite in the chat.";
 
 export default function Composer({ ref, socket, httpToken, roomId, canSend = true, replyingTo, onReplyingToChange, onBeforeSend }: Props) {
   const [text, setText] = useState("");
@@ -283,7 +282,8 @@ export default function Composer({ ref, socket, httpToken, roomId, canSend = tru
     };
     const onLimited = show(SERVER_LIMIT_ERROR);
     const onNotPermitted = show(NOT_PERMITTED_ERROR);
-    const onWatchRefused = show(WATCH_PARTY_ACTIVE_ERROR);
+    // The popup offers starting only below the limit, but another party can start meanwhile.
+    const onWatchRefused = show(WATCH_PARTY_LIMIT_TEXT);
     socket.on("rate-limited", onLimited);
     socket.on("not-permitted", onNotPermitted);
     socket.on("watch-start-refused", onWatchRefused);

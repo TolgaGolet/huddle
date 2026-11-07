@@ -173,17 +173,44 @@ export interface WatchPlayback {
   rate: number;
 }
 
-/** A room's watch party, as sent to everyone in the room. */
+/** A video waiting in a watch party's queue. */
+export interface WatchQueueEntry {
+  id: string;
+  videoId: string;
+  /** Looked up by the server after it's added, so null until then (or if YouTube didn't say). */
+  title: string | null;
+  /** userId */
+  addedBy: string;
+}
+
+/** One of a room's watch parties, as sent to everyone in the room. */
 export interface WatchPartyState {
   id: string;
   /** userId of whoever controls the video when others may not change it. */
   hostId: string;
   allowOthersToChange: boolean;
   videoId: string;
+  /** New for every video played, so the same video played twice in a row still counts as a new one. */
+  entryId: string;
+  title: string | null;
   /** userIds, in the order they joined. */
   memberIds: string[];
   playback: WatchPlayback;
+  /** Plays in order once the current video ends. */
+  queue: WatchQueueEntry[];
 }
+
+/** A YouTube search result, from the server's proxy (youtubeRouter.ts). The thumbnail is derived from the id. */
+export interface YouTubeSearchResult {
+  videoId: string;
+  title: string;
+  channel: string;
+  /** Null when YouTube didn't give one. */
+  durationS: number | null;
+}
+
+/** The stable codes of a failed search. `search-unavailable`: no key, or its quota is used up, so links are the only way in. */
+export type YouTubeSearchErrorCode = "search-unavailable" | "search-failed" | "not-permitted" | "invalid-query";
 
 /** Where playback is `elapsedMs` after `playback` was true. */
 export function projectPosition(playback: WatchPlayback, elapsedMs: number): number {
@@ -191,9 +218,21 @@ export function projectPosition(playback: WatchPlayback, elapsedMs: number): num
   return playback.position + (elapsedMs / 1000) * playback.rate;
 }
 
-/** Shared so the client offers the change-video input only to those the server lets use it. */
-export function mayChangeWatchVideo(party: Pick<WatchPartyState, "hostId" | "allowOthersToChange">, userId: string): boolean {
+/**
+ * Who may play, pause, seek, change the video, search, and edit the queue.
+ * Shared so the client offers controls only to those the server accepts them from.
+ */
+export function mayControlWatchParty(party: Pick<WatchPartyState, "hostId" | "allowOthersToChange">, userId: string): boolean {
   return party.allowOthersToChange || party.hostId === userId;
+}
+
+/**
+ * The parties a room keeps besides the one about to start, to compare with
+ * MAX_WATCH_PARTIES: starting one leaves the starter's last, which ends it if
+ * they were alone in it. Shared so the client offers what the server accepts.
+ */
+export function partiesBesidesNew(partyCount: number, aloneInOwnParty: boolean): number {
+  return partyCount - (aloneInOwnParty ? 1 : 0);
 }
 
 export function isPollMessage(entry: ChatEntry): entry is PollMessage {
@@ -219,6 +258,13 @@ export interface ClientToServerEvents {
   offer: (data: { to: string; offer: SessionDescription }) => void;
   answer: (data: { to: string; answer: SessionDescription }) => void;
   "ice-candidate": (data: { to: string; candidate: IceCandidate }) => void;
+  /** Asks the peer to replace its connection to us with a fresh one that it offers. */
+  "offer-request": (data: { to: string }) => void;
+  /**
+   * Answers `offer-request`, ahead of the fresh connection's offer: offers sent
+   * before it came from the connection being replaced, so the asker drops them.
+   */
+  "offer-request-accepted": (data: { to: string }) => void;
   "mute-toggle": (data: { isMuted: boolean }) => void;
   "screen-share-started": () => void;
   "screen-share-stopped": () => void;
@@ -242,13 +288,27 @@ export interface ClientToServerEvents {
   /** An empty password makes the room open. */
   "change-room-password": (data: { password: string }) => void;
   "admit-waiting": (data: { id: string }) => void;
-  /** Starts the room's watch party and announces it in the chat. The id comes from parseYouTubeVideoId (youtube.ts). */
+  /**
+   * Starts a watch party and announces it in the chat. The id comes from
+   * parseYouTubeVideoId (youtube.ts). The starter leaves any party they were in.
+   * Events below without a partyId act on the sender's own party.
+   */
   "watch-start": (data: { videoId: string; allowOthersToChange: boolean }) => void;
+  /** Leaves the sender's current party, if any, first. */
   "watch-join": (data: { partyId: string }) => void;
   "watch-leave": () => void;
   "watch-change-video": (data: { videoId: string }) => void;
-  /** A member played, paused, sought or changed speed, in the video they name (stale ones are dropped). */
-  "watch-playback": (data: WatchPlayback & { videoId: string }) => void;
+  /** A member played, paused, sought or changed speed, in the play (`entryId`) they name: stale ones are dropped, even for a repeat of the same video. */
+  "watch-playback": (data: WatchPlayback & { entryId: string }) => void;
+  "watch-queue-add": (data: { videoId: string }) => void;
+  "watch-queue-remove": (data: { entryId: string }) => void;
+  /** Plays a queued video now, taking it out of the queue. */
+  "watch-queue-play": (data: { entryId: string }) => void;
+  "watch-queue-move": (data: { entryId: string; toIndex: number }) => void;
+  /** The video with this entryId ended: play the queue's next one. Reports of an older video are dropped. */
+  "watch-ended": (data: { entryId: string }) => void;
+  /** Owners only: ends any of the room's parties. */
+  "watch-end": (data: { partyId: string }) => void;
 }
 
 export interface ServerToClientEvents {
@@ -267,7 +327,7 @@ export interface ServerToClientEvents {
     /** Set if the room is already within a closing warning. */
     closing: RoomClosing | null;
     settings: RoomSettings;
-    watchParty: WatchPartyState | null;
+    watchParties: WatchPartyState[];
   }) => void;
   "participant-joined": (participant: Participant) => void;
   "participant-left": (data: { id: string; userId: string }) => void;
@@ -277,6 +337,8 @@ export interface ServerToClientEvents {
   offer: (data: { from: string; offer: SessionDescription }) => void;
   answer: (data: { from: string; answer: SessionDescription }) => void;
   "ice-candidate": (data: { from: string; candidate: IceCandidate }) => void;
+  "offer-request": (data: { from: string }) => void;
+  "offer-request-accepted": (data: { from: string }) => void;
   typing: (data: { userId: string; senderName: string }) => void;
   "chat-message": (msg: ChatMessage) => void;
   "chat-reaction-update": (data: { messageId: string; reactions: Record<string, ReactionUser[]> }) => void;
@@ -298,10 +360,14 @@ export interface ServerToClientEvents {
   /** To the owner who tried: the person couldn't come in because the room is full. */
   "admit-refused": (data: { id: string }) => void;
   "room-password-result": (data: { ok: boolean }) => void;
-  /** The room's watch party changed (members, video, settings), or ended (null). */
-  "watch-party": (party: WatchPartyState | null) => void;
-  /** Another member changed playback. Sent to members only. */
-  "watch-playback": (data: WatchPlayback) => void;
-  /** Only one watch party at a time: one was already running. */
-  "watch-start-refused": (data: { reason: "active" }) => void;
+  /** All of the room's watch parties, sent whenever one starts, changes (members, video, queue) or ends. */
+  "watch-parties": (parties: WatchPartyState[]) => void;
+  /**
+   * The party's playback: another member changed it, or this client just joined.
+   * Sent to the party's members only. `entryId` names the video it's about, so a
+   * client drops one meant for a video (or party) it has moved on from.
+   */
+  "watch-playback": (data: WatchPlayback & { entryId: string }) => void;
+  /** The room already has `max` watch parties running. */
+  "watch-start-refused": (data: { reason: "limit"; max: number }) => void;
 }

@@ -1,8 +1,8 @@
 import type { Server, Socket } from "socket.io";
-import type { ClientToServerEvents, ServerToClientEvents } from "./protocol.js";
+import type { ClientToServerEvents, IceCandidate, ServerToClientEvents, SessionDescription } from "./protocol.js";
 import { resolveParticipant, socketRoomMap, type RoomCtx } from "./roomManager.js";
 import { createBucket, EVENT_LIMITS, RATE_LIMITS, type Bucket, type RateLimitGroup } from "./rateLimit.js";
-import { parseRelay } from "./validation.js";
+import { parseRelay, parseRelayTarget } from "./validation.js";
 import { errorSummary } from "./errorLog.js";
 import { countSecurityEvent } from "./securityLog.js";
 import { evict, isBacklogged } from "./socketBacklog.js";
@@ -121,15 +121,42 @@ export function onRoom<E extends keyof ClientToServerEvents>(
  * protocol type is not checked here. A peer that has stopped reading is evicted
  * rather than sent more, or relaying to it would exhaust the server's memory.
  */
-export function onRelay(socket: AppSocket, event: "offer" | "answer" | "ice-candidate", key: "offer" | "answer" | "candidate"): void {
+export function onRelay<E extends keyof typeof RELAY_BODIES>(socket: AppSocket, event: E): void {
+  const { key, toPayload } = RELAY_BODIES[event];
   register(socket, event, parseRelay(key), ({ to, body }) => {
-    const roomId = socketRoomMap.get(socket.id);
-    if (!roomId || to === socket.id || socketRoomMap.get(to) !== roomId) return;
-    const peer = socket.nsp.sockets.get(to);
-    if (peer && isBacklogged(peer)) {
-      evict(peer);
-      return;
-    }
-    (socket as unknown as Socket).to(to).emit(event, { from: socket.id, [key]: body });
+    relayTo(socket, to, event, toPayload(socket.id, body) as RelayPayload<E>);
   });
+}
+
+/** `onRelay` for a relay with no body, under the same checks. */
+export function onRelayRequest(socket: AppSocket, event: "offer-request" | "offer-request-accepted"): void {
+  register(socket, event, parseRelayTarget, ({ to }) => {
+    relayTo(socket, to, event, { from: socket.id });
+  });
+}
+
+type RelayEvent = "offer" | "answer" | "ice-candidate" | "offer-request" | "offer-request-accepted";
+type RelayPayload<E extends RelayEvent> = Parameters<ServerToClientEvents[E]>[0];
+
+/**
+ * Each relayed body's key and outgoing payload, checked against protocol.ts
+ * (`satisfies`), so renaming a key there fails to compile here. The body
+ * itself is opaque: parseRelay checks only its shape and size.
+ */
+const RELAY_BODIES = {
+  offer: { key: "offer", toPayload: (from: string, body: unknown) => ({ from, offer: body as SessionDescription }) },
+  answer: { key: "answer", toPayload: (from: string, body: unknown) => ({ from, answer: body as SessionDescription }) },
+  "ice-candidate": { key: "candidate", toPayload: (from: string, body: unknown) => ({ from, candidate: body as IceCandidate }) },
+} as const satisfies { [E in "offer" | "answer" | "ice-candidate"]: { key: Parameters<typeof parseRelay>[0]; toPayload: (from: string, body: unknown) => RelayPayload<E> } };
+
+function relayTo<E extends RelayEvent>(socket: AppSocket, to: string, event: E, payload: RelayPayload<E>): void {
+  const roomId = socketRoomMap.get(socket.id);
+  if (!roomId || to === socket.id || socketRoomMap.get(to) !== roomId) return;
+  const peer = socket.nsp.sockets.get(to);
+  if (peer && isBacklogged(peer)) {
+    evict(peer);
+    return;
+  }
+  // Typed by the signature above; Socket.IO's own overloads can't follow a generic event.
+  (socket as unknown as Socket).to(to).emit(event, payload);
 }

@@ -20,6 +20,7 @@ import {
   MAX_POLL_OPTIONS,
   MAX_POLL_QUESTION_LENGTH,
   MAX_WATCH_POSITION_S,
+  MAX_WATCH_QUEUE,
   POLL_DURATIONS_MS,
   WATCH_RATES,
 } from "./limits.js";
@@ -166,6 +167,12 @@ export function parseRelay(
   };
 }
 
+/** A relay with no body: only the target peer. */
+export function parseRelayTarget(raw: unknown): { to: string } | null {
+  const to = isRecord(raw) ? id(raw.to) : null;
+  return to ? { to } : null;
+}
+
 export function parseMute(raw: unknown): { isMuted: boolean } | null {
   const isMuted = isRecord(raw) ? bool(raw.isMuted) : null;
   return isMuted === null ? null : { isMuted };
@@ -281,13 +288,31 @@ export function parseWatchChangeVideo(raw: unknown): { videoId: string } | null 
   return videoId ? { videoId } : null;
 }
 
-export function parseWatchPlayback(raw: unknown): (WatchPlayback & { videoId: string }) | null {
+/** Shaped like parseWatchJoin, for the events that name a party. */
+export const parseWatchEnd = parseWatchJoin;
+
+export const parseWatchQueueAdd = parseWatchChangeVideo;
+
+export function parseWatchEntry(raw: unknown): { entryId: string } | null {
+  const entryId = isRecord(raw) ? id(raw.entryId) : null;
+  return entryId ? { entryId } : null;
+}
+
+export function parseWatchQueueMove(raw: unknown): { entryId: string; toIndex: number } | null {
+  if (!isRecord(raw)) return null;
+  const entryId = id(raw.entryId);
+  const { toIndex } = raw;
+  if (!entryId || typeof toIndex !== "number" || !Number.isInteger(toIndex) || toIndex < 0 || toIndex >= MAX_WATCH_QUEUE) return null;
+  return { entryId, toIndex };
+}
+
+export function parseWatchPlayback(raw: unknown): (WatchPlayback & { entryId: string }) | null {
   if (!isRecord(raw)) return null;
   const { state, position, rate } = raw;
-  const videoId = youtubeVideoId(raw.videoId);
-  if (!videoId) return null;
+  const entryId = id(raw.entryId);
+  if (!entryId) return null;
   if (state !== "playing" && state !== "paused") return null;
   if (typeof position !== "number" || !Number.isFinite(position)) return null;
   if (typeof rate !== "number" || !WATCH_RATES.includes(rate)) return null;
-  return { videoId, state, position: Math.min(Math.max(position, 0), MAX_WATCH_POSITION_S), rate };
+  return { entryId, state, position: Math.min(Math.max(position, 0), MAX_WATCH_POSITION_S), rate };
 }

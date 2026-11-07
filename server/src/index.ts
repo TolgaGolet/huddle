@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import { onMessageRemoved, onRoomDestroyed, purgeExpiredRooms, roomCount, totalImageBytes } from "./roomManager.js";
 import { createRoomRouter } from "./roomRouter.js";
 import { giphyRouter } from "./giphyRouter.js";
+import { youtubeRouter } from "./youtubeRouter.js";
 import { setupSignaling } from "./signaling.js";
 import { setupChat } from "./chatHandler.js";
 import { setupPolls } from "./pollHandler.js";
@@ -78,9 +79,11 @@ app.get("/api/rooms/:id", httpRateLimit(IP_LIMITS.lookupRoom, proxyHops));
 app.post("/api/rooms/:id/images", httpRateLimit(IP_LIMITS.uploadImages, proxyHops));
 app.post("/api/rooms/:id/image-session", httpRateLimit(IP_LIMITS.imageSession, proxyHops));
 app.use("/api/giphy", httpRateLimit(IP_LIMITS.giphy, proxyHops));
+app.use("/api/youtube", httpRateLimit(IP_LIMITS.youtube, proxyHops));
 
 app.use("/api", createRoomRouter(proxyHops));
 app.use("/api/giphy", giphyRouter);
+app.use("/api/youtube", youtubeRouter);
 app.use("/api", createImageRouter(proxyHops));
 app.use("/api", apiNotFound);
 

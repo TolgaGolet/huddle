@@ -1,6 +1,7 @@
 import { bufferCandidate } from "./candidateBuffer";
 import { describeStats, DirectionalAudioWatchdog, readAudioStats, type Direction } from "./audioWatchdog";
 import { errorName, huddleLog, huddleWarn } from "./huddleLog";
+import { summarizeIce } from "./iceSummary";
 import { isPoliteFor, resolveInboundOffer } from "./negotiation";
 import type { ClientToServerEvents } from "../types";
 
@@ -31,12 +32,22 @@ export interface PeerSessionHost {
   onConnectionState(state: RTCPeerConnectionState): void;
   /** Replace this session with a fresh one (the automated "rejoin fixes it"). */
   requestRecreate(): void;
+  /** Close this session and ask the peer to offer a fresh one (see `mayHandOffOffer`). */
+  handOffOffer(): void;
 }
 
 export interface PeerSessionOptions {
   screenTrack?: MediaStreamTrack | null;
   /** Candidates that arrived before this session existed. */
   earlyCandidates?: RTCIceCandidateInit[];
+  /**
+   * A joiner's first offer to this peer. If it fails before ever connecting,
+   * the peer is asked to offer instead of us restarting ICE: a Firefox joiner's
+   * offer to Chromium failed and stayed unheard after restarts, while the
+   * same pair connected at once with Chromium offering. One hand-off per join,
+   * since sessions created any other way never hand off.
+   */
+  mayHandOffOffer?: boolean;
 }
 
 /**
@@ -73,14 +84,23 @@ export class PeerSession {
   // Recovery escalation bookkeeping per direction (bounded retries → recreate).
   private audioRecoveries: Record<Direction, number> = { in: 0, out: 0 };
   private screenSender: RTCRtpSender | null = null;
+  private readonly mayHandOffOffer: boolean;
+  private everConnected = false;
+  private handingOff = false;
+
+  /** True while media can flow, e.g. to ignore a late request to replace this session. */
+  get connected(): boolean {
+    return this.pc.connectionState === "connected";
+  }
 
   constructor(
     readonly peerId: string,
     private readonly pc: RTCPeerConnection,
     private readonly host: PeerSessionHost,
-    { screenTrack, earlyCandidates }: PeerSessionOptions = {},
+    { screenTrack, earlyCandidates, mayHandOffOffer = false }: PeerSessionOptions = {},
   ) {
     this.pendingCandidates = earlyCandidates ?? [];
+    this.mayHandOffOffer = mayHandOffOffer;
 
     const stream = host.getLocalStream();
     // Deterministic audio m-line: if we have a mic track, add it as a
@@ -136,10 +156,26 @@ export class PeerSession {
       // A successful connection resets the restart-failure ladder.
       this.restartFailures = 0;
       this.disconnectedSince = null;
+      if (!this.everConnected) {
+        this.everConnected = true;
+        void this.logIceSummary(state);
+      }
       return;
     }
     if (state === "failed") {
       this.disconnectedSince = null;
+      if (this.mayHandOffOffer && !this.everConnected) {
+        if (this.handingOff) return;
+        this.handingOff = true;
+        // Read the stats first: handing off closes the connection.
+        void this.logIceSummary(state).finally(() => {
+          if (this.disposed) return;
+          huddleWarn("connection", { peerId, event: "hand-off-offer" });
+          this.host.handOffOffer();
+        });
+        return;
+      }
+      void this.logIceSummary(state);
       // Hard failure: restart ICE with exponential backoff. After
       // MAX_RESTARTS consecutive failures, tear the peer down and
       // recreate it from scratch (a fresh RTCPeerConnection + offer),
@@ -179,6 +215,17 @@ export class PeerSession {
     }
     // connecting / new / closed
     this.disconnectedSince = null;
+  }
+
+  /** Candidate types and pair states only; see `summarizeIce`. */
+  private async logIceSummary(state: RTCPeerConnectionState): Promise<void> {
+    try {
+      const report = await this.pc.getStats();
+      if (this.disposed) return;
+      huddleLog("connection", { peerId: this.peerId, event: "ice-summary", state, ...summarizeIce(report) });
+    } catch {
+      /* stats are diagnostics only */
+    }
   }
 
   private async negotiate(): Promise<void> {

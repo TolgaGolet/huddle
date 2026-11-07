@@ -2,13 +2,27 @@ import { createContext } from "react";
 import type { WatchPartyState } from "../types";
 
 export interface WatchPartyContextValue {
-  party: WatchPartyState | null;
-  isMember: boolean;
-  join: () => void;
+  parties: WatchPartyState[];
+  /** The party this client is in, if any (one at most). */
+  joinedPartyId: string | null;
+  /** Leaves the current party, if any. */
+  join: (partyId: string) => void;
+  /** Owners only. */
+  end: (partyId: string) => void;
+  isOwner: boolean;
+  /** Call just before starting a party; see useWatchParty. */
+  prepareStart: () => void;
 }
 
 /**
- * The room's watch party, for the invite cards in the chat. A context, so a
- * change re-renders only the cards, not the memoized message list.
+ * The room's watch parties, for the invite cards in the chat and the start
+ * popup. A context, so a change re-renders only those, not the memoized message list.
  */
-export const WatchPartyContext = createContext<WatchPartyContextValue>({ party: null, isMember: false, join: () => {} });
+export const WatchPartyContext = createContext<WatchPartyContextValue>({
+  parties: [],
+  joinedPartyId: null,
+  join: () => {},
+  end: () => {},
+  isOwner: false,
+  prepareStart: () => {},
+});

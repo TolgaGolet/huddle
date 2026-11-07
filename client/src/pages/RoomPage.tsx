@@ -236,11 +236,11 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
     return [localParticipant, ...participants];
   }, [localId, userId, name, announcedMuted, participants]);
 
-  // A context, so a party change re-renders only the invite cards, not the memoized chat.
-  const { party: watchParty, isMember: isWatchMember, join: joinWatchParty } = watch;
+  // A context, so a party change re-renders only the invite cards and start popup, not the memoized chat.
+  const { parties: watchParties, joinedPartyId, join: joinWatchParty, end: endWatchParty, prepareStart: prepareWatchStart } = watch;
   const watchContext = useMemo(
-    () => ({ party: watchParty, isMember: isWatchMember, join: joinWatchParty }),
-    [watchParty, isWatchMember, joinWatchParty],
+    () => ({ parties: watchParties, joinedPartyId, join: joinWatchParty, end: endWatchParty, isOwner, prepareStart: prepareWatchStart }),
+    [watchParties, joinedPartyId, joinWatchParty, endWatchParty, isOwner, prepareWatchStart],
   );
 
   // "Connecting…" indicator: a remote participant is connecting while their
@@ -264,7 +264,6 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
     firstScreenStream && allParticipants.find((p) => p.id === firstScreenStream[0])?.name;
 
   // The player is for the party's members; everyone else sees its invite in the chat.
-  const watchSnapshot = watch.isMember ? watch.snapshot : null;
 
   const voiceControlsProps = {
     isMuted: announcedMuted,
@@ -350,16 +349,20 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
 
         {/* Screen share (theater) + chat: stacked below md, side by side from md */}
         <main className="flex-1 flex flex-col md:flex-row overflow-hidden min-w-0 min-h-0">
-          {(firstScreenStream || watchSnapshot) && (
+          {(firstScreenStream || watch.snapshot) && (
             <div className="flex flex-col min-w-0 shrink-0 md:shrink md:flex-1 md:min-h-0">
-              {watchSnapshot && (
+              {watch.snapshot && (
                 <WatchPartyPanel
                   socket={socket}
-                  snapshot={watchSnapshot}
+                  snapshot={watch.snapshot}
+                  playbackFeed={watch.playbackFeed}
                   localUserId={userId ?? ""}
+                  httpToken={httpToken}
+                  isOwner={isOwner}
                   participants={allParticipants}
                   onLeave={watch.leave}
-                  onChangeVideo={watch.changeVideo}
+                  onEnd={watch.end}
+                  actions={watch.actions}
                 />
               )}
               {firstScreenStream && (
@@ -372,7 +375,7 @@ function RoomCall({ roomId, name }: { roomId: string; name: string }) {
           )}
           <div
             className={
-              firstScreenStream || watchSnapshot
+              firstScreenStream || watch.snapshot
                 ? "flex-1 min-h-0 md:flex-none md:w-80 md:shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-gray-800"
                 : "flex-1 min-h-0 flex flex-col"
             }
