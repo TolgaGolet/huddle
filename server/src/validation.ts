@@ -9,6 +9,7 @@
 import type { ChatMessage } from "./roomManager.js";
 import type { PollCreate, RoomPermission, RoomPermissions, WatchPlayback } from "./protocol.js";
 import { YOUTUBE_VIDEO_ID_PATTERN } from "./youtube.js";
+import { gameById } from "./games.js";
 import {
   CLIENT_KEY_PATTERN,
   isValidNewPassword,
@@ -288,10 +289,18 @@ export function parseWatchChangeVideo(raw: unknown): { videoId: string } | null 
   return videoId ? { videoId } : null;
 }
 
+/** Only games in the catalog (games.ts). */
+export function parseGameStart(raw: unknown): { gameId: string } | null {
+  const gameId = isRecord(raw) ? raw.gameId : null;
+  return typeof gameId === "string" && gameById(gameId) ? { gameId } : null;
+}
+
 /** Shaped like parseWatchJoin, for the events that name a party. */
 export const parseWatchEnd = parseWatchJoin;
 
 export const parseWatchQueueAdd = parseWatchChangeVideo;
+export const parseGameJoin = parseWatchJoin;
+export const parseGameEnd = parseWatchJoin;
 
 export function parseWatchEntry(raw: unknown): { entryId: string } | null {
   const entryId = isRecord(raw) ? id(raw.entryId) : null;
